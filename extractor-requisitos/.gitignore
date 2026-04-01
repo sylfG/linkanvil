@@ -1,0 +1,17 @@
+# Dependencias Node
+docs/node_modules/
+
+# Build de VitePress
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Entornos locales
+.env
+.env.local
+
+# Logs
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

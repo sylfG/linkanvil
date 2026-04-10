@@ -27,7 +27,7 @@ set -euo pipefail
 
 # ── Valores por defecto ───────────────────────────────────────────────────────
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "USUARIO/REPO")}"
-PROJECT_NUMBER="${PROJECT_NUMBER:-1}"
+PROJECT_NUMBER="${PROJECT_NUMBER:-5}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKLOG_DIR="${BACKLOG_DIR:-"$(cd "$SCRIPT_DIR/../../docs/src/backlog" 2>/dev/null && pwd)"}"
 PREVENTION_LOG="${PREVENTION_LOG:-"$(cd "$SCRIPT_DIR/../../docs/src" 2>/dev/null && pwd)/ERROR_PREVENTION_LOG.md"}"
@@ -193,7 +193,9 @@ extract_epic() {
   grep -Em1 '\*\*[EÉ]pica:\*\*' "$1" 2>/dev/null \
     | sed 's/.*\*\*[EÉ]pica:\*\*[[:space:]]*//' \
     | sed 's/^[[:space:]]*//' \
-    | tr -d '\r' || true
+    | tr -d '\r' \
+    | cut -c 1-45 \
+    | sed 's/[[:space:]]*$//' || true
 }
 
 # ── Extraer ID de feature del nombre de archivo ───────────────────────────────
@@ -212,7 +214,8 @@ ensure_milestone() {
     -q ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1 || true)
 
   if [[ -n "$existing" ]]; then
-    dim "  Milestone existente: '$title' (#$existing)"
+    dim "  Milestone existente: '$title' (#$existing)" >&2
+    echo "$existing"
     return 0
   fi
 
@@ -222,10 +225,13 @@ ensure_milestone() {
     -f state="open" \
     -q '.number' 2>/dev/null || echo "")
 
-  if [[ -n "$new_num" ]]; then
-    ok "  Milestone creado: '$title' (#$new_num)"
+  if [[ -n "$new_num" && "$new_num" != "null" ]]; then
+    ok "  Milestone creado: '$title' (#$new_num)" >&2
+    echo "$new_num"
+    return 0
   else
-    warn "  No se pudo crear el milestone: '$title'"
+    warn "  No se pudo crear el milestone: '$title'" >&2
+    return 1
   fi
 }
 
@@ -342,30 +348,41 @@ get_project_node_id() {
   local owner="${REPO%%/*}"
   local node_id=""
 
-  # Intentar como organización
+  # El cliente especificó que a veces es Usuario en vez de Organización.
+  # Intentar como usuario primero
   node_id=$(gh api graphql \
     -f query='
       query($owner: String!, $n: Int!) {
-        organization(login: $owner) {
+        user(login: $owner) {
           projectV2(number: $n) { id }
         }
       }' \
     -F owner="$owner" \
     -F n="$PROJECT_NUMBER" \
-    -q '.data.organization.projectV2.id' 2>/dev/null || echo "")
+    -q '.data.user.projectV2.id' 2>/dev/null || echo "")
 
-  # Si falla, intentar como usuario
+  # Si github devuelve el JSON de error (contiene "errors"), lo limpiamos
+  if [[ "$node_id" =~ "errors" || "$node_id" =~ "{" ]]; then
+    node_id=""
+  fi
+
+  # Si falla, intentar como organización
   if [[ -z "$node_id" || "$node_id" == "null" ]]; then
     node_id=$(gh api graphql \
       -f query='
         query($owner: String!, $n: Int!) {
-          user(login: $owner) {
+          organization(login: $owner) {
             projectV2(number: $n) { id }
           }
         }' \
       -F owner="$owner" \
       -F n="$PROJECT_NUMBER" \
-      -q '.data.user.projectV2.id' 2>/dev/null || echo "")
+      -q '.data.organization.projectV2.id' 2>/dev/null || echo "")
+  fi
+  
+  # Limpieza final por si el gh api filtra un json de error
+  if [[ "$node_id" =~ "errors" || "$node_id" =~ "{" ]]; then
+    node_id=""
   fi
 
   echo "$node_id"
@@ -642,7 +659,7 @@ validate_backlog_files() {
       (( errors++ )) || true
     fi
 
-    if ! grep -Eq '^##[[:space:]].*Dependencias' "$f"; then
+    if ! grep -Eq '^##.*Dependencias' "$f"; then
       warn "Falta sección de dependencias en: $(basename "$f")"
       (( errors++ )) || true
     fi
@@ -729,8 +746,11 @@ process_file() {
   local -a milestone_flag=()
   if [[ "$SKIP_MILESTONES" -eq 0 && -n "$epic" ]]; then
     dim "  Épica → Milestone: $epic"
-    ensure_milestone "$epic"
-    milestone_flag=(--milestone "$epic")
+    local m_id
+    m_id=$(ensure_milestone "$epic")
+    if [[ -n "$m_id" ]]; then
+      milestone_flag=(--milestone "$m_id")
+    fi
   fi
 
   local existing_number
@@ -927,19 +947,12 @@ main() {
           "$dep_issue" "$dep_id" "$issue_num" "$feat_id"
 
         if [[ "$DRY_RUN" -eq 0 ]]; then
-          if [[ "$parent_linked" -eq 0 ]]; then
-            add_sub_issue_relationship "$dep_issue_node" "$issue_node" && (( linked++ )) || true
-            parent_linked=1
-          fi
-
-          if [[ "$bloqueante" == "Sí" ]]; then
-            add_blocked_by_relationship "$issue_node" "$dep_issue_node"
-            (( blocked_count++ )) || true
-            printf "  ${C_RED}[🚫 BLOCKED BY #%s]${C_RESET}" "$dep_issue"
-          fi
+          add_blocked_by_relationship "$issue_node" "$dep_issue_node"
+          (( blocked_count++ )) || true
+          printf "  ${C_RED}[🚫 BLOCKED BY #%s]${C_RESET}" "$dep_issue"
         else
           printf "  ${C_GRAY}(dry-run)${C_RESET}"
-          [[ "$bloqueante" == "Sí" ]] && printf "  ${C_RED}[blocked-by #%s serías marcado]${C_RESET}" "$dep_issue"
+          printf "  ${C_RED}[blocked-by #%s serías marcado]${C_RESET}" "$dep_issue"
         fi
 
         echo ""

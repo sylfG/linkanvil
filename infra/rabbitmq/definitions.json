@@ -1,0 +1,86 @@
+{
+  "vhosts": [
+    { "name": "cerebro" }
+  ],
+  "exchanges": [
+    {
+      "name": "cerebro.ingesta",
+      "vhost": "cerebro",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "cerebro.dlx",
+      "vhost": "cerebro",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "cerebro.procesamiento",
+      "vhost": "cerebro",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false
+    }
+  ],
+  "queues": [
+    {
+      "name": "q.url.ingesta",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "cerebro.dlx",
+        "x-dead-letter-routing-key": "dlq.url.fallidas",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "q.url.fallidas",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "q.embeddings",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "cerebro.dlx",
+        "x-dead-letter-routing-key": "dlq.embeddings.fallidos"
+      }
+    },
+    {
+      "name": "q.curador.nocturno",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false
+    }
+  ],
+  "bindings": [
+    {
+      "source": "cerebro.ingesta",
+      "vhost": "cerebro",
+      "destination": "q.url.ingesta",
+      "destination_type": "queue",
+      "routing_key": "url.nueva"
+    },
+    {
+      "source": "cerebro.dlx",
+      "vhost": "cerebro",
+      "destination": "q.url.fallidas",
+      "destination_type": "queue",
+      "routing_key": "dlq.url.fallidas"
+    },
+    {
+      "source": "cerebro.procesamiento",
+      "vhost": "cerebro",
+      "destination": "q.embeddings",
+      "destination_type": "queue",
+      "routing_key": ""
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+# LiteLLM Gateway — Segundo Cerebro Autónomo
+# Fallback automático: OpenAI → Anthropic → Local
+# Circuit Breakers activados por defecto
+
+model_list:
+  # Modelo primario: OpenAI GPT-4o
+  - model_name: cerebro-gpt
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Fallback 1: Anthropic Claude Sonnet
+  - model_name: cerebro-gpt
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Embeddings: OpenAI text-embedding-3-small (v3, 1536 dims)
+  - model_name: cerebro-embeddings
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Modelo rápido/barato: GPT-4o-mini (para clasificación y tagging)
+  - model_name: cerebro-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+# Configuración general
+litellm_settings:
+  # Reintentos y Circuit Breaker
+  num_retries: 3
+  request_timeout: 60
+  retry_after: 5
+  allowed_fails: 3           # Fallos permitidos antes de abrir circuit breaker
+  cooldown_time: 30          # Segundos que permanece abierto el circuit breaker
+
+  # Salidas estructuradas (Zero-Defect Pipeline)
+  success_callback: []
+  failure_callback: []
+
+  # Caché de respuestas (Redis) — ahorra tokens en consultas repetidas
+  cache: true
+  cache_params:
+    type: redis
+    host: redis
+    port: 6379
+    password: os.environ/REDIS_PASSWORD
+    supported_call_types: ["completion", "embedding"]
+    ttl: 3600                # 1 hora de caché por defecto
+
+  # Logging detallado a Prometheus
+  set_verbose: false
+
+# Parámetros del servidor
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+
+  # Rate Limiting (Noisy Neighbor Defense)
+  global_max_parallel_requests: 100
+  max_budget: 50             # USD máximo por día (hard limit)
+
+router_settings:
+  routing_strategy: "latency-based-routing"
+  num_retries: 3
+  timeout: 30
+  retry_after: 5

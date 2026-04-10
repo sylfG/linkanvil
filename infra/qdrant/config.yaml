@@ -1,0 +1,33 @@
+# Qdrant — Configuración de producción
+# Segundo Cerebro Autónomo
+
+storage:
+  # Directorio de datos persistentes
+  storage_path: /qdrant/storage
+
+  # Umbral de similitud coseno por defecto (> 0.92 para Colisionadores Semánticos)
+  on_disk_payload: true
+
+service:
+  host: 0.0.0.0
+  http_port: 6333
+  grpc_port: 6334
+  max_request_size_mb: 32
+
+# Colecciones por defecto
+# Las colecciones se crean vía API al arrancar n8n workflows
+# Ejemplo de creación:
+#   POST /collections/cerebro_recursos
+#   { "vectors": { "size": 1536, "distance": "Cosine" } }
+#   -- tenant_id se inyecta como payload filter --
+
+telemetry_disabled: false
+
+# Límites para Noisy Neighbor Defense
+optimizers:
+  default_segment_number: 2
+  max_segment_size: 200000
+  memmap_threshold: 50000
+
+# Log
+log_level: INFO

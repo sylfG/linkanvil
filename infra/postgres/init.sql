@@ -122,17 +122,25 @@ ALTER TABLE grafo_relaciones ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outbox_eventos ENABLE ROW LEVEL SECURITY;
 
 -- Política: cada usuario solo ve sus datos
+DROP POLICY IF EXISTS tenant_isolation ON recursos;
 CREATE POLICY tenant_isolation ON recursos
     USING (tenant_id = current_setting('app.tenant_id', true));
 
+DROP POLICY IF EXISTS tenant_isolation ON sesiones_chat;
 CREATE POLICY tenant_isolation ON sesiones_chat
     USING (tenant_id = current_setting('app.tenant_id', true));
 
+DROP POLICY IF EXISTS tenant_isolation ON mensajes_chat;
 CREATE POLICY tenant_isolation ON mensajes_chat
     USING (tenant_id = current_setting('app.tenant_id', true));
 
 -- Cuenta de servicio (bypass RLS para workers internos)
-CREATE ROLE cerebro_service NOLOGIN;
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cerebro_service') THEN 
+        CREATE ROLE cerebro_service NOLOGIN; 
+    END IF; 
+END $$;
 ALTER TABLE recursos FORCE ROW LEVEL SECURITY;
 
 -- -----------------------------------------------------------------------------
@@ -146,6 +154,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS set_updated_at_recursos ON recursos;
 CREATE TRIGGER set_updated_at_recursos
     BEFORE UPDATE ON recursos
     FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();

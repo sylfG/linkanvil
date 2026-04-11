@@ -22,9 +22,11 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.middlewares=global-ratelimit@docker,global-retry@docker"
       - "--entrypoints.websecure.address=:443"
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.buckets=0.1,0.3,1.5,10.0"
+      - "--tracing.otlp.http.endpoint=http://otel-collector:4318/v1/traces"
       - "--log.level=INFO"
     ports:
       - "80:80"
@@ -37,6 +39,10 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.middlewares.global-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.global-ratelimit.ratelimit.burst=50"
+      - "traefik.http.middlewares.global-retry.retry.attempts=3"
+      - "traefik.http.middlewares.global-retry.retry.initialinterval=100ms"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s

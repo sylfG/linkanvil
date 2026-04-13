@@ -74,6 +74,28 @@ services:
       postgres:
         condition: service_healthy
 
+  embedder-worker:
+    build:
+      context: .
+      dockerfile: infra/scraper.Dockerfile
+    command: ["python", "-m", "src.data.embedder_worker"]
+    container_name: cerebro-embedder
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+      # LITELLM_API_KEY could be injected from env here
+      QDRANT_URL: http://qdrant:6333
+      LITELLM_EMBEDDINGS_URL: http://litellm:4000/v1/embeddings
+    networks:
+      - cerebro-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      litellm:
+        condition: service_started
+
   # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
@@ -226,12 +248,6 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.qdrant.rule=Host(`qdrant.localhost`)"
       - "traefik.http.services.qdrant.loadbalancer.server.port=6333"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
 
   # ---------------------------------------------------------------------------
   # 🤖 LLM GATEWAY — LiteLLM
@@ -262,7 +278,7 @@ services:
       - "traefik.http.routers.litellm.rule=Host(`llm.localhost`)"
       - "traefik.http.services.litellm.loadbalancer.server.port=4000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health')\" || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 10

@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir httpx aio-pika redis pydantic pydantic-settings asyncpg
 
-COPY src/scraper /app/src/scraper
+COPY src /app/src
 
 ENV PYTHONPATH=/app
 

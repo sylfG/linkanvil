@@ -51,6 +51,7 @@ class OutboxPublisher:
                         for row in rows:
                             event_id = row['id']
                             payload_dict = json.loads(row['payload'])
+                            payload_dict['tenant_id'] = row['tenant_id']
                             trace_id = payload_dict.get('trace_id', 'unknown-trace')
                             
                             # Publicar

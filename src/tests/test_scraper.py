@@ -23,8 +23,11 @@ async def test_scraper_strategy_routing_happy_path():
     assert isinstance(strat3, AsyncMock) # Mapeamos al default
     
     # 4. Probar ejecución simulada del context para AiProxy
-    html = await ctx.execute("https://cloudflare.com/captcha/1")
-    assert "IA" in html or "Proxy" in html
+
+    with patch("src.scraper.strategy.AiProxyStrategy.extract", new_callable=AsyncMock) as ai_mock:
+        ai_mock.return_value = "<html>Contenido interpretado por IA</html>"
+        html = await ctx.execute("https://cloudflare.com/captcha/1")
+        assert "IA" in html or "Proxy" in html
 
 @patch('src.scraper.strategy.httpx.AsyncClient.get')
 @pytest.mark.asyncio

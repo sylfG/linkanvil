@@ -54,7 +54,7 @@ class ScraperWorker:
                 logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Ruteando extracción de: {url}")
                 
                 # Instanciar el contexto de extracción dinámica (Strategy)
-                scraper_ctx = ScraperContext()
+                scraper_ctx = ScraperContext(tenant_id=tenant_id, trace_id=trace_id)
                 
                 # Ejecutar extraccion
                 raw_html = await scraper_ctx.execute(url=url, source=source)

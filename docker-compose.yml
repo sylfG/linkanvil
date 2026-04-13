@@ -8,6 +8,34 @@
 services:
 
   # ---------------------------------------------------------------------------
+  # 🌍 INGESTION API
+  #    Endpoint unificado asíncrono para ingesta de datos
+  # ---------------------------------------------------------------------------
+  ingestion-api:
+    build:
+      context: .
+      dockerfile: infra/ingestion.Dockerfile
+    container_name: cerebro-ingestion
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-cerebro_redis_pass_CHANGE_ME}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+    networks:
+      - cerebro-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ingestion.rule=Host(`ingest.localhost`) || PathPrefix(`/ingest`)"
+      - "traefik.http.routers.ingestion.middlewares=global-ratelimit@docker"
+      - "traefik.http.services.ingestion.loadbalancer.server.port=8000"
+
+  # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
   # ---------------------------------------------------------------------------

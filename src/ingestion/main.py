@@ -1,6 +1,8 @@
 import os
 import logging
-from typing import Optional
+import uuid
+import re
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
@@ -90,7 +92,7 @@ async def ingest_url(request: IngestionRequest):
         
         if is_new:
             # Requisito Técnico F-01.2: Enviar a RabbitMQ
-            payload = request.dict()
+            payload = request.model_dump()
             await rabbit_publisher.publish_ingestion_message(
                 queue_name=RABBIT_QUEUE,
                 payload=payload,
@@ -117,10 +119,59 @@ async def ingest_url(request: IngestionRequest):
         try:
             await rabbit_publisher.publish_ingestion_message(
                 queue_name=RABBIT_DLQ,
-                payload={"error": str(e), "request": request.dict()},
+                payload={"error": str(e), "request": request.model_dump()},
                 trace_id=request.trace_id
             )
         except Exception as dlq_e:
             logger.critical(f"Fallo enviando a DLQ en falla cascada: {dlq_e}")
             
         raise HTTPException(status_code=500, detail="Error interno procesando evento de ingesta.")
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    """
+    Webhook para recibir mensajes de Telegram.
+    Extrae URLs del mensaje de texto y las inyecta en el pipeline de ingesta.
+    """
+    try:
+        data = await request.json()
+        logger.info(f"Recibido payload de Telegram")
+        
+        # Ignorar si no es un mensaje normal
+        if 'message' not in data:
+            return {"status": "ignored", "reason": "not a message"}
+        
+        message = data['message']
+        chat_id = str(message.get('chat', {}).get('id', 'unknown'))
+        text = message.get('text', '')
+        
+        if not text:
+            return {"status": "ignored", "reason": "no text in message"}
+            
+        # Extraer URL simple con un regex o usando el texto entero si es solo una URL
+        urls = re.findall(r'(https?://\S+)', text)
+        if not urls:
+            return {"status": "ignored", "reason": "no url found in text"}
+            
+        trace_id = str(uuid.uuid4())
+        
+        # Por simplificar procesamos la primera URL encontrada
+        url = urls[0]
+        
+        # Reutilizamos IngestionRequest
+        ingest_req = IngestionRequest(
+            url=url,
+            tenant_id=f"tg_{chat_id}",
+            source="telegram",
+            trace_id=trace_id
+        )
+        
+        # Llamar localmente al flujo de ingesta
+        result = await ingest_url(ingest_req)
+        return {"status": "processed", "result": result}
+        
+    except Exception as e:
+        logger.error(f"Error procesando webhook de Telegram: {e}")
+        return {"status": "error", "detail": str(e)}
+
+

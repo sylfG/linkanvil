@@ -36,6 +36,24 @@ services:
       - "traefik.http.services.ingestion.loadbalancer.server.port=8000"
 
   # ---------------------------------------------------------------------------
+  # 🕷️ DYNAMIC SCRAPER WORKER
+  #    Consumidor RabbitMQ -> Extractor -> Router AI
+  # ---------------------------------------------------------------------------
+  scraper-worker:
+    build:
+      context: .
+      dockerfile: infra/scraper.Dockerfile
+    container_name: cerebro-scraper
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+    networks:
+      - cerebro-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
   # ---------------------------------------------------------------------------

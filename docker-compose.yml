@@ -47,10 +47,31 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
     networks:
       - cerebro-net
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  outbox-worker:
+    build:
+      context: .
+      dockerfile: infra/scraper.Dockerfile
+    command: ["python", "-m", "src.data.outbox_publisher"]
+    container_name: cerebro-outbox
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+    networks:
+      - cerebro-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------

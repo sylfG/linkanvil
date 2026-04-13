@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Optional
 from src.scraper.strategy import ScraperContext
+from src.data.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ class ScraperWorker:
     """
     Worker encargado de consumir mensajes asíncronamente desde "q.url.ingesta",
     ejecutar la extracción dinámica de la web mediante el Patrón Strategy,
-    y publicar el resultado estructurado hacia el siguiente bloque del pipeline (Ej. LiteLLM Proxy)
+    y publicar el resultado estructurado hacia el siguiente bloque del pipeline o DB.
     """
     def __init__(
             self, 
@@ -28,12 +29,15 @@ class ScraperWorker:
         
         self.connection: Optional[aio_pika.RobustConnection] = None
         self.channel: Optional[aio_pika.RobustChannel] = None
+        self.db = DatabaseManager()
 
     async def connect(self):
         self.connection = await aio_pika.connect_robust(self.rabbit_url)
         self.channel = await self.connection.channel()
         # Prefetch configurado para no ahogar al worker
         await self.channel.set_qos(prefetch_count=10)
+        # Conectar a Base de datos (F-03.1)
+        await self.db.connect()
         
     async def process_message(self, message: aio_pika.IncomingMessage):
         """
@@ -59,24 +63,31 @@ class ScraperWorker:
                 # Ejecutar extraccion
                 raw_html = await scraper_ctx.execute(url=url, source=source)
                 
-                # Preparar para publicar
+                # Preparar para publicar o guardar en BD localmente
                 enrichment = {
                     **body,
                     "raw_content_length": len(raw_html),
                     "status": "extracted",
                 }
+
+                # Extraer la metadata si viene del Proxy IA
+                extracted_data = {}
+                try:
+                    extracted_data = json.loads(raw_html)
+                except Exception:
+                    # En BasicHttpStrategy no devuelve JSON estructurado,
+                    # se adapta basico
+                    extracted_data = {"summary": raw_html[:200], "title": url}
                 
-                # F-02.3 y etc definen los exchanges posteriores (ej. procesamiento LLM)
-                exchange = await self.channel.get_exchange(self.output_exchange)
-                
-                out_msg = aio_pika.Message(
-                    body=json.dumps(enrichment).encode(),
-                    content_type="application/json",
-                    headers={"trace_id": trace_id}
+                # F-03.1 Patrón Outbox transaccional (reemplaza publicacion directa inconsistente)
+                recurso_id = await self.db.save_with_outbox(
+                    tenant_id=tenant_id,
+                    trace_id=trace_id,
+                    extracted_data=extracted_data,
+                    url=url
                 )
                 
-                await exchange.publish(out_msg, routing_key="") # fanout / default
-                logger.info(f"[{trace_id}] Extracción completada para {url}. Longitud: {len(raw_html)}")
+                logger.info(f"[{trace_id}] Extracción DB completada (ID={recurso_id}). Longitud: {len(raw_html)}")
                 
                 await message.ack()
                 
@@ -97,6 +108,8 @@ class ScraperWorker:
     async def close(self):
         if self.connection:
             await self.connection.close()
+        if hasattr(self, 'db'):
+            await self.db.close()
 
 async def run_worker():
     import os

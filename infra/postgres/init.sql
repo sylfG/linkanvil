@@ -124,24 +124,41 @@ ALTER TABLE outbox_eventos ENABLE ROW LEVEL SECURITY;
 -- Política: cada usuario solo ve sus datos
 DROP POLICY IF EXISTS tenant_isolation ON recursos;
 CREATE POLICY tenant_isolation ON recursos
-    USING (tenant_id = current_setting('app.tenant_id', true));
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON sesiones_chat;
 CREATE POLICY tenant_isolation ON sesiones_chat
-    USING (tenant_id = current_setting('app.tenant_id', true));
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON mensajes_chat;
 CREATE POLICY tenant_isolation ON mensajes_chat
-    USING (tenant_id = current_setting('app.tenant_id', true));
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON grafo_relaciones;
+CREATE POLICY tenant_isolation ON grafo_relaciones
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON outbox_eventos;
+CREATE POLICY tenant_isolation ON outbox_eventos
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
 -- Cuenta de servicio (bypass RLS para workers internos)
 DO $$ 
 BEGIN 
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cerebro_service') THEN 
-        CREATE ROLE cerebro_service NOLOGIN; 
+        CREATE ROLE cerebro_service NOLOGIN BYPASSRLS; 
     END IF; 
 END $$;
 ALTER TABLE recursos FORCE ROW LEVEL SECURITY;
+ALTER TABLE sesiones_chat FORCE ROW LEVEL SECURITY;
+ALTER TABLE mensajes_chat FORCE ROW LEVEL SECURITY;
+ALTER TABLE grafo_relaciones FORCE ROW LEVEL SECURITY;
+ALTER TABLE outbox_eventos FORCE ROW LEVEL SECURITY;
 
 -- -----------------------------------------------------------------------------
 -- FUNCIÓN: actualizar updated_at automáticamente

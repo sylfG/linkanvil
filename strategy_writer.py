@@ -1,4 +1,5 @@
-import abc
+with open('src/scraper/strategy.py', 'w', encoding='utf-8') as f:
+    f.write('''import abc
 import logging
 import httpx
 import json
@@ -62,7 +63,7 @@ class AiProxyStrategy(ScraperStrategy):
         schema_json = json.dumps(ScrapedDataSchema.model_json_schema())
         system_prompt = (
             "You are a web scraper analyzer. You MUST output ONLY valid JSON "
-            "that strictly conforms to this schema, with no markdown code blocks:\n"
+            "that strictly conforms to this schema, with no markdown code blocks:\\n"
             + schema_json
         )
 
@@ -118,3 +119,4 @@ class ScraperContext:
     async def execute(self, url: str, source: Optional[str] = None) -> str:
         strategy = self._determine_strategy(url, source)
         return await strategy.extract(url)
+''')

@@ -64,6 +64,10 @@ export default withMermaid(
                         {
                                 'text': '🏗️ Arquitectura',
                                 'link': '/6_arquitectura'
+                        },
+                        {
+                                'text': '⚙️ Instalación y Configuración',
+                                'link': '/8_instalacion_y_configuracion'
                         }
                 ]
         },

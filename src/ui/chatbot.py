@@ -89,7 +89,7 @@ st.session_state.session_id = session_id
 session_key = f"chat_session:{tenant_id}:{session_id}"
 
 st.sidebar.markdown("---")
-view_mode = st.sidebar.radio("Modo / Vista", ["Chatbot RAG", "🚧 Bandeja de Cuarentena"])
+view_mode = st.sidebar.radio("Modo / Vista", ["Chatbot RAG", "🚧 Bandeja de Cuarentena", "📊 Dashboard Administrativo"])
 
 def load_session(key):
     if not r_client: return []
@@ -149,6 +149,26 @@ def search_qdrant(vector: list[float], t_id: str, trace_id: str) -> list[dict]:
         return []
     
     return resp.json().get("result", [])
+
+async def fetch_dashboard_metrics(t_id: str) -> dict:
+    db = DatabaseManager()
+    await db.connect()
+    metrics = {"activo": 0, "cuarentena": 0, "obsoleto": 0, "procesando": 0, "outbox_pending": 0}
+    try:
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT estado, COUNT(*) as count FROM recursos WHERE tenant_id = $1 GROUP BY estado", t_id)
+            for r in rows:
+                metrics[r['estado']] = r['count']
+                
+            outbox_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM outbox_eventos WHERE tenant_id = $1 AND procesado = FALSE", t_id
+            )
+            metrics["outbox_pending"] = outbox_count or 0
+    except Exception as e:
+        logger.error(f"Error fetching dashboard metrics: {e}")
+    finally:
+        await db.close()
+    return metrics
 
 @trace_operation("execute_chat_completion")
 def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
@@ -279,4 +299,42 @@ elif view_mode == "🚧 Bandeja de Cuarentena":
                         st.error("¡Recurso borrado de la base de conocimiento!")
                         # Rerun para refrescar
                         st.rerun()
+
+elif view_mode == "📊 Dashboard Administrativo":
+    st.subheader("📊 Dashboard Administrativo Unificado")
+    st.markdown("Métricas locales y estado general del sistema orientado a eventos (F-04.3).")
+    
+    with st.spinner("Cargando métricas del clúster..."):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            metrics = loop.run_until_complete(fetch_dashboard_metrics(tenant_id))
+            
+            # Sesiones activas desde Redis
+            active_sessions = 0
+            if r_client:
+                try:
+                    keys = r_client.keys(f"chat_session:{tenant_id}:*")
+                    active_sessions = len(keys)
+                except Exception as ex:
+                    logger.error(f"Error contando sesiones Redis: {ex}")
+        except Exception as e:
+            logger.error(e)
+            metrics = {"activo": 0, "cuarentena": 0, "obsoleto": 0, "procesando": 0, "outbox_pending": 0}
+            active_sessions = 0
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric(label="🟢 Recursos Activos", value=metrics.get('activo', 0))
+    col2.metric(label="⚙️ En Procesamiento", value=metrics.get('procesando', 0))
+    
+    # Manejar quarantena y obsoleto
+    q_count = metrics.get('cuarentena', 0) + metrics.get('obsoleto', 0)
+    col3.metric(label="⚠️ Cuarentena/Obsoleto", value=q_count)
+    
+    st.divider()
+    col4, col5 = st.columns(2)
+    col4.metric(label="📬 Eventos Outbox Pendientes", value=metrics.get('outbox_pending', 0))
+    col5.metric(label="💬 Sesiones de Chat Activas", value=active_sessions)
+    
+    st.info("Estas métricas están particionadas mediante políticas de Row-Level Security (RLS), garantizando el aislamiento absoluto del Tenant.")
 

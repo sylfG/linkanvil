@@ -31,9 +31,43 @@ class VaultExporter:
             )
             return [dict(r) for r in rows]
 
+    async def fetch_relations(self, tenant_id: str) -> List[Dict[str, Any]]:
+        if not self.db.pool:
+            await self.db.connect()
+            
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT recurso_origen, recurso_destino, tipo_relacion
+                FROM grafo_relaciones
+                WHERE tenant_id = $1
+                """,
+                tenant_id
+            )
+            return [dict(r) for r in rows]
+
     async def generate_vault_zip(self, tenant_id: str) -> bytes:
         resources = await self.fetch_resources(tenant_id)
+        relations = await self.fetch_relations(tenant_id)
         
+        # Pre-compute filenames for all resources
+        resource_map = {}
+        for res in resources:
+            safe_title = self._sanitize_filename(res.get('titulo', ''))
+            res_id = str(res.get('id', ''))
+            if not safe_title:
+                safe_title = res_id[:8]
+            file_basename = f"{safe_title}_{res_id[:4]}"
+            resource_map[res_id] = file_basename
+
+        # Group relations by origen
+        relations_by_origen = {}
+        for rel in relations:
+            origen = str(rel['recurso_origen'])
+            if origen not in relations_by_origen:
+                relations_by_origen[origen] = []
+            relations_by_origen[origen].append(rel)
+
         mem_zip = io.BytesIO()
         with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
             
@@ -108,8 +142,35 @@ class VaultExporter:
                     f"**Etiquetas:** {tag_str}\n\n"
                     f"## Resumen Analítico\n"
                     f"{res.get('resumen', '')}\n\n"
-                    f"*(Raw data at `raw/{file_basename}.txt`)*\n"
                 )
+
+                # Add relations / Links for Obsidian
+                rels = relations_by_origen.get(res_id, [])
+                if rels:
+                    wiki_content += "## Relaciones\n"
+                    for rel in rels:
+                        t = rel.get('tipo_relacion', 'ASOCIACION_GENERAL')
+                        dest_id = str(rel.get('recurso_destino', ''))
+                        if dest_id in resource_map:
+                            dest_name = resource_map[dest_id]
+                            # Translating relations to markdown
+                            # Markdown logic for F-07.2
+                            if t == "CONTRADICE":
+                                wiki_content += f"> [!warning] Contradice a: [[{dest_name}]]\n"
+                            elif t == "VUELVE_OBSOLETO":
+                                wiki_content += f"> [!important] Vuelve obsoleto a: [[{dest_name}]]\n"
+                            elif t == "OBSOLECIDO_POR":
+                                wiki_content += f"> [!error] Obsoleto por: [[{dest_name}]]\n"
+                            elif t == "EXTIENDE":
+                                wiki_content += f"> [!info] Extiende a: [[{dest_name}]]\n"
+                            elif t == "ES_UN":
+                                wiki_content += f"> [!info] Es un tipo de: [[{dest_name}]]\n"
+                            else:
+                                wiki_content += f"- Relacionado con: [[{dest_name}]]\n"
+                    
+                    wiki_content += "\n"
+
+                wiki_content += f"*(Raw data at `raw/{file_basename}.txt`)*\n"
                 
                 zf.writestr(f"wiki/{dest_folder}/{file_basename}.md", wiki_content)
 

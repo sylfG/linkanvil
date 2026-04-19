@@ -1,8 +1,10 @@
 import os
 import uuid
+import json
 import streamlit as st
 import httpx
 import logging
+import redis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -10,6 +12,20 @@ logger = logging.getLogger(__name__)
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
 LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-cerebro-master-key-CHANGE_ME")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+REDIS_TTL = int(os.getenv("REDIS_TTL", "3600"))
+
+@st.cache_resource
+def get_redis_client():
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+
+try:
+    r_client = get_redis_client()
+except Exception as e:
+    logger.error(f"Redis initialization failed: {e}")
+    r_client = None
 
 st.set_page_config(page_title="RAG Chatbot - Cerebro", page_icon="🧠", layout="centered")
 
@@ -17,9 +33,31 @@ st.title("🧠 Cerebro - Chatbot RAG Multi-Tenant")
 st.markdown("Interactúa con tus documentos sincronizados en tiempo real.")
 
 tenant_id = st.sidebar.selectbox("Seleccionar Tenant", ["tenant_A", "tenant_B"], index=0)
+session_id = st.sidebar.text_input("ID de Sesión (Persistencia Redis)", value=st.session_state.get("session_id", str(uuid.uuid4())[:8]))
+st.session_state.session_id = session_id
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+session_key = f"chat_session:{tenant_id}:{session_id}"
+
+def load_session(key):
+    if not r_client: return []
+    try:
+        data = r_client.get(key)
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.error(f"Error cargando sesión de Redis: {e}")
+    return []
+
+def save_session(key, messages):
+    if not r_client: return
+    try:
+        r_client.setex(key, REDIS_TTL, json.dumps(messages))
+    except Exception as e:
+        logger.error(f"Error guardando sesión en Redis: {e}")
+
+if "messages" not in st.session_state or st.session_state.get("current_session_key") != session_key:
+    st.session_state.messages = load_session(session_key)
+    st.session_state.current_session_key = session_key
 
 # Configurar headers
 llm_headers = {
@@ -85,6 +123,8 @@ if user_input := st.chat_input("Escribe tu pregunta..."):
     logger.info(f"[{trace_id}] Nuevo mensaje: {user_input}")
     
     st.session_state.messages.append({"role": "user", "content": user_input})
+    save_session(session_key, st.session_state.messages)
+    
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -132,6 +172,7 @@ if user_input := st.chat_input("Escribe tu pregunta..."):
                         st.markdown(context_str)
                         
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
+                save_session(session_key, st.session_state.messages)
 
             except httpx.HTTPStatusError as e:
                 err_msg = f"Error en pasarela (Posible Fallback fallido o Caída): {e}"

@@ -4,6 +4,7 @@ import uuid
 import re
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
 from src.ingestion.publisher import RabbitMQPublisher
@@ -15,6 +16,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Ingestion API", description="Omnichannel Ingestion with Rate Limiter (via Traefik) and RedisBloom")
+
+# CORS middleware para soportar extensiones de navegador (F-01.4)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Permitir inyecciones desde cualquier origen (browser extension context)
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 # Global instances
 redis_client: Optional[redis.Redis] = None
@@ -177,6 +187,69 @@ async def telegram_webhook(request: Request):
         
     except Exception as e:
         logger.error(f"Error procesando webhook de Telegram: {e}")
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/webhook/external")
+@trace_operation("external_webhook")
+async def external_webhook(request: Request, tenant_id: str = "default_ext"):
+    """
+    Webhook genérico para plataformas externas (Zapier, Make, Slack, Chrome Extension etc).
+    Busca URLs en el cuerpo en formato JSON o form-data, intentando buscar campos comunes.
+    (F-01.4 Soporte Captura Webhooks Externos y Navegador)
+    """
+    try:
+        data = await request.json()
+        logger.info("Recibido payload de webhook externo")
+        
+        # Buscar campo "url", "text", "content" o serializar a JSON
+        text_content = ""
+        if isinstance(data, dict):
+            url_direct = data.get("url") or data.get("link")
+            if url_direct:
+                text_content = url_direct
+            else:
+                text_content = " ".join([str(v) for v in data.values() if isinstance(v, (str, list))])
+        else:
+            text_content = str(data)
+            
+        # Extraer URLs
+        urls = re.findall(r'(https?://[^\s\"\'<>]+)', text_content)
+        if not urls:
+            return {"status": "ignored", "reason": "no url found in generic payload"}
+            
+        trace_id = str(uuid.uuid4())
+        results = []
+        
+        # Ingestamos las URLs encontradas
+        for url in urls[:5]: # Mítico rate limit por payload
+            ingest_req = IngestionRequest(
+                url=url,
+                tenant_id=tenant_id,
+                source="external_webhook",
+                trace_id=trace_id
+            )
+            r = await ingest_url(ingest_req)
+            if hasattr(r, 'model_dump'):
+                r = r.model_dump()
+            results.append(r)
+            
+        return {"status": "processed", "results": results}
+        
+    except httpx.HTTPStatusError as fallback_err:
+        logger.error(f"Falla de pasarela: {fallback_err}")
+        return {"status": "error", "detail": str(fallback_err)}
+    except Exception as e:
+        logger.error(f"Error procesando webhook externo: {e}")
+        # Notificar fallo y/o derivar a DLQ como establece Edge Case
+        try:
+            if rabbit_publisher:
+                await rabbit_publisher.publish_ingestion_message(
+                    queue_name=RABBIT_DLQ,
+                    payload={"error": str(e), "source": "external_webhook"},
+                    trace_id="webhook-error"
+                )
+        except Exception as dlq_e:
+            pass
         return {"status": "error", "detail": str(e)}
 
 

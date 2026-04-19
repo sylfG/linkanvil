@@ -31,6 +31,7 @@ graph TD
             Redis["⚡ Redis (Caché & Sesiones)"]:::storage
             Postgres["🗄️ PostgreSQL (Outbox+Relacional)"]:::storage
             Qdrant["🧠 Qdrant (Base Vectorial)"]:::storage
+            Exportador_LLMWiki["🗂️ Exportador a Bóveda Local (LLM Wiki)"]:::storage
         end
         
         subgraph Observabilidad
@@ -55,6 +56,8 @@ graph TD
     n8n -.->|"Guarda/Lee Estado"| Postgres
     n8n -.->|"Llama a IA"| LiteLLM
     n8n -.->|"Búsqueda Vectorial"| Qdrant
+    Postgres -->|"Exportación ZIP Estructurada"| Exportador_LLMWiki
+    Exportador_LLMWiki -.->|"Bóveda para Obsidian/Cursor"| User
     
     %% Conexiones desde LiteLLM
     LiteLLM -.->|"Caché de Prompts"| Redis
@@ -175,3 +178,20 @@ sequenceDiagram
 *   **Volúmenes Docker:** Se aplican Docker Volumes estándar manejados localmente. Los datos clave de Prometheus, PostgreSQL, Qdrant y Redis garantizan durabilidad incluso tras demoler y relanzar contenedores (`docker compose down && docker compose up -d`).
 *   **Permisología Multi-tenant:** Una consulta originada para el entorno X es adjuntada internamente con el `tenant_id` que filtra filas de SQL y sub-índices (payloads) de vectores Qdrant; un pilar innegociable *Security by Design*.
 *   **Healthchecks Proactivos:** En el `docker-compose.yml`, los *healthchecks* evalúan internamente la conectividad real y dependencias. `LiteLLM` no iniciará procesamiento si PostgreSQL o Redis no están operacionales (mecanismo `depends_on: condition: service_healthy`).
+
+### 4.1 Patrón de Persistencia Dual: Cerebro Lógico vs Semántico
+
+La arquitectura de Masteria utiliza intencionalmente dos sistemas de bases de datos especializados en lugar de uno solo. Esta separación (PostgreSQL + Qdrant) constituye el núcleo del sistema RAG avanzado:
+
+*   **PostgreSQL (El Cerebro Lógico y Transaccional):** Actúa como la única fuente de verdad estructurada. Gestiona textos fuente (*raw data*), metadatos exactos, historial inmutable y relaciones directas. Garantiza la seguridad matemática mediante *Row-Level Security (RLS)* aislándolos por `tenant_id` y asegura la integridad de los eventos asíncronos mediante el patrón *Outbox*. Su poder radica en la precisión (ACID) y rigidez transaccional.
+*   **Qdrant (El Cerebro Semántico e Intuitivo):** Actúa como la capa asociativa. Exclusivamente almacena los vectores matemáticos de alta dimensionalidad (*embeddings*) unidos al `tenant_id` y un ID del registro que apunta a la base de datos principal. Su única labor es ejecutar búsquedas de similitud (HNSW y Similitud del coseno) en milisegundos, encontrando datos "afines en significado" auque no compartan palabras coincidentes exactas.
+
+Esta filosofía de **Doble Cerebro** permite aprovechar la intuición difusa de la Inteligencia Artificial (Qdrant) mientras se resguarda bajo la seguridad, coste-eficiencia y transaccionalidad de un motor relacional en frío (Postgres), protegiendo al sistema de escalar incorrectamente.
+
+### 4.2. Exportacin Fsica a Gemelo Digital (Offline-First)
+Un mecanismo on-demand extrae los datos aislados por tenant_id en PostgreSQL/Qdrant, recompila los grafos lógicos como _callouts_ de Markdown (`> [!info] Relacionado con [[Topic]]`) y transmite un `.zip` conformando un LLM Wiki.
+
+**Seguridad de Exportación en RAM (Zero-Disk Storage)**:
+> Esta operación es altamente segura dado que **todo el motor de empaquetado y archivos `.md` se ejecutan exclusivamente en Memoria RAM**. El sistema transfiere un bloque bytes al backend UI de forma nativa sin abrir, escribir, generar ni retener estructuras temporales `.zip` en el disco local del servidor, salvaguardando por completo el aislamiento del tenant y el multi-arrendamiento seguro (RLS de extremo a extremo).
+
+Esto garantiza que la plataforma es solo un motor de procesamiento transitivo, no un calabozo de datos (Vendor-Lock In).

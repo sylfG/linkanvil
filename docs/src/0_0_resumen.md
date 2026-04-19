@@ -29,7 +29,7 @@ Tabla Outbox y Grafo Relacional: Guarda temporalmente el estado y metadatos en u
 
 Base Vectorial (Clustering Asíncrono, Versionado y Aisaldo): Microservicios calculan en background el embedding inyectando el `tenant_id` y su `embedding_version` preventiva (Lazy Migration). Crucialmente, apenas guardan una idea inédita, buscan vectores hiper-compatibles inmediatos (Similitud del Coseno > 0.92). Si los hallan, cruzan esa asociación en la base relacional. Destruye los silos de información aislados: dos ideas en meses distintos colisionan en conocimiento útil autodescubierto, fomentando *Insights* y serendipias genuinas de altísimo valor cognitivo para el usuario.
 
-Backup y Exportación (Adiós a Terceros): En lugar de acoplar la arquitectura a APIs pesadas e inestables (Notion/Obsidian) y afrontar problemas de latencia e inconsistencias, el Cerebro opera como producto autónomo (Standalone). Solo ofrece un mecanismo de exportación de respaldo en formato Markdown tradicional bajo mandato explícito del usuario.
+Backup y Exportación Offline-First (El Patrón "LLM Wiki"): En lugar de acoplar la arquitectura a APIs síncronas pesadas (Notion/Evernote), el Cerebro es el Maestro de la Verdad. Sin embargo, su mecanismo de exportación emite un "Gemelo Digital" hiperestructurado (Carpetas `raw/`, `wiki/entities/`, etc.) preparado como una bóveda nativa para Obsidian o agentes locales (Claude Code, Cursor). El backend traduce mágicamente sus colisiones de grafos SQL a etiquetas bidireccionales `[[Entidad]]` y provee esquemas YAML nativos (`CLAUDE.md`), logrando interconectividad gráfica (Obsidian Graph View) masiva 100% desconectada de internet si el usuario lo requiere. Es **fundamental** destacar que este proceso de exportación se realiza **íntegramente en memoria RAM** (usando `io.BytesIO`). En ningún momento se escriben archivos crudos ni archiveros ZIP temporales en el disco del servidor, garantizando seguridad absoluta, evitando sobrecargas de I/O y eliminando cualquier riesgo de fuga de información o colisión entre datos de múltiples Tenants.
 
 D. Agente de Mantenimiento Eficiente (El Curador Nocturno)
 Un proceso en segundo plano reescrito bajo el concepto de Curación Híbrida para contener costes astronómicos de procesamiento IA con tamaño de O(N):
@@ -38,7 +38,7 @@ Auditoría Temporal Relacional (Casi Gratuita): En lugar de pasar gigabytes de t
 
 Auditoría IA Bajo Demanda: La IA actúa de forma proactiva como "juez" de obsolescencia tecnológica (o contenido desfasado) solo cuando el usuario lo ordena de forma manual para un tema concreto (auditoría en profundidad).
 
-Bandeja de Cuarentena: Nada se borra automáticamente; el sistema preclasifica y acumula de forma rentable la basura digital (enlaces rotos y expirados) en una bandeja de "Revisión/Caducado" para decisión final rápida.
+Bandeja de Cuarentena (Decaimiento de Conceptos): Nada se borra automáticamente; el sistema preclasifica y acumula de forma rentable la basura digital en una bandeja de "Caducados" o los mueve a colecciones tipo `wiki/archived` permitiendo que el conocimiento fugaz desaparezca progresivamente sin afectar el cerebro base.
 
 E. Interfaz, Memoria Centralizada y Chatbot (El Asistente Personal)
 La capa de interacción, soportada por un gestor de caché ultrarrápido (Redis) para inyectar hilos conversacionales masivos de inmediato:

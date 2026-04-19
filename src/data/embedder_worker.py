@@ -82,7 +82,62 @@ class EmbedderWorker:
             resp = await client.put(f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true", json=points_payload)
             resp.raise_for_status()
 
-    async def _compute_semantic_collisions(self, recurso_id: str, tenant_id: str, vector: list[float], trace_id: str):
+    async def _classify_collision_type(self, trace_id: str, tenant_id: str, new_info: dict, old_id: str) -> str:
+        # Fetch the old document info from the DB
+        if not self.db.pool:
+            await self.db.connect()
+            
+        async with self.db.pool.acquire() as conn:
+            old_row = await conn.fetchrow(
+                "SELECT titulo, resumen FROM recursos WHERE id = $1::uuid AND tenant_id = $2",
+                old_id, tenant_id
+            )
+            
+        if not old_row:
+            return "ASOCIACION_GENERAL"
+            
+        old_info = {"title": old_row["titulo"], "summary": old_row["resumen"]}
+        
+        prompt = f"""
+        Como un evaluador experto, compara el nuevo documento con el antiguo.
+        Documento Nuevo (ID Reciente):
+        Título: {new_info.get('title', '')}
+        Resumen: {new_info.get('summary', '')}
+        
+        Documento Antiguo (ID Existente):
+        Título: {old_info.get('title', '')}
+        Resumen: {old_info.get('summary', '')}
+        
+        Tipifica la relación como UNA ÚNICA PALABRA: 'ES_UN', 'CONTRADICE', 'EXTIENDE', 'VUELVE_OBSOLETO' o 'ASOCIACION_GENERAL'.
+        """
+        
+        headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "cerebro-llm",  # Ajusta al modelo que uses para chat, o el que esté ruteado por litellm
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "max_tokens": 10
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Usa un puerto de chat (generalmente el mismo que /v1/chat/completions)
+                url_chat = LITELLM_URL.replace("/embeddings", "/chat/completions")
+                resp = await client.post(url_chat, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                tipo = data["choices"][0]["message"]["content"].strip().upper()
+                
+                # Normalize output
+                for t in ["VUELVE_OBSOLETO", "CONTRADICE", "EXTIENDE", "ES_UN"]:
+                    if t in tipo:
+                        return t
+                return "ASOCIACION_GENERAL"
+        except Exception as e:
+            logger.warning(f"[{trace_id}] Fallo de IA en tipificación (fallback): {e}")
+            return "ASOCIACION_GENERAL"
+
+    async def _compute_semantic_collisions(self, recurso_id: str, tenant_id: str, vector: list[float], extracted_info: dict, trace_id: str):
         payload = {
             "vector": vector,
             "filter": {
@@ -102,10 +157,19 @@ class EmbedderWorker:
                 return
             results = resp.json().get("result", [])
             
-        collisions = [
-            {"recurso_destino": r["id"], "similitud": r["score"]}
-            for r in results if r["id"] != recurso_id
-        ]
+        collisions = []
+        for r in results:
+            if r["id"] == recurso_id:
+                continue
+            
+            # Clasificación Tipada!
+            tipo_relacion = await self._classify_collision_type(trace_id, tenant_id, extracted_info, r["id"])
+            
+            collisions.append({
+                "recurso_destino": r["id"], 
+                "similitud": r["score"],
+                "tipo_relacion": tipo_relacion
+            })
         
         if not collisions:
             logger.info(f"[{trace_id}] Sin colisiones semánticas > 0.92 para {recurso_id}")
@@ -144,7 +208,7 @@ class EmbedderWorker:
                 logger.info(f"[{trace_id}] Vector inyectado exitosamente en Qdrant. Aislado a tenant_id: {tenant_id}")
                 
                 # 3. Colisionador Semántico (F-03.3)
-                await self._compute_semantic_collisions(recurso_id, tenant_id, vector, trace_id)
+                await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
                 logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
                 
             except Exception as e:

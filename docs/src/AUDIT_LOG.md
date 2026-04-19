@@ -5,43 +5,55 @@
 | Fecha | Fase | Skill Usada | Archivos Generados | Estado |
 | --- | --- | --- | --- | --- |
 
-## 2026-04-09 18:08 — Fase 1 completada
+## 2026-04-09 18:08 ï¿½ Fase 1 completada
+
 - **Skill usada**: Business Analyst
-- **Acción**: Extracción y priorización de iniciativas desde el bloque técnico y funcional brutales.
+- **AcciÃ³n**: ExtrAcciÃ³n y priorizaciï¿½n de iniciativas desde el bloque tï¿½cnico y funcional brutales.
 - **Archivos generados**:
   - docs/src/1_epics_and_features.md
 
+## 2026-04-09 18:09 ï¿½ Fase 2 completada
 
-## 2026-04-09 18:09 — Fase 2 completada
 - **Skill usada**: System Architect
-- **Acción**: Definición de Requisitos No Funcionales (NFRs) y ejecución de análisis de riesgos STRIDE basado en arquitectura orientada a eventos.
+- **AcciÃ³n**: Definiciï¿½n de Requisitos No Funcionales (NFRs) y ejecuciï¿½n de anï¿½lisis de riesgos STRIDE basado en arquitectura orientada a eventos.
 - **Archivos generados**:
   - docs/src/2_architecture_risks.md
 
+## 2026-04-09 18:12 ï¿½ Fase 3 completada
 
-## 2026-04-09 18:12 — Fase 3 completada
 - **Skill usada**: Business Analyst
-- **Acción**: Generación de Backlog individual por Feature aplicando principios MoSCoW, categorías universales y relacionando dependencias para la arquitectura Event-Driven del Segundo Cerebro.
+- **AcciÃ³n**: Generaciï¿½n de Backlog individual por Feature aplicando principios MoSCoW, categorï¿½as universales y relacionando dependencias para la arquitectura Event-Driven del Segundo Cerebro.
 - **Archivos generados**:
   - 32 archivos en docs/src/backlog/ correspondientes a cada una de las 32 features validadas.
 
+## 2026-04-09 18:15 ï¿½ Fase 4 completada
 
-## 2026-04-09 18:15 — Fase 4 completada
 - **Skill usada**: System Architect
-- **Acción**: Generación de Documentación Visual con Diagramas C4 y Secuencias Mermaid, basados en el diseño de arquitectura y el backlog en 2_architecture_risks.md y 1_epics_and_features.md.
+- **AcciÃ³n**: Generaciï¿½n de Documentaciï¿½n Visual con Diagramas C4 y Secuencias Mermaid, basados en el diseï¿½o de arquitectura y el backlog en 2_architecture_risks.md y 1_epics_and_features.md.
 - **Archivos generados**:
   - docs/src/3_c4_diagrams.md
 
+## 2026-04-09 18:17 ï¿½ Fase 5 completada
 
-## 2026-04-09 18:17 — Fase 5 completada
 - **Skill usada**: Business Analyst + System Architect
-- **Acción**: Generación y Agrupación visual mediante categorias para el Sidebar de Vitepress y el documento maestro Index.
+- **AcciÃ³n**: Generaciï¿½n y Agrupaciï¿½n visual mediante categorias para el Sidebar de Vitepress y el documento maestro Index.
 - **Archivos generados**:
   - docs/.vitepress/config.mts
   - docs/src/index.md
 
+## 2026-04-09 18:20 ï¿½ Fase 6 completada
 
-## 2026-04-09 18:20 — Fase 6 completada
-- **Acción**: Lanzamiento de script de publicación de backlogs a GitHub (Fase 6).
+- **AcciÃ³n**: Lanzamiento de script de publicaciï¿½n de backlogs a GitHub (Fase 6).
 - **Nota**: El usuario debe ejecutarlo en un entorno con bash y \gh\ (GitHub CLI) instalados o configurados adecuadamente.
 
+| 2026-04-19 | ActualizaciÃ³n general de la arquitectura para documentar integraciones de Exportador LLM Wiki (Obsidian) | Asistente IA | Usuario |
+
+## 2026-04-19 â€” ExplicaciÃ³n de Doble Base de Datos
+
+- **Skill usada**: System Architect
+- **AcciÃ³n**: RefactorizaciÃ³n de Arquitectura: InclusiÃ³n de la explicaciÃ³n detallada sobre el PatrÃ³n de Persistencia Dual (Postgres como Cerebro LÃ³gico vs Qdrant como Cerebro SemÃ¡ntico).
+- **Archivos modificados**:
+  - `docs/src/6_arquitectura.md`
+  - `docs/src/5_resumen_servicios.md`
+  - `docs/src/backlog/F-00.4...md`
+  - `docs/src/backlog/F-00.6...md`

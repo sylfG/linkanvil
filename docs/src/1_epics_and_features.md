@@ -95,13 +95,24 @@
 
 ---
 
+## EPIC-07: Gemelo Digital Offline y Ecosistema Local LLM Wiki
+> Bóveda auto-contenida offline (Exportador) orquestada como un LLM Wiki nativo (Obsidian/Cursor) con grafos bidireccionales y hot cache cognitiva. Todo el proceso sucede íntegramente en memoria RAM y nunca se almacena en disco para total privacidad por Tenant.
+
+| Feature ID | Feature | Prioridad MoSCoW |
+| --- | --- | --- |
+| F-07.1 | Exportación Estructurada de Bóveda Offline (Formato LLM Wiki: raw/, wiki/, CLAUDE.md) | SHOULD |
+| F-07.2 | Traducción Recursiva de Aristas (relaciones validadas SQL/Vector) a Enlaces Nativos (Obsidian `[[ ]]`) | SHOULD |
+| F-07.3 | Generador de Caché Caliente Dinámica (`hot.md`) para sincronización del Sliding Window conversacional | COULD |
+
+---
+
 ## Resumen de Prioridades
 
 | Prioridad | Cantidad de Features |
 | --- | --- |
 | MUST | 23 |
-| SHOULD | 6 |
-| COULD | 3 |
+| SHOULD | 8 |
+| COULD | 4 |
 | WON'T | 0 |
 # 📋 Épicas y Features — [NOMBRE DEL PROYECTO]
 

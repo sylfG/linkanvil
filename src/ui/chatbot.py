@@ -10,9 +10,13 @@ import redis
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.db import DatabaseManager
+from telemetry import configure_telemetry, trace_operation
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Configuramos telemetria para la UI
+configure_telemetry("cerebro-ui")
 
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
 LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-cerebro-master-key-CHANGE_ME")
@@ -137,7 +141,7 @@ def search_qdrant(vector: list[float], t_id: str, trace_id: str) -> list[dict]:
     logger.info(f"[{trace_id}] Buscando en Qdrant para tenant {t_id}")
     
     # Qdrant is open on port 6333, no auth configured in this project
-    resp = httpx.post(f"{QDRANT_URL}/collections/cerebro_recursos/points/search", json=search_payload, timeout=10.0)
+    resp = httpx.post(f"{QDRANT_URL}/collections/cerebro_recursos/points/search", json=search_payload, timeout=10.0, headers={"traceparent": trace_id})
     try:
         resp.raise_for_status()
     except Exception as e:
@@ -146,6 +150,7 @@ def search_qdrant(vector: list[float], t_id: str, trace_id: str) -> list[dict]:
     
     return resp.json().get("result", [])
 
+@trace_operation("execute_chat_completion")
 def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
     payload = {
         "model": "cerebro-gpt",
@@ -154,7 +159,10 @@ def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
         "max_tokens": 1000
     }
     logger.info(f"[{trace_id}] LLM Call")
-    response = httpx.post(f"{LITELLM_URL}/v1/chat/completions", headers=llm_headers, json=payload, timeout=60.0)
+    # Propagar el trace header hacia litellm
+    req_headers = llm_headers.copy()
+    req_headers["traceparent"] = trace_id
+    response = httpx.post(f"{LITELLM_URL}/v1/chat/completions", headers=req_headers, json=payload, timeout=60.0)
     
     if response.status_code != 200:
         logger.error(f"LLM Error: {response.text}")

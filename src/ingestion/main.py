@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
 from src.ingestion.publisher import RabbitMQPublisher
+from src.telemetry import configure_telemetry, trace_operation
 import redis
 
 # Logging format that captures logic visually
@@ -46,6 +47,9 @@ async def startup_event():
     global redis_client, deduplicator, rabbit_publisher
     logger.info("Iniciando Ingestion API, conectando a servicios dependientes...")
 
+    # Activar OpenTelemetry unificado
+    configure_telemetry("ingestion-api")
+
     # Conectar Redis
     try:
         redis_client = redis.Redis(
@@ -77,6 +81,7 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.post("/ingest", response_model=IngestionResponse)
+@trace_operation("ingest_url")
 async def ingest_url(request: IngestionRequest):
     """
     Endpoint principal.

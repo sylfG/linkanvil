@@ -96,7 +96,7 @@
 ---
 
 ## EPIC-07: Gemelo Digital Offline y Ecosistema Local LLM Wiki
-> Bóveda auto-contenida offline (Exportador) orquestada como un LLM Wiki nativo (Obsidian/Cursor) con grafos bidireccionales y hot cache cognitiva.
+> Bóveda auto-contenida offline (Exportador) orquestada como un LLM Wiki nativo (Obsidian/Cursor) con grafos bidireccionales y hot cache cognitiva. Todo el proceso sucede íntegramente en memoria RAM y nunca se almacena en disco para total privacidad por Tenant.
 
 | Feature ID | Feature | Prioridad MoSCoW |
 | --- | --- | --- |

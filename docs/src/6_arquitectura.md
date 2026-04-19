@@ -189,4 +189,9 @@ La arquitectura de Masteria utiliza intencionalmente dos sistemas de bases de da
 Esta filosofía de **Doble Cerebro** permite aprovechar la intuición difusa de la Inteligencia Artificial (Qdrant) mientras se resguarda bajo la seguridad, coste-eficiencia y transaccionalidad de un motor relacional en frío (Postgres), protegiendo al sistema de escalar incorrectamente.
 
 ### 4.2. Exportacin Fsica a Gemelo Digital (Offline-First)
-Un mecanismo on-demand extrae los datos aislados por \	enant_id\ en PostgreSQL/Qdrant, recompila los grafos l�gicos como _callouts_ de Markdown (\> [!info] Relacionado con [[Topic]]\) y entrega un \.zip\ conformando un LLM Wiki. Esto garantiza que la plataforma es solo un motor de procesamiento transitivo, no un calabozo de datos (Vendor-Lock In).
+Un mecanismo on-demand extrae los datos aislados por tenant_id en PostgreSQL/Qdrant, recompila los grafos lógicos como _callouts_ de Markdown (`> [!info] Relacionado con [[Topic]]`) y transmite un `.zip` conformando un LLM Wiki.
+
+**Seguridad de Exportación en RAM (Zero-Disk Storage)**:
+> Esta operación es altamente segura dado que **todo el motor de empaquetado y archivos `.md` se ejecutan exclusivamente en Memoria RAM**. El sistema transfiere un bloque bytes al backend UI de forma nativa sin abrir, escribir, generar ni retener estructuras temporales `.zip` en el disco local del servidor, salvaguardando por completo el aislamiento del tenant y el multi-arrendamiento seguro (RLS de extremo a extremo).
+
+Esto garantiza que la plataforma es solo un motor de procesamiento transitivo, no un calabozo de datos (Vendor-Lock In).

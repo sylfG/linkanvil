@@ -115,8 +115,8 @@ sequenceDiagram
 ```
 ---
 
-## Diagrama de Flujo: Exportación de Bóveda Obsidian (Vault.zip)
-> Detalle del proceso de exportación estructurada en formato ZIP con enlaces bidireccionales y caché dinámico (hot.md).
+## Diagrama de Flujo: Exportaciï¿½n de Bï¿½veda Obsidian (Vault.zip)
+> Detalle del proceso de exportaciï¿½n estructurada en formato ZIP con enlaces bidireccionales y cachï¿½ dinï¿½mico (hot.md).
 
 `mermaid
 sequenceDiagram
@@ -128,15 +128,15 @@ sequenceDiagram
     participant Mem as Memoria (ZIP)
     
     Usuario->>Traefik: GET /export/vault
-    Traefik->>Exporter: Inicia generación
+    Traefik->>Exporter: Inicia generaciï¿½n
     
     Exporter->>PG: Extrae Nodos, Aristas e Historial
     PG-->>Exporter: SQL Relacional (filtrado por tenant_id)
     
     Exporter->>Mem: Escribe raw/ y CLAUDE.md
-    Exporter->>Mem: Escribe wiki/hot.md (Caché RAG)
+    Exporter->>Mem: Escribe wiki/hot.md (Cachï¿½ RAG)
     
-    loop Translación de Grafo
+    loop Translaciï¿½n de Grafo
         Exporter->>Exporter: Convierte aristas en enlaces [[Obsidian]]
         Exporter->>Mem: Escribe notas en wiki/
     end
@@ -151,6 +151,6 @@ Add-Content -Path "docs/src/2_architecture_risks.md" -Value @"
 ---
 
 ## 4. ADR-004: Offline-First LLM Wiki Export (Markdown/Obsidian)
-**Contexto**: El usuario necesita acceso a su base de conocimiento incluso si la infraestructura Docker está apagada.
-**Decisión**: Un motor de exportación que traduce la base relacional/vectorial a archivos Markdown anidados (\aw/\, \wiki/\) compatibles nativamente con Obsidian, rellenando los YAML Frontmatter con el rastro del LLM y traduciendo aristas a enlaces \[[bidireccionales]]\.
-**Consecuencias**: Permite control soberano total de la información (Cero Vendor-Lock In) pero requiere tareas periódicas de exportación delta para actualizar la bóveda.
+**Contexto**: El usuario necesita acceso a su base de conocimiento incluso si la infraestructura Docker estï¿½ apagada.
+**DecisiÃ³n**: Un motor de exportaciÃ³n dinÃ¡mico y seguro que traduce la base relacional/vectorial a archivos Markdown anidados (`raw/`, `wiki/`) compatibles nativamente con Obsidian, rellenando los YAML Frontmatter con el rastro del LLM y traduciendo aristas a enlaces `[[bidireccionales]]`. Todo el empaquetado del archivo `.zip` se realiza **completamente en memoria RAM** y se envÃ­a en streaming directo (on-the-fly) al navegador del usuario. No se crea ningÃºn estado intermedio, carpeta temporal, ni archivo remanente en el almacenamiento de disco de nuestro servidor maestro, sellando completamente la privacidad multi-tenant.
+**Consecuencias**: Permite control soberano total de la informaciï¿½n (Cero Vendor-Lock In) pero requiere tareas periï¿½dicas de exportaciï¿½n delta para actualizar la bï¿½veda.

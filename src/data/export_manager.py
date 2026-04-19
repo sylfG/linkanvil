@@ -46,9 +46,43 @@ class VaultExporter:
             )
             return [dict(r) for r in rows]
 
+    async def fetch_chat_contexts(self, tenant_id: str) -> List[Dict[str, Any]]:
+        if not self.db.pool:
+            await self.db.connect()
+            
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, titulo, contexto_comprimido, ultimo_acceso
+                FROM sesiones_chat
+                WHERE tenant_id = $1
+                ORDER BY ultimo_acceso DESC
+                """,
+                tenant_id
+            )
+            return [dict(r) for r in rows]
+
+    async def fetch_audit_logs(self, tenant_id: str) -> List[Dict[str, Any]]:
+        if not self.db.pool:
+            await self.db.connect()
+            
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT creado_en, agregado_tipo, agregado_id, evento_tipo, procesado
+                FROM outbox_eventos
+                WHERE tenant_id = $1
+                ORDER BY creado_en ASC
+                """,
+                tenant_id
+            )
+            return [dict(r) for r in rows]
+
     async def generate_vault_zip(self, tenant_id: str) -> bytes:
         resources = await self.fetch_resources(tenant_id)
         relations = await self.fetch_relations(tenant_id)
+        sessions = await self.fetch_chat_contexts(tenant_id)
+        audits = await self.fetch_audit_logs(tenant_id)
         
         # Pre-compute filenames for all resources
         resource_map = {}
@@ -81,11 +115,33 @@ class VaultExporter:
                 "# Reglas del Agente Local\n"
                 "1. No modifiques la carpeta `raw/` directamente.\n"
                 "2. Explora `wiki/` para ver los conceptos compilados.\n"
+                "3. Lee `wiki/hot.md` para entender el contexto anterior inmediato.\n"
             )
             zf.writestr("CLAUDE.md", claude_rules)
             
-            # log.md
-            zf.writestr("log.md", f"# Export Log\n\n- Fecha: {datetime.now(timezone.utc).isoformat()}\n- Recursos: {len(resources)}\n")
+            # log.md (historical events)
+            log_md = f"# Export Log & Audit Timeline\n\n- Fecha de Exportación: {datetime.now(timezone.utc).isoformat()}\n- Recursos Totales: {len(resources)}\n\n## Timeline de Eventos\n\n"
+            for audit in audits:
+                date_str = audit.get('creado_en', '').isoformat() if hasattr(audit.get('creado_en', ''), 'isoformat') else str(audit.get('creado_en', ''))
+                ev_type = audit.get('evento_tipo', 'unknown')
+                ag_type = audit.get('agregado_tipo', '')
+                ag_id = str(audit.get('agregado_id', ''))
+                status = "Procesado" if audit.get('procesado') else "Pendiente"
+                log_md += f"1. **[{date_str}]** `{ev_type}` sobre `{ag_type}` ({ag_id}) - *{status}*\n"
+            zf.writestr("wiki/log.md", log_md)
+            
+            # hot.md (hot cache for AI)
+            hot_md = "# Caché Caliente Dinámica (Hot Cache)\n\n"
+            hot_md += "> Contexto de conversaciones y sesiones recientes extraídas vía Sliding Window API. Útil para reanudar el estado mental del LLM local.\n\n"
+            for sess in sessions:
+                s_title = sess.get('titulo') or 'Sesión sin título'
+                s_date = sess.get('ultimo_acceso', '').isoformat() if hasattr(sess.get('ultimo_acceso', ''), 'isoformat') else str(sess.get('ultimo_acceso', ''))
+                s_ctx = sess.get('contexto_comprimido') or '*(Sin contexto disponible)*'
+                hot_md += f"## {s_title}\n"
+                hot_md += f"**Último acceso:** {s_date}\n\n"
+                hot_md += f"### Contexto Comprimido (Sliding Window)\n"
+                hot_md += f"{s_ctx}\n\n---\n\n"
+            zf.writestr("wiki/hot.md", hot_md)
 
             # --- 2. Iterate resources ---
             for res in resources:

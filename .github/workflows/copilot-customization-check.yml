@@ -1,0 +1,27 @@
+name: Copilot Customization Validation
+
+on:
+  push:
+    paths:
+      - '.github/prompts/**'
+      - '.github/skills/**'
+      - '.github/agents/**'
+      - '.github/instructions/**'
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Validate YAML Frontmatter
+        run: |
+          for f in ind .github -name "*.md" -not -name "copilot-instructions.md"; do
+            if head -n 1 "$f" | grep -q "^---$"; then
+              echo "$f has frontmatter"
+            else
+              echo "Error: $f missing YAML frontmatter"
+              exit 1
+            fi
+          done

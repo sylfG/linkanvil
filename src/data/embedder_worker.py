@@ -4,10 +4,17 @@ import httpx
 import json
 import logging
 import os
+import sys
 from typing import Optional
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from src.telemetry import configure_telemetry, trace_operation
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# OTel
+configure_telemetry("embedder-worker")
 
 LITELLM_URL = os.getenv("LITELLM_EMBEDDINGS_URL", "http://litellm:4000/v1/embeddings")
 LITELLM_KEY = os.getenv("LITELLM_API_KEY", "sk-cerebro-master-key-CHANGE_ME")
@@ -72,10 +79,11 @@ class EmbedderWorker:
             resp = await client.put(f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true", json=points_payload)
             resp.raise_for_status()
 
+    @trace_operation("process_embedder_message")
     async def process_message(self, message: aio_pika.IncomingMessage):
         async with message.process(requeue=False, ignore_processed=True):
             payload = json.loads(message.body.decode())
-            trace_id = payload.get("trace_id", "unknown-trace")
+            trace_id = payload.get("trace_id") or ("-".join(dict(message.headers).get("traceparent", "00-unknown-00-00").split("-")[1:3]) if "traceparent" in (message.headers or {}) else (message.headers.get("trace_id", "unknown-trace") if message.headers else "unknown-trace"))
             tenant_id = payload.get("tenant_id", "default_tenant")
             recurso_id = payload.get("recurso_id")
             url = payload.get("url", "")

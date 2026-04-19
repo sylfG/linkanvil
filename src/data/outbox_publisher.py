@@ -3,9 +3,15 @@ import logging
 import os
 import aio_pika
 import json
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.data.db import DatabaseManager
+from src.telemetry import configure_telemetry, trace_operation
 
 logger = logging.getLogger(__name__)
+
+configure_telemetry("outbox-worker")
 
 class OutboxPublisher:
     """
@@ -24,6 +30,7 @@ class OutboxPublisher:
         self.connection = await aio_pika.connect_robust(self.rabbit_url)
         self.channel = await self.connection.channel()
 
+    @trace_operation("poll_outbox")
     async def poll_outbox(self):
         logger.info("Iniciando escaneo de tabla Outbox (F-03.1)...")
         while True:

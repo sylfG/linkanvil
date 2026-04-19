@@ -4,10 +4,18 @@ import json
 import logging
 import os
 from typing import Optional
+import sys
+
+# Ajuste el path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.scraper.strategy import ScraperContext
 from src.data.db import DatabaseManager
+from src.telemetry import configure_telemetry, trace_operation
 
 logger = logging.getLogger(__name__)
+
+# Activamos OpenTelemetry
+configure_telemetry("scraper-worker")
 
 class ScraperWorker:
     """
@@ -39,6 +47,7 @@ class ScraperWorker:
         # Conectar a Base de datos (F-03.1)
         await self.db.connect()
         
+    @trace_operation("process_scraper_message")
     async def process_message(self, message: aio_pika.IncomingMessage):
         """
         Lógica del consumidor:
@@ -47,7 +56,7 @@ class ScraperWorker:
         (Edge Case de la arquitectura implementada en tests anteriores).
         """
         async with message.process(requeue=False, ignore_processed=True):
-            trace_id = message.headers.get("trace_id", "unknown-trace")
+            trace_id = "-".join(dict(message.headers).get("traceparent", "00-unknown-00-00").split("-")[1:3]) if "traceparent" in (message.headers or {}) else (message.headers.get("trace_id", "unknown-trace") if message.headers else "unknown-trace")
             
             try:
                 body = json.loads(message.body.decode())
@@ -73,7 +82,8 @@ class ScraperWorker:
                 # Extraer la metadata si viene del Proxy IA
                 extracted_data = {}
                 try:
-                    extracted_data = json.loads(raw_html)
+                    if raw_html:
+                        extracted_data = json.loads(raw_html)
                 except Exception:
                     # En BasicHttpStrategy no devuelve JSON estructurado,
                     # se adapta basico

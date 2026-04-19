@@ -150,6 +150,22 @@ def search_qdrant(vector: list[float], t_id: str, trace_id: str) -> list[dict]:
     
     return resp.json().get("result", [])
 
+async def fetch_resources_for_audit(t_id: str, limit: int = 10) -> list[dict]:
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, titulo, url, estado, volatilidad, fecha_caducidad FROM recursos WHERE tenant_id = $1 ORDER BY updated_at DESC LIMIT $2", 
+                t_id, limit
+            )
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Error fetching resources for audit: {e}")
+        return []
+    finally:
+        await db.close()
+
 async def fetch_dashboard_metrics(t_id: str) -> dict:
     db = DatabaseManager()
     await db.connect()
@@ -394,4 +410,36 @@ elif view_mode == "📊 Dashboard Administrativo":
     col5.metric(label="💬 Sesiones de Chat Activas", value=active_sessions)
     
     st.info("Estas métricas están particionadas mediante políticas de Row-Level Security (RLS), garantizando el aislamiento absoluto del Tenant.")
+
+    st.divider()
+    st.subheader("🤖 Auditoría Exhaustiva Basada en IA (F-05.3)")
+    st.markdown("Auditoría bajo encargo de la higiene documental actual de la base de conocimiento. Detecta ruido, duplicidades semánticas aparentes y evalúa los plazos de cuarentena.")
+    
+    if st.button("🔍 Ejecutar Auditoría IA"):
+        trace_id = str(uuid.uuid4())
+        with st.spinner("Analizando la base de conocimiento y consultando al LLM (puede tardar unos segundos)..."):
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                audit_items = loop.run_until_complete(fetch_resources_for_audit(tenant_id, 20))
+                
+                if not audit_items:
+                    st.warning("No hay suficientes registros activos para generar un perfil de auditoría.")
+                else:
+                    prompt = "Actúa como un Auditor de Conocimiento de Máximo Nivel.\n"
+                    prompt += f"Tu tarea es encontrar posibles colisiones, incoherencias o recursos que necesiten purga inmediata, analizando su volatilidad, fechas y estados.\n"
+                    prompt += "Retorna un reporte estructurado en 3 secciones en Markdown:\n1) Resumen de Higiene\n2) Alertas Críticas (Documentos Cuarentenados/Vencidos)\n3) Recomendación de Curación Estratégica.\n\n"
+                    prompt += f"Registro transaccional de {len(audit_items)} documentos recientes (Tenant: {tenant_id}):\n"
+                    
+                    for item in audit_items:
+                        prompt += f"- ID: {str(item['id'])[:8]} | ESTADO: {item['estado'].upper()} | VOLATILIDAD: {item['volatilidad']} | FECHA EXP: {item['fecha_caducidad']} | TITULO: {item['titulo']} | URL: {item['url']}\n"
+                        
+                    llm_messages = [{"role": "system", "content": prompt}]
+                    audit_result = execute_chat_completion(llm_messages, trace_id)
+                    
+                    st.success("Auditoría generada exitosamente.")
+                    st.markdown(audit_result)
+            except Exception as e:
+                logger.error(f"[{trace_id}] Audit Error: {e}")
+                st.error(f"Fallo en la conexión P2P con el Motor LLM: {e}")
 

@@ -1,0 +1,32 @@
+groups:
+  - name: cerebro_alerts
+    rules:
+      # Edge Case: LLM o puente caen / Latencia alta
+      - alert: HighLLMLatency
+        expr: rate(http_server_duration_milliseconds_sum{handler="execute_chat_completion"}[5m]) / rate(http_server_duration_milliseconds_count{handler="execute_chat_completion"}[5m]) > 20000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latencia Alta detectada en pasarela LiteLLM"
+          description: "La latencia promedio del backend LLM ha superado los 20 segundos por más de 2 minutos. Revisar Fallbacks."
+
+      # Dead Letter Queue creciendo
+      - alert: DLQ_Filling_Up
+        expr: rabbitmq_queue_messages{queue="dlq.url.fallidas"} > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crecimiento persistente en Dead Letter Queue"
+          description: "Hay más de 10 mensajes sin procesar en la DLQ de RabbitMQ que han sido derivados sistemáticamente por fallos."
+
+      # Pérdida de aislamiento / Errores 5xx
+      - alert: HighErrorRateIngestion
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tasa de errores 5xx alta"
+          description: "Los endpoints web (Traefik/Ingesta) están retornando errores 5xx por encima de 5%."

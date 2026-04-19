@@ -8,6 +8,9 @@ global:
     project: 'segundo-cerebro'
     environment: 'local'
 
+rule_files:
+  - "/etc/prometheus/alert.rules.yml"
+
 # Alerting (opcional, para producción)
 # alerting:
 #   alertmanagers:

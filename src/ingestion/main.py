@@ -96,12 +96,36 @@ async def ingest_url(request: IngestionRequest):
     """
     Endpoint principal.
     1. Verifica si es un duplicado por `tenant_id` usando el Bloom Filter en Redis.
-    2. Si es nuevo, emite un mensaje a la cola RabbitMQ asíncrona.
+    2. Verifica limit_rate por `tenant_id` para Throttling local (F-06.4).
+    3. Si es nuevo y no estrangulado, emite un mensaje a la cola RabbitMQ asíncrona.
     """
     if deduplicator is None or rabbit_publisher is None:
         raise HTTPException(status_code=503, detail="Servicios base (Redis o RabbitMQ) no disponibles. Fallback en curso.")
 
     try:
+        # F-06.4 Noisy Neighbor Defense (estranguilamiento individual)
+        if redis_client:
+            rate_key = f"rate_limit:{request.tenant_id}"
+            req_count = redis_client.get(rate_key)
+            if req_count and int(req_count) >= 10:  # Límite de 10 requests por minuto
+                logger.warning(f"[{request.trace_id}] Throttling activado para tenant {request.tenant_id}")
+                # Edge Case: deriva a la DLQ o efectúa Fallback
+                try:
+                    await rabbit_publisher.publish_ingestion_message(
+                        queue_name=RABBIT_DLQ,
+                        payload={"error": "Too Many Requests", "request": request.model_dump(), "source": "throttling"},
+                        trace_id=request.trace_id
+                    )
+                except Exception as dlq_e:
+                    pass
+                raise HTTPException(status_code=429, detail="Too Many Requests. Cuota excedida.")
+            
+            pipe = redis_client.pipeline()
+            pipe.incr(rate_key)
+            if not req_count:
+                pipe.expire(rate_key, 60)
+            pipe.execute()
+
         # Happy Path / Aislamiento (F-01.1)
         is_new = deduplicator.is_new_item(request.url, request.tenant_id, request.trace_id)
         

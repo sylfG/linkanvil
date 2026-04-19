@@ -38,6 +38,26 @@ except Exception as e:
     logger.error(f"Redis initialization failed: {e}")
     r_client = None
 
+def check_chat_rate_limit(t_id: str, limit: int = 15, window: int = 60) -> bool:
+    """F-06.4 Noisy Neighbor Defense para LLM (Estrangulamiento local)."""
+    if not r_client:
+        return True
+    try:
+        key = f"chat_limit:{t_id}"
+        current = r_client.get(key)
+        if current and int(current) >= limit:
+            return False
+            
+        pipe = r_client.pipeline()
+        pipe.incr(key)
+        if not current:
+            pipe.expire(key, window)
+        pipe.execute()
+        return True
+    except Exception as e:
+        logger.error(f"Fallback en limite de RAG: {e}")
+        return True
+
 # Funciones de Cuarentena (F-05.2)
 async def fetch_obsoletos(t_id: str) -> list[dict]:
     db = DatabaseManager()
@@ -303,6 +323,11 @@ if view_mode == "Chatbot RAG":
     if user_input := st.chat_input("Escribe tu pregunta..."):
         trace_id = str(uuid.uuid4())
         logger.info(f"[{trace_id}] Nuevo mensaje: {user_input}")
+        
+        # F-06.4: Throttling / límite automático de cuota por Tenant
+        if not check_chat_rate_limit(tenant_id, limit=5, window=60):
+            st.error("⚠️ Cuota transaccional agotada. Has superado el límite de 5 consultas por minuto en RAG. Throttling activo para evitar ataque o Noisy Neighbor.")
+            st.stop()
         
         st.session_state.messages.append({"role": "user", "content": user_input})
         save_session(session_key, st.session_state.messages)

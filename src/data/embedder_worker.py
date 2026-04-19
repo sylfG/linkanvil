@@ -9,6 +9,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.telemetry import configure_telemetry, trace_operation
+from src.data.db import DatabaseManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,8 +30,10 @@ class EmbedderWorker:
         self.connection: Optional[aio_pika.RobustConnection] = None
         self.channel: Optional[aio_pika.RobustChannel] = None
         self.queue: Optional[aio_pika.RobustQueue] = None
+        self.db = DatabaseManager()
 
     async def connect(self):
+        await self.db.connect()
         self.connection = await aio_pika.connect_robust(RABBIT_URL)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=10) # Paralelismo
@@ -79,6 +82,38 @@ class EmbedderWorker:
             resp = await client.put(f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true", json=points_payload)
             resp.raise_for_status()
 
+    async def _compute_semantic_collisions(self, recurso_id: str, tenant_id: str, vector: list[float], trace_id: str):
+        payload = {
+            "vector": vector,
+            "filter": {
+                "must": [
+                    {"key": "tenant_id", "match": {"value": tenant_id}}
+                ]
+            },
+            "limit": 10,
+            "score_threshold": 0.92,
+            "with_payload": False
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{QDRANT_URL}/collections/cerebro_recursos/points/search", json=payload)
+            if resp.status_code != 200:
+                logger.error(f"[{trace_id}] Error consultando Qdrant para similitud: {resp.text}")
+                return
+            results = resp.json().get("result", [])
+            
+        collisions = [
+            {"recurso_destino": r["id"], "similitud": r["score"]}
+            for r in results if r["id"] != recurso_id
+        ]
+        
+        if not collisions:
+            logger.info(f"[{trace_id}] Sin colisiones semánticas > 0.92 para {recurso_id}")
+            return
+            
+        logger.info(f"[{trace_id}] Encontradas {len(collisions)} colisiones semánticas para {recurso_id}")
+        await self.db.save_semantic_collisions(tenant_id, recurso_id, collisions)
+
     @trace_operation("process_embedder_message")
     async def process_message(self, message: aio_pika.IncomingMessage):
         async with message.process(requeue=False, ignore_processed=True):
@@ -108,6 +143,10 @@ class EmbedderWorker:
                 await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
                 logger.info(f"[{trace_id}] Vector inyectado exitosamente en Qdrant. Aislado a tenant_id: {tenant_id}")
                 
+                # 3. Colisionador Semántico (F-03.3)
+                await self._compute_semantic_collisions(recurso_id, tenant_id, vector, trace_id)
+                logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
+                
             except Exception as e:
                 logger.error(f"[{trace_id}] F-03.2 Fallo crítico procesando embedding/qdrant: {e}")
                 # Rechazar para derivar a DQL (F-03.2 Tolerancia Edge Case)
@@ -123,6 +162,7 @@ class EmbedderWorker:
     async def close(self):
         if self.connection:
             await self.connection.close()
+        await self.db.close()
 
 async def run_worker():
     worker = EmbedderWorker()

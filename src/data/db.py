@@ -11,7 +11,7 @@ class DatabaseManager:
     def __init__(self, db_url: str = None):
         self.db_url = db_url or os.getenv(
             "DATABASE_URL", 
-            "postgresql://cerebro:cerebro_db_pass@localhost:5432/cerebro_brain"
+            "postgresql://cerebro:cerebro_db_pass_CHANGE_ME@localhost:5432/cerebro_brain"
         )
         self.pool = None
 
@@ -102,3 +102,38 @@ class DatabaseManager:
                 
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")
         return recurso_id
+    async def save_semantic_collisions(self, tenant_id: str, recurso_origen: str, collisions: list[dict]):
+        if not self.pool:
+            await self.connect()
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Preparar el volcado de relaciones (origen -> destino, y destino -> origen opcionalmente)
+                # La tabla tiene un constraint uq_relacion que requiere ON CONFLICT DO NOTHING
+                for c in collisions:
+                    await conn.execute(
+                        """
+                        INSERT INTO grafo_relaciones (
+                            tenant_id, recurso_origen, recurso_destino, similitud
+                        ) VALUES (
+                            $1, $2::uuid, $3::uuid, $4
+                        )
+                        ON CONFLICT (recurso_origen, recurso_destino) 
+                        DO UPDATE SET similitud = EXCLUDED.similitud
+                        """,
+                        tenant_id, recurso_origen, c["recurso_destino"], c["similitud"]
+                    )
+                    
+                    # Relación bidireccional
+                    await conn.execute(
+                        """
+                        INSERT INTO grafo_relaciones (
+                            tenant_id, recurso_origen, recurso_destino, similitud
+                        ) VALUES (
+                            $1, $2::uuid, $3::uuid, $4
+                        )
+                        ON CONFLICT (recurso_origen, recurso_destino) 
+                        DO UPDATE SET similitud = EXCLUDED.similitud
+                        """,
+                        tenant_id, c["recurso_destino"], recurso_origen, c["similitud"]
+                    )

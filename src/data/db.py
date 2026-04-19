@@ -146,32 +146,49 @@ class DatabaseManager:
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # Preparar el volcado de relaciones (origen -> destino, y destino -> origen opcionalmente)
-                # La tabla tiene un constraint uq_relacion que requiere ON CONFLICT DO NOTHING
                 for c in collisions:
+                    tipo_relacion = c.get("tipo_relacion", "ASOCIACION_GENERAL")
                     await conn.execute(
                         """
                         INSERT INTO grafo_relaciones (
-                            tenant_id, recurso_origen, recurso_destino, similitud
+                            tenant_id, recurso_origen, recurso_destino, similitud, tipo_relacion
                         ) VALUES (
-                            $1, $2::uuid, $3::uuid, $4
+                            $1, $2::uuid, $3::uuid, $4, $5
                         )
                         ON CONFLICT (recurso_origen, recurso_destino) 
-                        DO UPDATE SET similitud = EXCLUDED.similitud
+                        DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, recurso_origen, c["recurso_destino"], c["similitud"]
+                        tenant_id, recurso_origen, c["recurso_destino"], c["similitud"], tipo_relacion
                     )
                     
-                    # Relación bidireccional
+                    # Relación bidireccional (inversa)
+                    # Si es VUELVE_OBSOLETO, la inversa podríamos llamarla OBSOLETO_POR
+                    tipo_inverso = tipo_relacion
+                    if tipo_relacion == "VUELVE_OBSOLETO":
+                        tipo_inverso = "OBSOLECIDO_POR"
+                    elif tipo_relacion == "EXTIENDE":
+                        tipo_inverso = "EXTENDIDO_POR"
+                        
                     await conn.execute(
                         """
                         INSERT INTO grafo_relaciones (
-                            tenant_id, recurso_origen, recurso_destino, similitud
+                            tenant_id, recurso_origen, recurso_destino, similitud, tipo_relacion
                         ) VALUES (
-                            $1, $2::uuid, $3::uuid, $4
+                            $1, $2::uuid, $3::uuid, $4, $5
                         )
                         ON CONFLICT (recurso_origen, recurso_destino) 
-                        DO UPDATE SET similitud = EXCLUDED.similitud
+                        DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, c["recurso_destino"], recurso_origen, c["similitud"]
+                        tenant_id, c["recurso_destino"], recurso_origen, c["similitud"], tipo_inverso
                     )
+
+                    # Si es obsolescencia, marcamos el destino (antiguo) como expirado
+                    if tipo_relacion in ["VUELVE_OBSOLETO", "CONTRADICE"]:
+                        await conn.execute(
+                            """
+                            UPDATE recursos 
+                            SET estado = 'expirado', updated_at = NOW()
+                            WHERE id = $1::uuid AND tenant_id = $2
+                            """,
+                            c["recurso_destino"], tenant_id
+                        )

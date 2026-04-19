@@ -29,25 +29,33 @@ async def test_f033_semantic_collider_insertion():
                     ($5, $2, $6, $7, 'test2')
             """, recurso_1, tenant_id, url1, hash1, recurso_2, url2, hash2)
             
-        # 2. Add collision
-        collisions = [{"recurso_destino": recurso_2, "similitud": 0.95}]
+        # 2. Add collision with type (Typed Relational Pipeline)
+        collisions = [{"recurso_destino": recurso_2, "similitud": 0.95, "tipo_relacion": "VUELVE_OBSOLETO"}]
         await db.save_semantic_collisions(tenant_id, recurso_1, collisions)
         
-        # 3. Assert they exist bidirectionally
+        # 3. Assert they exist bidirectionally and type is correct
         async with db.pool.acquire() as conn:
             row1 = await conn.fetchrow(
-                "SELECT similitud FROM grafo_relaciones WHERE recurso_origen=$1 AND recurso_destino=$2",
+                "SELECT similitud, tipo_relacion FROM grafo_relaciones WHERE recurso_origen=$1 AND recurso_destino=$2",
                 recurso_1, recurso_2
             )
             row2 = await conn.fetchrow(
-                "SELECT similitud FROM grafo_relaciones WHERE recurso_origen=$1 AND recurso_destino=$2",
+                "SELECT similitud, tipo_relacion FROM grafo_relaciones WHERE recurso_origen=$1 AND recurso_destino=$2",
                 recurso_2, recurso_1
+            )
+            old_doc = await conn.fetchrow(
+                "SELECT estado FROM recursos WHERE id=$1",
+                recurso_2
             )
             
         assert row1 is not None, "Relación directa (origen->destino) no encontrada"
         assert row2 is not None, "Relación inversa (destino->origen) no encontrada"
         assert row1['similitud'] == 0.95
         assert row2['similitud'] == 0.95
+        
+        assert row1['tipo_relacion'] == "VUELVE_OBSOLETO", "Tipo F-03.3 en directa no establecido"
+        assert row2['tipo_relacion'] == "OBSOLECIDO_POR", "Tipo inverso en bidireccional no correcto"
+        assert old_doc['estado'] == 'expirado', "El documento obsoleto no fue marcado como 'expirado'!"
 
     finally:
         # Cleanup

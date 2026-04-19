@@ -82,7 +82,8 @@ graph TD
 *   **Traefik (`cerebro-traefik`)**: Actúa como el único punto de entrada (reverse proxy). Se encarga del enrutamiento dinámico basado en nombres de dominio (`*.localhost`), *rate limiting* para proteger la infraestructura, y generación inicial del `Trace-ID` mediante OpenTelemetry para hacer seguimiento a la petición en todo el clúster.
 
 ### ⚙️ Motores Core
-*   **n8n (`cerebro-n8n`)**: El "cerebro" orquestador. Define flujos de trabajo (*workflows*) visuales. Recibe notificaciones webhooks, consume URLs desde RabbitMQ, realiza scraping y orquesta los pasos ordenando al LLM que procese la información, para luego inyectar los resultados en PostgreSQL y los vectores en Qdrant.
+*   **n8n (`cerebro-n8n`)**: Orquestador visual de flujos de trabajo (*workflows*). Recibe notificaciones webhooks y orquesta los pasos ordenando al LLM que procese la información.
+*   **Scraper Worker (`cerebro-scraper`)**: Microservicio asíncrono basado en Scrapling y Playwright. Extrae inteligentemente contenido textual de sitios web estáticos y dinámicos (SPAs), evadiendo bloqueos básicos y pasando el contenido a la cola de procesamiento.
 *   **LiteLLM (`cerebro-litellm`)**: Actúa como capa de abstracción para modelos de IA. Recibe peticiones de n8n y decide internamente a qué LLM llamar (OpenAI, Anthropic, o Local). Implementa *Fallback* (si OpenAI cae, intenta con Anthropic sin afectar al sistema), usa *Circuit Breakers* y guarda peticiones comunes en caché de Redis para ahorrar tokens.
 
 ### 💾 Almacenamiento, Estado y Eventos

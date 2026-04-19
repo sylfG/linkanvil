@@ -39,7 +39,7 @@
 
 | Feature ID | Feature | Prioridad MoSCoW |
 | --- | --- | --- |
-| F-02.1 | Scraper de Ruteo Dinámico (Patrón Strategy) adaptable según origen (básico, Puppeteer, IA proxy) | MUST |
+| F-02.1 | Scraper de Ruteo Dinámico (Patrón Strategy) adaptable según origen (básico, Scrapling/Playwright, IA proxy) | MUST |
 | F-02.2 | LLM Gateway con Circuit Breaker, Fallback Automático entre proveedores y caché local | MUST |
 | F-02.3 | Pipeline Zero-Defect: Forzar Salidas Estructuradas del LLM validando JSON inquebrantable mediante Zod/Pydantic | MUST |
 | F-02.4 | Clasificación inteligente de contenido y estimación lógica de la fecha útil (Volatilidad) para futuro | MUST |

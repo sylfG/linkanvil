@@ -22,7 +22,7 @@ C4Context
     Rel(usuario, cerebro, "Captura información y consulta el panel/chat", "HTTPS/WSS")
     Rel(usuario, telegram, "Envía mensajes a su bot personal")
     Rel(telegram, cerebro, "Redirige peticiones webhooks entrantes", "HTTPS")
-    Rel(cerebro, fuentes, "Extrae contenido de las URLs asincrónicamente", "HTTPS/Puppeteer")
+    Rel(cerebro, fuentes, "Extrae contenido de las URLs asincrónicamente", "HTTPS/Scrapling")
     Rel(cerebro, llms, "Delega resúmenes y extracción bajo Zero-Defect", "HTTPS/REST")
 ```
 

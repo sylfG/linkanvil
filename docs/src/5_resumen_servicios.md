@@ -103,7 +103,8 @@ La infraestructura desplegada abarca 15 contenedores operando en sintonía. Su f
 
 ### 2. ⚙️ Motores Principales (Lógica y Orquestación)
 
-* **`cerebro-n8n`** (Ruta: `http://n8n.localhost`): Plataforma central de automatización (Orquestador). Es responsable de leer, reaccionar a webhooks, raspar webs (scraping) y disparar tareas conectando de forma gráfica todo el ecosistema (AI, Base de datos, Mensajería).
+* **`cerebro-n8n`** (Ruta: `http://n8n.localhost`): Plataforma central de automatización (Orquestador). Es responsable de leer y reaccionar a webhooks, disparar tareas conectando de forma gráfica todo el ecosistema (AI, Base de datos, Mensajería).
+* **`cerebro-scraper`**: Servicio de Worker asíncrono en Python. Basado en Scrapling y Playwright, se encarga de raspar el contenido de las webs complejas o estáticas sorteando bloqueos y depositando los resultados listos para ser procesados.
 * **`cerebro-litellm`** (Ruta: `http://llm.localhost`): Proxy de Inteligencia Artificial. Centraliza el uso de modelos de lenguaje (Ej: pasarela uniforme que puede llamar a OpenAI, Anthropic, Gemini o Local). Al unificar la IA aquí, obtenemos registro total de los gastos, tolerancia a caídas e intercambio del modelo sin cambiar el código central.
 
 ### 3. 💾 Bases de Datos y Mensajería (Capa de Estado)

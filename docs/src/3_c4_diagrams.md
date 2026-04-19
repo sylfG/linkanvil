@@ -113,3 +113,44 @@ sequenceDiagram
         n8n->>PG: Actualiza Outbox a "Procesado"
     end
 ```
+---
+
+## Diagrama de Flujo: Exportación de Bóveda Obsidian (Vault.zip)
+> Detalle del proceso de exportación estructurada en formato ZIP con enlaces bidireccionales y caché dinámico (hot.md).
+
+`mermaid
+sequenceDiagram
+    autonumber
+    actor Usuario
+    participant Traefik as API Gateway
+    participant Exporter as VaultExporter
+    participant PG as PostgreSQL
+    participant Mem as Memoria (ZIP)
+    
+    Usuario->>Traefik: GET /export/vault
+    Traefik->>Exporter: Inicia generación
+    
+    Exporter->>PG: Extrae Nodos, Aristas e Historial
+    PG-->>Exporter: SQL Relacional (filtrado por tenant_id)
+    
+    Exporter->>Mem: Escribe raw/ y CLAUDE.md
+    Exporter->>Mem: Escribe wiki/hot.md (Caché RAG)
+    
+    loop Translación de Grafo
+        Exporter->>Exporter: Convierte aristas en enlaces [[Obsidian]]
+        Exporter->>Mem: Escribe notas en wiki/
+    end
+    
+    Exporter-->>Traefik: vault.zip (stream)
+    Traefik-->>Usuario: Descarga ZIP Local
+`
+"@
+
+Add-Content -Path "docs/src/2_architecture_risks.md" -Value @"
+
+---
+
+## 4. ADR-004: Offline-First LLM Wiki Export (Markdown/Obsidian)
+**Contexto**: El usuario necesita acceso a su base de conocimiento incluso si la infraestructura Docker está apagada.
+**Decisión**: Un motor de exportación que traduce la base relacional/vectorial a archivos Markdown anidados (\aw/\, \wiki/\) compatibles nativamente con Obsidian, rellenando los YAML Frontmatter con el rastro del LLM y traduciendo aristas a enlaces \[[bidireccionales]]\.
+**Consecuencias**: Permite control soberano total de la información (Cero Vendor-Lock In) pero requiere tareas periódicas de exportación delta para actualizar la bóveda.

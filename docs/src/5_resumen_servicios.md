@@ -103,7 +103,9 @@ La infraestructura desplegada abarca 14 contenedores operando en sintonía. Su f
 
 ### 3. 💾 Bases de Datos y Mensajería (Capa de Estado)
 
-* **`cerebro-postgres`**: Base de datos relacional robusta. Retiene y asegura los metadatos de usuario final, las URLs almacenadas, metadatos y asegura los eventos consistentes a través del patrón Outbox (transaccionalidad pura).
+> **Arquitectura de Doble Cerebro (PostgreSQL + Qdrant):** El sistema separa estrictamente su forma de razonar. Delega las conexiones rígidas, textos crudos transaccionales y seguridad multi-tenant al "Cerebro Lógico" (PostgreSQL), y destina la búsqueda asociativa y de significado en alta dimensionalidad al "Cerebro Semántico" (Qdrant).
+
+* **`cerebro-postgres`**: Base de datos relacional robusta. Retiene y asegura los textos completos elaborados, las URLs almacenadas, relaciones explícitas y metadatos. Garantiza eventos consistentes a través del patrón Outbox y mantiene un estricto *Row-Level Security (RLS)* por cada cliente.
 * **`cerebro-qdrant`**: Base de datos vectorial. Especializada en retener vectores (*embeddings* dimensionales generados por la Inteligencia Artificial). Imprescindible para habilitar RAG (Generación Aumentada por Recuperación) y búsquedas por "similitud semántica".
 * **`cerebro-redis`**: Base de datos de estructuras en memoria extremadamente veloz. Actúa de barrera inicial (Filtro Anti-duplicados), caché transitorio para LiteLLM evitando la re-evaluación de tokens costosos, y como el "disco" de sesión para la UI.
 * **`cerebro-rabbitmq`**: Gestor o Bus asíncrono de colas empresariales. Funciona como un amortiguador de choques y cola de espera. Absorbe un número masivo de URLs que lleguen en el mismo segundo y asegura que n8n las procese a su ritmo sin que se saturen los servicios.
@@ -122,3 +124,8 @@ La infraestructura desplegada abarca 14 contenedores operando en sintonía. Su f
 * **`cerebro-postgres-exporter`**: Traduce el estado interno de PostgreSQL e índices a Prometheus.
 * **`cerebro-redis-exporter`**: Traduce alertas, ram agotada, y hits en Redis a Prometheus.
 * **`cerebro-rabbitmq-exporter`**: Convierte el estado vital de nodos consumidos/desconectados desde RabbitMQ a Prometheus.
+
+### 6. 🧠 Exportación y Gemelo Digital
+
+* **`Exportador LLM Wiki`**: Utilidad encargada de consolidar y exportar la bóveda local (Markdown) a partir del estado relacional y semántico almacenado en PostgreSQL y Qdrant. Genera una estructura de archivos físicos (`raw/`, `wiki/`) con enlaces bidireccionales nativos compatibles con Obsidian, además de una caché caliente (`hot.md`) para agilizar la sincronización del contexto conversacional offline.
+

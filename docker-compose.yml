@@ -95,7 +95,25 @@ services:
         condition: service_started
       litellm:
         condition: service_started
-
+  cerebro-chat:
+    build:
+      context: .
+      dockerfile: infra/ui.Dockerfile
+    container_name: cerebro-chat
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      LITELLM_URL: "http://litellm:4000"
+      QDRANT_URL: "http://qdrant:6333"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-cerebro-master-key}"
+    networks:
+      - cerebro-net
+    depends_on:
+      qdrant:
+        condition: service_started
+      litellm:
+        condition: service_started
   # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID

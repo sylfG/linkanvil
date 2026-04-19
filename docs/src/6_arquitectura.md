@@ -31,6 +31,7 @@ graph TD
             Redis["⚡ Redis (Caché & Sesiones)"]:::storage
             Postgres["🗄️ PostgreSQL (Outbox+Relacional)"]:::storage
             Qdrant["🧠 Qdrant (Base Vectorial)"]:::storage
+            Exportador_LLMWiki["🗂️ Exportador a Bóveda Local (LLM Wiki)"]:::storage
         end
         
         subgraph Observabilidad
@@ -55,6 +56,8 @@ graph TD
     n8n -.->|"Guarda/Lee Estado"| Postgres
     n8n -.->|"Llama a IA"| LiteLLM
     n8n -.->|"Búsqueda Vectorial"| Qdrant
+    Postgres -->|"Exportación ZIP Estructurada"| Exportador_LLMWiki
+    Exportador_LLMWiki -.->|"Bóveda para Obsidian/Cursor"| User
     
     %% Conexiones desde LiteLLM
     LiteLLM -.->|"Caché de Prompts"| Redis

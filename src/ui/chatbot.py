@@ -12,6 +12,7 @@ from io import BytesIO
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.db import DatabaseManager
+from data.export_manager import VaultExporter
 from telemetry import configure_telemetry, trace_operation
 
 logging.basicConfig(level=logging.INFO)
@@ -562,49 +563,28 @@ elif view_mode == "📊 Dashboard Administrativo":
                 st.error(f"Fallo en la conexión P2P con el Motor LLM: {e}")
 
     st.divider()
-    st.subheader("📦 Exportación Masiva Local (F-03.5)")
-    st.markdown("Exporta toda la base de conocimiento del Tenant actual como archivos Markdown empaquetados en un ZIP, evitando el vendor lock-in.")
+    st.subheader("📦 Exportación Masiva Local (F-07.1 / F-03.5)")
+    st.markdown("Exporta toda la base de conocimiento del Tenant actual como una bóveda estructurada **LLM Wiki** (Digital Twin), lista para agentes locales.")
     
-    if st.button("📥 Generar Exportación ZIP"):
-        with st.spinner("Compilando recursos en Markdown..."):
+    if st.button("📥 Generar Exportación Bóveda LLM Wiki"):
+        with st.spinner("Compilando bóveda estructurada..."):
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                # Fetch all resources for the tenant
-                resources = loop.run_until_complete(fetch_all_resources_for_export(tenant_id))
+                # Fetch and export structured Vault
+                db = DatabaseManager()
+                exporter = VaultExporter(db)
+                zip_data = loop.run_until_complete(exporter.generate_vault_zip(tenant_id))
                 
-                if not resources:
-                    st.warning("No hay recursos para exportar en este Tenant.")
-                else:
-                    zip_buffer = BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                        for res in resources:
-                            # Cleanup and formatting for Markdown
-                            safe_title = "".join(c for c in (res['titulo'] or f"resource_{res['id']}") if c.isalnum() or c in " _-").strip()
-                            filename = f"{safe_title}_{str(res['id'])[:8]}.md"
-                            
-                            md_content = f"# {res['titulo'] or 'Sin Título'}\n\n"
-                            md_content += f"- **ID**: {res['id']}\n"
-                            md_content += f"- **URL**: {res['url']}\n"
-                            md_content += f"- **Estado**: {res['estado']}\n"
-                            md_content += f"- **Categoría**: {res['categoria'] or 'N/A'}\n"
-                            md_content += f"- **Volatilidad**: {res['volatilidad']}\n"
-                            md_content += f"- **Creado**: {res['created_at']}\n"
-                            md_content += f"- **Etiquetas**: {res['tags']}\n\n"
-                            
-                            md_content += "## Resumen\n"
-                            md_content += f"{res['resumen'] or 'Sin contenido resumido.'}\n"
-                            
-                            zip_file.writestr(filename, md_content)
-                            
-                    st.success(f"¡Exportados {len(resources)} documentos con éxito!")
+                if zip_data:
+                    st.success(f"¡Bóveda Digital exportada con éxito!")
                     st.download_button(
-                        label="💾 Descargar Archivo ZIP",
-                        data=zip_buffer.getvalue(),
-                        file_name=f"exportacion_tenant_{tenant_id}.zip",
+                        label="💾 Descargar Bóveda ZIP",
+                        data=zip_data,
+                        file_name=f"vault_tenant_{tenant_id}.zip",
                         mime="application/zip"
                     )
             except Exception as e:
                 logger.error(f"Export Error: {e}")
-                st.error(f"Fallo al generar la exportación: {e}")
+                st.error(f"Fallo al generar la exportación de bóveda: {e}")
 

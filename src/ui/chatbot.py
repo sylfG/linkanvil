@@ -221,16 +221,42 @@ async def async_update_session_context(t_id: str, s_id: str, ctx: str):
     finally:
         await db.close()
 
+async def fetch_historico_rag_crudo(t_id: str, query: str) -> str:
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        async with db.pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.current_tenant = '{t_id}'")
+            # Búsqueda ILIKE cruda en resúmenes para rebatir ambigüedad
+            rows = await conn.fetch(
+                "SELECT titulo, url, resumen, estado FROM recursos WHERE tenant_id = $1 AND (resumen ILIKE $2 OR titulo ILIKE $2) LIMIT 3", 
+                t_id, f"%{query}%"
+            )
+            if not rows:
+                return "No se encontraron coincidencias en el histórico crudo."
+            
+            res_text = ""
+            for r in rows:
+                res_text += f"- Título: {r['titulo']}\n  URL: {r['url']}\n  Estado: {r['estado']}\n  Resumen Crudo: {r['resumen']}\n\n"
+            return res_text
+    except Exception as e:
+        logger.error(f"Error fetch_historico_rag_crudo: {e}")
+        return f"Error consultando el histórico RAG crudo: {e}"
+    finally:
+        await db.close()
+
 @trace_operation("execute_chat_completion")
-def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
+def execute_chat_completion(messages: list[dict], trace_id: str, tools: list[dict] = None, tenant_id: str = None) -> str:
     payload = {
         "model": "cerebro-gpt",
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": 1000
     }
+    if tools:
+        payload["tools"] = tools
+        
     logger.info(f"[{trace_id}] LLM Call")
-    # Propagar el trace header hacia litellm
     req_headers = llm_headers.copy()
     req_headers["traceparent"] = trace_id
     response = httpx.post(f"{LITELLM_URL}/v1/chat/completions", headers=req_headers, json=payload, timeout=60.0)
@@ -239,7 +265,34 @@ def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
         logger.error(f"LLM Error: {response.text}")
     
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    resp_msg = response.json()["choices"][0]["message"]
+    
+    if resp_msg.get("tool_calls"):
+        messages.append(resp_msg)
+        for tool_call in resp_msg["tool_calls"]:
+            if tool_call["function"]["name"] == "consultar_historico_rag_crudo":
+                args = json.loads(tool_call["function"]["arguments"])
+                logger.info(f"[{trace_id}] Function Calling RAG crudo: {args['query']}")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                crudo_resultado = loop.run_until_complete(fetch_historico_rag_crudo(tenant_id, args["query"]))
+                messages.append({
+                    "role": "tool",
+                    "name": "consultar_historico_rag_crudo",
+                    "tool_call_id": tool_call["id"],
+                    "content": crudo_resultado
+                })
+        
+        # Second call to LLM after tool usage
+        payload["messages"] = messages
+        if "tools" in payload:
+            del payload["tools"]
+        logger.info(f"[{trace_id}] Segundo LLM Call post-tool")
+        response2 = httpx.post(f"{LITELLM_URL}/v1/chat/completions", headers=req_headers, json=payload, timeout=60.0)
+        response2.raise_for_status()
+        return response2.json()["choices"][0]["message"]["content"]
+    
+    return resp_msg["content"]
 
 if view_mode == "Chatbot RAG":
     # Render previous messages
@@ -332,8 +385,29 @@ if view_mode == "Chatbot RAG":
                     for sm in st.session_state.messages[-window_size:]: 
                         llm_messages.append(sm)
                         
+                    # Tools setup para Function Calling Activo F-04.5
+                    llm_tools = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "consultar_historico_rag_crudo",
+                                "description": "Consulta el histórico RAG crudo almacenado. Úsalo soberanamente para obtener el texto completo de recursos o rebatir ambigüedad a petición expresa o contexto insuficiente.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "query": {
+                                            "type": "string",
+                                            "description": "Una palabra clave o frase a buscar en los títulos o resúmenes de la base de conocimiento cruda."
+                                        }
+                                    },
+                                    "required": ["query"]
+                                }
+                            }
+                        }
+                    ]
+                        
                     # 4. LLM Generation
-                    response_text = execute_chat_completion(llm_messages, trace_id)
+                    response_text = execute_chat_completion(llm_messages, trace_id, tools=llm_tools, tenant_id=tenant_id)
                     st.markdown(response_text)
                     
                     # Expandable sources

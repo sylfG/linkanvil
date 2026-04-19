@@ -170,6 +170,22 @@ async def fetch_dashboard_metrics(t_id: str) -> dict:
         await db.close()
     return metrics
 
+async def async_get_session_context(t_id: str, s_id: str) -> str:
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        return await db.get_session_context(t_id, s_id)
+    finally:
+        await db.close()
+
+async def async_update_session_context(t_id: str, s_id: str, ctx: str):
+    db = DatabaseManager()
+    await db.connect()
+    try:
+        await db.update_session_context(t_id, s_id, ctx)
+    finally:
+        await db.close()
+
 @trace_operation("execute_chat_completion")
 def execute_chat_completion(messages: list[dict], trace_id: str) -> str:
     payload = {
@@ -231,13 +247,54 @@ if view_mode == "Chatbot RAG":
                         "Eres Cerebro, un asistente conversacional RAG inteligente.\n"
                         "Responde a la pregunta del usuario utilizando EXCLUSIVAMENTE el siguiente contexto recuperado.\n"
                         "Si el contexto está vacío ('No se encontraron documentos relevantes.'), indica que no posees la información.\n"
-                        f"Contexto:\n {context_str}"
                     )
+
+                    # 3.1. Compactación de Largo Contexto (Sliding Window Relacional F-04.4)
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_closed(): raise RuntimeError
+                    except:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
                     
-                    # Armar el pipeline de memoria del LLM
+                    historial_comprimido = loop.run_until_complete(async_get_session_context(tenant_id, session_id))
+                    if historial_comprimido:
+                        system_prompt += f"\n--- Resumen Histórico de esta sesión: ---\n{historial_comprimido}\n--------------------\n"
+                        
+                    system_prompt += f"\nContexto DDBB:\n {context_str}"
+                    
+                    # Armar el pipeline de memoria del LLM (últimos N)
                     llm_messages = [{"role": "system", "content": system_prompt}]
-                    # Anexar historial 
-                    for sm in st.session_state.messages[-5:]: # sliding window visual context (last 5 messages)
+                    
+                    window_size = 5
+                    # Compactación si el historial excede el doble de la ventana visual
+                    if len(st.session_state.messages) > window_size * 2:
+                        # Extraer los mensajes q rebasan la ventana para compactarlos
+                        to_compact = st.session_state.messages[:-window_size]
+                        
+                        prompt_compactacion = (
+                            "Resume la conversación hasta ahora en máximo 3 párrafos, "
+                            f"incorporando este conocimiento previo: {historial_comprimido}\n\n"
+                        )
+                        for m in to_compact:
+                            prompt_compactacion += f"{m['role'].upper()}: {m['content']}\n"
+                            
+                        nuevo_resumen_msg = execute_chat_completion([{"role": "user", "content": prompt_compactacion}], trace_id)
+                        loop.run_until_complete(async_update_session_context(tenant_id, session_id, nuevo_resumen_msg))
+                        
+                        # Actualizar para inyectarlo en el LLM actual (así no se pierde este contexto)
+                        historial_comprimido = nuevo_resumen_msg
+                        
+                        # Reiniciar la sesión en Redis a solo la ventana
+                        st.session_state.messages = st.session_state.messages[-window_size:]
+                        save_session(session_key, st.session_state.messages)
+                        
+                        # Re-preparar si cambió
+                        llm_messages[0]["content"] = system_prompt.replace(f"--- Resumen Histórico de esta sesión: ---\n{historial_comprimido}\n--------------------\n", "")
+                        llm_messages[0]["content"] += f"\n--- Resumen Histórico de esta sesión: ---\n{historial_comprimido}\n--------------------\n"
+
+                    # Anexar historial visual actual
+                    for sm in st.session_state.messages[-window_size:]: 
                         llm_messages.append(sm)
                         
                     # 4. LLM Generation

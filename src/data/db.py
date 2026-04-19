@@ -15,6 +15,44 @@ class DatabaseManager:
         )
         self.pool = None
 
+    async def update_session_context(self, tenant_id: str, session_id: str, new_context: str):
+        if not self.pool:
+            await self.connect()
+
+        # Generate a deterministic UUID from session_id
+        import uuid, hashlib
+        m = hashlib.md5()
+        m.update(session_id.encode('utf-8'))
+        s_uuid = uuid.UUID(m.hexdigest())
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sesiones_chat (id, tenant_id, contexto_comprimido, ultimo_acceso)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (id) DO UPDATE SET 
+                    contexto_comprimido = EXCLUDED.contexto_comprimido,
+                    ultimo_acceso = NOW()
+                """,
+                s_uuid, tenant_id, new_context
+            )
+
+    async def get_session_context(self, tenant_id: str, session_id: str) -> str:
+        if not self.pool:
+            await self.connect()
+
+        import uuid, hashlib
+        m = hashlib.md5()
+        m.update(session_id.encode('utf-8'))
+        s_uuid = uuid.UUID(m.hexdigest())
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT contexto_comprimido FROM sesiones_chat WHERE id = $1 AND tenant_id = $2",
+                s_uuid, tenant_id
+            )
+            return row['contexto_comprimido'] if row and row['contexto_comprimido'] else ""
+
     async def connect(self):
         logger.info(f"Conectando a PostgreSQL... {self.db_url}")
         self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=10)

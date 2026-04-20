@@ -17,7 +17,7 @@ jobs:
 
       - name: Validate YAML Frontmatter
         run: |
-          for f in ind .github -name "*.md" -not -name "copilot-instructions.md"; do
+          for f in $(find .github -name "*.md" -not -name "copilot-instructions.md"); do
             if head -n 1 "$f" | grep -q "^---$"; then
               echo "$f has frontmatter"
             else

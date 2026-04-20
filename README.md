@@ -6,7 +6,7 @@
   <p align="center">
     Plataforma orientada al procesamiento ágil y desatendido de URLs para construir grafos semánticos privados.
     <br />
-    <a href="https://silvia.github.io/linkanvil"><strong>Explora la Documentación »</strong></a>
+    <a href="https://sylfg.github.io/linkanvil"><strong>Explora la Documentación »</strong></a>
     <br />
     <br />
     <a href="docs/src/8_instalacion_y_configuracion.md">Ver Instalación</a>
@@ -16,7 +16,7 @@
     <a href="docs/src/1_epics_and_features.md">Proponer Funcionalidad</a>
   </p>
 
-  [![VitePress](https://img.shields.io/badge/docs-VitePress-blue)](https://silvia.github.io/linkanvil)
+  [![VitePress](https://img.shields.io/badge/docs-VitePress-blue)](https://sylfg.github.io/linkanvil)
   [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](#-tecnologias-y-servicios)
   [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 </div>

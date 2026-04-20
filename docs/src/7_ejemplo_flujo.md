@@ -1,6 +1,6 @@
 # 🌊 Ejemplo Completo de Flujo: Ingestión, Relaciones y Obsolescencia
 
-Para ilustrar cómo los 14 contenedores del **Segundo Cerebro Autónomo** interactúan en tiempo real, presentaremos un escenario de uso diario.
+Para ilustrar cómo los 14 contenedores del **LinkAnvil** interactúan en tiempo real, presentaremos un escenario de uso diario.
 
 **El Escenario:**
 Un desarrollador interactúa con el sistema para guardar documentación sobre un framework de Inteligencia Artificial ("LangChain"). El usuario realizará tres acciones cronológicas:

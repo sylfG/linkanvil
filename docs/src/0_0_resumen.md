@@ -1,5 +1,6 @@
-Visión General del Proyecto: "Segundo Cerebro Autónomo"
-El proyecto "Segundo Cerebro Autónomo" presenta una propuesta de valor excepcional: transformar el caos de la información en conocimiento accionable. A través de una Arquitectura Orientada a Eventos (Event-Driven) profundamente desacoplada y la optimización en el uso de modelos de inteligencia artificial, el sistema se erige como una plataforma resiliente, ultra rápida y altamente rentable, capaz de escalar operativamente a miles de usuarios sin disparar costes.
+# Visión General del Proyecto: "LinkAnvil"
+
+El proyecto "LinkAnvil" presenta una propuesta de valor excepcional: transformar el caos de la información en conocimiento accionable. A través de una Arquitectura Orientada a Eventos (Event-Driven) profundamente desacoplada y la optimización en el uso de modelos de inteligencia artificial, el sistema se erige como una plataforma resiliente, ultra rápida y altamente rentable, capaz de escalar operativamente a miles de usuarios sin disparar costes.
 
 El sistema permite al usuario "dialogar" con su propia base de conocimiento, generar contenido nuevo (tutoriales, menús, ideas) y realizar búsquedas web en tiempo real. Sus pilares técnicos garantizan consistencia absoluta de datos, tiempos de respuesta imperceptibles y omnicanalidad sin fricción.
 

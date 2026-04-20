@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-Segundo Cerebro Autónomo — Script de Verificación de Salud
+LinkAnvil — Script de Verificación de Salud
 =============================================================================
 Verifica que todos los servicios están disponibles y que pueden comunicarse
 entre sí desde dentro de la red Docker (cerebro-net).
@@ -358,7 +358,7 @@ def check_inter_service_connectivity() -> list[Result]:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    print(f"\n{BOLD}{'🧠 SEGUNDO CEREBRO AUTÓNOMO':^72}{RESET}")
+    print(f"\n{BOLD}{'🧠 LinkAnvil':^72}{RESET}")
     print(f"{'Verificación de Salud de la Infraestructura':^72}")
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S'):^72}\n")
 

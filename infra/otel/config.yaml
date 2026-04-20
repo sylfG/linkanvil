@@ -1,4 +1,4 @@
-# OpenTelemetry Collector — Segundo Cerebro Autónomo
+# OpenTelemetry Collector — LinkAnvil
 # Centraliza trazas de todos los microservicios
 # Trace-ID generado por Traefik → viaja por toda la pipeline
 

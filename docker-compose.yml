@@ -1,5 +1,5 @@
 # =============================================================================
-# Segundo Cerebro Autónomo — Docker Compose
+# LinkAnvil — Docker Compose
 # =============================================================================
 # Servicios: Traefik · RabbitMQ · Redis · PostgreSQL · Qdrant · n8n ·
 #            LiteLLM · OpenTelemetry Collector · Prometheus · Grafana · Jaeger

@@ -27,12 +27,8 @@ export default withMermaid(
     'link': '/'
   },
   {
-    'text': 'Épicas y Features',
-    'link': '/1_epics_and_features'
-  },
-  {
-    'text': 'Arquitectura',
-    'link': '/2_architecture_risks'
+    'text': 'Documentación',
+    'link': '/0_0_resumen'
   }
 ],
 
@@ -69,8 +65,16 @@ export default withMermaid(
                                 'link': '/6_arquitectura'
                         },
                         {
+                                'text': '🔄 Ejemplo de Flujo',
+                                'link': '/7_ejemplo_flujo'
+                        },
+                        {
                                 'text': '⚙️ Instalación y Configuración',
                                 'link': '/8_instalacion_y_configuracion'
+                        },
+                        {
+                                'text': '📝 Log de Auditoría',
+                                'link': '/AUDIT_LOG'
                         }
                 ]
         },
@@ -205,6 +209,34 @@ export default withMermaid(
                         {
                                 'text': 'F-06.4 — Limite automatico estrangulami',
                                 'link': '/backlog/F-06.4_limite-automatico-estrangulami'
+                        },
+                        {
+                                'text': 'F-07.1 — Exportacion formato boveda llm wiki',
+                                'link': '/backlog/F-07.1_exportacion-formato-boveda-llm-wiki'
+                        },
+                        {
+                                'text': 'F-07.2 — Traduccion aristas a enlaces obsidian',
+                                'link': '/backlog/F-07.2_traduccion-aristas-a-enlaces-obsidian'
+                        },
+                        {
+                                'text': 'F-07.3 — Generador de cache caliente hot md',
+                                'link': '/backlog/F-07.3_generador-de-cache-caliente-hot-md'
+                        },
+                        {
+                                'text': 'F-08.1 — Sistema de login',
+                                'link': '/backlog/F-08.1_sistema-de-login'
+                        },
+                        {
+                                'text': 'F-08.2 — Sistema de roles y tenant unico',
+                                'link': '/backlog/F-08.2_sistema-de-roles-y-tenant-unico'
+                        },
+                        {
+                                'text': 'F-09.1 — Soporte multilenguaje',
+                                'link': '/backlog/F-09.1_soporte-multilenguaje'
+                        },
+                        {
+                                'text': 'F-09.2 — Integracion accesibilidad',
+                                'link': '/backlog/F-09.2_integracion-accesibilidad'
                         }
                 ]
         }

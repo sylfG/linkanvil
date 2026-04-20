@@ -10,11 +10,11 @@ Este documento provee la notación visual técnica bajo el estándar C4 Model, d
 
 ```mermaid
 C4Context
-    title Diagrama de Contexto del Sistema - Segundo Cerebro Autónomo
+    title Diagrama de Contexto del Sistema - LinkAnvil
     
     Person(usuario, "Usuario (Dueño)", "Interactúa para capturar enlaces, visualizar métricas y dialogar con su propia base de conocimiento híbrida.")
     
-    System(cerebro, "Segundo Cerebro Autónomo", "Filtra, ingesta, vectoriza, y provee respuestas RAG sobre conocimiento estructurado localmente.")
+    System(cerebro, "LinkAnvil", "Filtra, ingesta, vectoriza, y provee respuestas RAG sobre conocimiento estructurado localmente.")
     
     System_Ext(telegram, "Telegram API", "Canal omnicanal secundario para enviar URLs y reanudar sesiones del chatbot.")
     System_Ext(fuentes, "Fuentes de Datos Web", "Páginas web, APIs, y SPAs de donde el sistema raspa el contenido (Scraping).")

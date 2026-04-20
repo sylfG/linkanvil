@@ -1,5 +1,5 @@
 -- =============================================================================
--- Segundo Cerebro Autónomo — PostgreSQL Schema Inicial
+-- LinkAnvil — PostgreSQL Schema Inicial
 -- Patrón Outbox · Multi-Tenancy (RLS) · Curador Nocturno
 -- =============================================================================
 

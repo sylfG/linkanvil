@@ -1,5 +1,5 @@
 # Prometheus — Configuración de scraping
-# Segundo Cerebro Autónomo
+# LinkAnvil
 
 global:
   scrape_interval: 15s

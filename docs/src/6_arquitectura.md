@@ -1,6 +1,6 @@
-# 🏗️ Arquitectura e Infraestructura Local — Segundo Cerebro Autónomo
+# 🏗️ Arquitectura e Infraestructura Local — LinkAnvil
 
-Este documento detalla la infraestructura local basada en Docker Compose del proyecto **Segundo Cerebro Autónomo**, explicando la topología de la red, los componentes desplegados, sus responsabilidades y cómo fluye la información a través del sistema.
+Este documento detalla la infraestructura local basada en Docker Compose del proyecto **LinkAnvil**, explicando la topología de la red, los componentes desplegados, sus responsabilidades y cómo fluye la información a través del sistema.
 
 ---
 

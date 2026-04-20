@@ -1,5 +1,5 @@
 # Qdrant — Configuración de producción
-# Segundo Cerebro Autónomo
+# LinkAnvil
 
 storage:
   # Directorio de datos persistentes

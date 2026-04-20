@@ -1,6 +1,6 @@
 # 📋 Resumen de Contenedores y Topología de Red
 
-El clúster del **Segundo Cerebro Autónomo** está compuesto por un ecosistema de contenedores interconectados. A continuación, se detalla la función específica de cada contenedor desplegado y el diagrama de red que ilustra cómo están conectados entre sí.
+El clúster del **LinkAnvil** está compuesto por un ecosistema de contenedores interconectados. A continuación, se detalla la función específica de cada contenedor desplegado y el diagrama de red que ilustra cómo están conectados entre sí.
 
 ---
 

@@ -95,7 +95,7 @@ No disponible
 
 ### 3.4 Documentos externos y enlaces
 
-- Resumen del Proyecto - docs/src/resumen.md - El proyecto "Segundo Cerebro Autónomo" transforma el caos de la información en conocimiento accionable mediante una arquitectura orientada a eventos, asíncrona, descapolada y resiliente.
+- Resumen del Proyecto - docs/src/resumen.md - El proyecto "LinkAnvil" transforma el caos de la información en conocimiento accionable mediante una arquitectura orientada a eventos, asíncrona, descapolada y resiliente.
 - Arquitectura del Sistema - docs/src/ARQUITECTURA.md - Detalla la infraestructura local basada en Docker Compose, topología de la red, los componentes desplegados (Traefik, n8n, LiteLLM, Qdrant, etc.) y los flujos de información a través del sistema.
 
 ---
@@ -186,4 +186,4 @@ Actualizar solo cuando la informacion minima para una fase este lista.
 
 | Fecha | Cambio realizado | Responsable | Aprobado por |
 | --- | --- | --- | --- |
-| 2026-04-09 | Creacion/actualizacion de contexto fuente de Arquitectura y Resumen del Segundo Cerebro Autónomo | Asistente IA | Usuario |
+| 2026-04-09 | Creacion/actualizacion de contexto fuente de Arquitectura y Resumen del LinkAnvil | Asistente IA | Usuario |

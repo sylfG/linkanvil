@@ -114,12 +114,34 @@
 
 ---
 
+## EPIC-08: Identidad y Control de Acceso
+>
+> Gestión de usuarios, autenticación y asignación estricta de tenencia.
+
+| Feature ID | Feature | Prioridad MoSCoW |
+| --- | --- | --- |
+| F-08.1 | Sistema de login unificado para acceso a la plataforma | MUST |
+| F-08.2 | Sistema de roles y Tenant único por usuario (eliminación de selector de Tenant) | MUST |
+
+---
+
+## EPIC-09: Experiencia de Usuario e Internacionalización
+>
+> Adaptación del sistema para uso global y pautas de accesibilidad para todos los perfiles de usuario.
+
+| Feature ID | Feature | Prioridad MoSCoW |
+| --- | --- | --- |
+| F-09.1 | Soporte Multilenguaje fluido (ES/ENG) en toda la interfaz de usuario | SHOULD |
+| F-09.2 | Integración de estándares de Accesibilidad (WCAG, contrastes, soporte lectores) | SHOULD |
+
+---
+
 ## Resumen de Prioridades
 
 | Prioridad | Cantidad de Features |
 | --- | --- |
-| MUST | 23 |
-| SHOULD | 8 |
+| MUST | 25 |
+| SHOULD | 10 |
 | COULD | 4 |
 | WON'T | 0 |
 

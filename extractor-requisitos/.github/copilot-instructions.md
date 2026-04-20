@@ -15,6 +15,7 @@ Antes de ejecutar cualquier fase, incluye los archivos canónicos en tu contexto
 ```
 
 **Atajo recomendado para iniciar:**
+
 ```
 @workspace /iniciar-requisitos
 #file:docs/src/0_descripcion_proyecto.md
@@ -24,6 +25,7 @@ Antes de ejecutar cualquier fase, incluye los archivos canónicos en tu contexto
 ```
 
 **Atajo para revisar cambios:**
+
 ```
 @workspace /revisar-cambios
 #file:docs/src/0_cambios_requisitos.md

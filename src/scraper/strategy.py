@@ -4,6 +4,7 @@ import httpx
 import json
 from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, ValidationError
+from scrapling.fetchers import AsyncFetcher, AsyncStealthySession
 
 logger = logging.getLogger(__name__)
 
@@ -38,23 +39,38 @@ class ScraperStrategy(abc.ABC):
 
 class BasicHttpStrategy(ScraperStrategy):
     """
-    Extraccion rapida via HTTP estandar.
-    Ideal para articulos y blogs.
+    Extraccion rapida via HTTP estandar (Scrapling AsyncFetcher).
+    Ideal para articulos y blogs, extremadamente rapido y adaptable.
     """
     async def extract(self, url: str) -> str:
-        logger.info(f"Extrayendo contenido via BasicHttpStrategy: {url}")
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.text
+        logger.info(f"Extrayendo contenido via BasicHttpStrategy (Scrapling): {url}")
+        # AsyncFetcher realiza una peticion asincrona muy rapida y tolerante
+        try:
+            page = await AsyncFetcher.fetch(url)
+            # F-02.3: Reducir HTML descartando scripts, estilos, dejando el body
+            body_content = page.css('body').get()
+            return body_content if body_content else page.html
+        except Exception as e:
+            logger.warning(f"Fallback a httpx tras fallo de AsyncFetcher ({e})")
+            # Fallback robusto en caso de error interno temprano
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.text
 
 class PuppeteerStrategy(ScraperStrategy):
     """
-    Simulacion de Puppeteer / Browser Automation para SPAs.
+    Extraccion Dinamica para SPAs y Bypass Anti-bots via Scrapling StealthyFetcher (Cloudflare Turnstile, etc.)
+    Implementa F-02.1 de ruteo dinamico avanzado.
     """
     async def extract(self, url: str) -> str:
-        logger.info(f"Simulando extraccion via PuppeteerStrategy (Renderizado JS): {url}")
-        return f"<html><body>Contenido renderizado JS de {url}</body></html>"
+        logger.info(f"Stealth / Browser Automation (AsyncStealthySession): {url}")
+        # AsyncStealthySession controla Chromium mitigando baneos sin requerir proxies complejos si no se desea.
+        async with AsyncStealthySession(headless=True, solve_cloudflare=True) as session:
+            page = await session.fetch(url)
+            # Descartar peso vacio extrayendo el container principal para ahorrar en el posterior LLM Gateway
+            body_content = page.css('body').get()
+            return body_content if body_content else page.html
 
 class AiProxyStrategy(ScraperStrategy):
     """

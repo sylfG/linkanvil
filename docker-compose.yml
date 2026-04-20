@@ -45,6 +45,7 @@ services:
       dockerfile: infra/scraper.Dockerfile
     container_name: cerebro-scraper
     restart: unless-stopped
+    shm_size: '1gb'
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}

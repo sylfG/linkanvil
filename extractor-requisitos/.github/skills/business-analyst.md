@@ -96,6 +96,7 @@ Si el backlog es el **punto de inicio absoluto** (sin dependencias), usar:
 ```
 
 **Columna `Bloqueante`:** indica si el backlog actual **no puede comenzar** sin que la dependencia esté completada al 100%.
+
 - `Sí` → el script crea relación nativa `Mark as blocked by` en GitHub.
 - `No` → se mantiene solo la relación de jerarquía `parent/sub-issue`.
 
@@ -165,7 +166,7 @@ Para [Beneficio/Valor de Negocio]
 
 **REGLA ESTRICTA:** Los criterios de aceptación deben ser **narrativa BDD pura** (Behavior-Driven Development). **NO incluyas código fuente** (PHP, JavaScript, Python, SQL, etc.) dentro de los escenarios.
 
-### ❌ FORMATO INCORRECTO (con código):
+### ❌ FORMATO INCORRECTO (con código)
 
 ```markdown
 - [ ] **Escenario 1 (Componente UI):**
@@ -176,7 +177,9 @@ Para [Beneficio/Valor de Negocio]
       return <table>...</table>;
   }
   ```
+
   **Entonces** el componente renderiza la tabla.
+
 ```
 
 **Por qué está MAL:**
@@ -208,6 +211,7 @@ Para [Beneficio/Valor de Negocio]
 ```
 
 **Por qué está BIEN:**
+
 - Describe **QUÉ** debe hacer el sistema, no **CÓMO** implementarlo
 - Un QA puede escribir casos de prueba directamente desde estos criterios
 - El equipo de desarrollo elige la mejor implementación técnica
@@ -218,18 +222,22 @@ Para [Beneficio/Valor de Negocio]
 ### Guía Práctica para Escribir Criterios BDD
 
 **1. Enfócate en el COMPORTAMIENTO observable del usuario:**
+
 - ✅ "El usuario ve un botón 'Eliminar' en cada fila"
 - ❌ "Renderiza `<button onClick={borrarId}>Eliminar</button>`"
 
 **2. Describe RESULTADOS esperados, no código:**
+
 - ✅ "El elemento cambia de estado y desaparece del listado principal"
 - ❌ "Ejecuta query: `UPDATE tabla SET status = 'closed' WHERE id = ?`"
 
 **3. Especifica VALIDACIONES, no implementación:**
+
 - ✅ "El título debe tener mínimo 10 caracteres; si es menor, muestra error"
 - ❌ "Valida con la regla del framework: `'title' => 'required|min:10'`"
 
 **4. Menciona TECNOLOGÍAS solo cuando sean requisitos de negocio:**
+
 - ✅ "El exportador de reportes debe generar un archivo PDF y CSV" ← requisito funcional
 - ❌ "Usa la librería X o el paquete Y para generar el PDF" ← decisión técnica, va en Notas
 

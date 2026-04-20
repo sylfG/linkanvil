@@ -8,7 +8,7 @@ export default withMermaid(
     lang: 'es-ES',
 
     // Para GitHub Pages (Ajustar con el nombre del repositorio si es necesario)
-    // base: '/nombre-del-repositorio/',
+    base: '/linkanvil/',
     srcDir: './src',
 
     ignoreDeadLinks: true,
@@ -18,6 +18,9 @@ export default withMermaid(
     },
 
     themeConfig: {
+      socialLinks: [
+        { icon: 'github', link: 'https://github.com/sylfG/linkanvil' }
+      ],
       nav: [
   {
     'text': 'Inicio',
@@ -64,6 +67,10 @@ export default withMermaid(
                         {
                                 'text': '🏗️ Arquitectura',
                                 'link': '/6_arquitectura'
+                        },
+                        {
+                                'text': '⚙️ Instalación y Configuración',
+                                'link': '/8_instalacion_y_configuracion'
                         }
                 ]
         },

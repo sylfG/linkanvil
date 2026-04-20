@@ -10,8 +10,8 @@
   "devDependencies": {
     "@types/mermaid": "^9.1.0",
     "mermaid": "^11.10.1",
-    "vitepress": "^1.6.3",
-    "vue": "^3.3.0",
+    "vitepress": "latest",
+    "vue": "latest",
     "vitepress-plugin-mermaid": "^2.0.17"
   }
 }

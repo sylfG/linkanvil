@@ -79,23 +79,28 @@ graph TD
 ## 2. Descripción de Componentes
 
 ### 🚪 Puerta de Enlace (API Gateway)
-*   **Traefik (`cerebro-traefik`)**: Actúa como el único punto de entrada (reverse proxy). Se encarga del enrutamiento dinámico basado en nombres de dominio (`*.localhost`), *rate limiting* para proteger la infraestructura, y generación inicial del `Trace-ID` mediante OpenTelemetry para hacer seguimiento a la petición en todo el clúster.
+
+* **Traefik (`cerebro-traefik`)**: Actúa como el único punto de entrada (reverse proxy). Se encarga del enrutamiento dinámico basado en nombres de dominio (`*.localhost`), *rate limiting* para proteger la infraestructura, y generación inicial del `Trace-ID` mediante OpenTelemetry para hacer seguimiento a la petición en todo el clúster.
 
 ### ⚙️ Motores Core
-*   **n8n (`cerebro-n8n`)**: El "cerebro" orquestador. Define flujos de trabajo (*workflows*) visuales. Recibe notificaciones webhooks, consume URLs desde RabbitMQ, realiza scraping y orquesta los pasos ordenando al LLM que procese la información, para luego inyectar los resultados en PostgreSQL y los vectores en Qdrant.
-*   **LiteLLM (`cerebro-litellm`)**: Actúa como capa de abstracción para modelos de IA. Recibe peticiones de n8n y decide internamente a qué LLM llamar (OpenAI, Anthropic, o Local). Implementa *Fallback* (si OpenAI cae, intenta con Anthropic sin afectar al sistema), usa *Circuit Breakers* y guarda peticiones comunes en caché de Redis para ahorrar tokens.
+
+* **n8n (`cerebro-n8n`)**: Orquestador visual de flujos de trabajo (*workflows*). Recibe notificaciones webhooks y orquesta los pasos ordenando al LLM que procese la información.
+* **Scraper Worker (`cerebro-scraper`)**: Microservicio asíncrono basado en Scrapling y Playwright. Extrae inteligentemente contenido textual de sitios web estáticos y dinámicos (SPAs), evadiendo bloqueos básicos y pasando el contenido a la cola de procesamiento.
+* **LiteLLM (`cerebro-litellm`)**: Actúa como capa de abstracción para modelos de IA. Recibe peticiones de n8n y decide internamente a qué LLM llamar (OpenAI, Anthropic, o Local). Implementa *Fallback* (si OpenAI cae, intenta con Anthropic sin afectar al sistema), usa *Circuit Breakers* y guarda peticiones comunes en caché de Redis para ahorrar tokens.
 
 ### 💾 Almacenamiento, Estado y Eventos
-*   **PostgreSQL (`cerebro-postgres`)**: Centro de la verdad. Guarda los metadatos de los recursos, la tabla del patrón *Outbox* para mantener consistencia eventual de eventos, y el histórico semántico relacional entre recursos (grafología base). Incluye políticas RLS (Row-Level Security) para aislamiento multi-tenant.
-*   **Redis (`cerebro-redis`)**: Base de datos en memoria hiper-rápida. Evita en tiempo real que se capturen URLs duplicadas (mediante un Bloom Filter), guarda y recupera contextos de sesiones de chats interactivas, y provee caché en sub-milisegundos al gateway de IA.
-*   **RabbitMQ (`cerebro-rabbitmq`)**: Bus de mensajes de alta resiliencia. Mantiene colas de extracción de información. Si un sistema de origen o red falla, RabbitMQ reintenta o mueve el trabajo a una "Dead Letter Queue" (DLQ) mitigando fallos silenciosos.
-*   **Qdrant (`cerebro-qdrant`)**: Motor de búsqueda vectorial para recuperación híbrida y *Retrieval-Augmented Generation* (RAG). Almacena los "embeddings" que el LLM genera. Aislado lógicamente mediantes payloads de `tenant_id` y preparado para *Similitud del Coseno*.
+
+* **PostgreSQL (`cerebro-postgres`)**: Centro de la verdad. Guarda los metadatos de los recursos, la tabla del patrón *Outbox* para mantener consistencia eventual de eventos, y el histórico semántico relacional entre recursos (grafología base). Incluye políticas RLS (Row-Level Security) para aislamiento multi-tenant.
+* **Redis (`cerebro-redis`)**: Base de datos en memoria hiper-rápida. Evita en tiempo real que se capturen URLs duplicadas (mediante un Bloom Filter), guarda y recupera contextos de sesiones de chats interactivas, y provee caché en sub-milisegundos al gateway de IA.
+* **RabbitMQ (`cerebro-rabbitmq`)**: Bus de mensajes de alta resiliencia. Mantiene colas de extracción de información. Si un sistema de origen o red falla, RabbitMQ reintenta o mueve el trabajo a una "Dead Letter Queue" (DLQ) mitigando fallos silenciosos.
+* **Qdrant (`cerebro-qdrant`)**: Motor de búsqueda vectorial para recuperación híbrida y *Retrieval-Augmented Generation* (RAG). Almacena los "embeddings" que el LLM genera. Aislado lógicamente mediantes payloads de `tenant_id` y preparado para *Similitud del Coseno*.
 
 ### 🔭 Observabilidad de Infraestructura
-*   **OTel Collector (`cerebro-otel`)**: Recolector central que unifica *Traces* (rastreo) y *Metrics* (Métricas) de todo el sistema.
-*   **Prometheus (`cerebro-prometheus`)**: Monitoriza activamente (mediante *scraping*) la salud, consumo de recursos y estado interno de todos los microservicios usando exportadores.
-*   **Jaeger (`cerebro-jaeger`)**: Motor de *Distributed Tracing*. Permite auditar el ciclo de vida o viaje completo de una URL ("De Web a Base de Datos"). 
-*   **Grafana (`cerebro-grafana`)**: Cuadros de mando unificados. Permite previsualizar atascos en RabbitMQ u OpenTemeletry.
+
+* **OTel Collector (`cerebro-otel`)**: Recolector central que unifica *Traces* (rastreo) y *Metrics* (Métricas) de todo el sistema.
+* **Prometheus (`cerebro-prometheus`)**: Monitoriza activamente (mediante *scraping*) la salud, consumo de recursos y estado interno de todos los microservicios usando exportadores.
+* **Jaeger (`cerebro-jaeger`)**: Motor de *Distributed Tracing*. Permite auditar el ciclo de vida o viaje completo de una URL ("De Web a Base de Datos").
+* **Grafana (`cerebro-grafana`)**: Cuadros de mando unificados. Permite previsualizar atascos en RabbitMQ u OpenTemeletry.
 
 ---
 
@@ -175,21 +180,22 @@ sequenceDiagram
 
 ## 4. Estrategia de Persistencia y Seguridad
 
-*   **Volúmenes Docker:** Se aplican Docker Volumes estándar manejados localmente. Los datos clave de Prometheus, PostgreSQL, Qdrant y Redis garantizan durabilidad incluso tras demoler y relanzar contenedores (`docker compose down && docker compose up -d`).
-*   **Permisología Multi-tenant:** Una consulta originada para el entorno X es adjuntada internamente con el `tenant_id` que filtra filas de SQL y sub-índices (payloads) de vectores Qdrant; un pilar innegociable *Security by Design*.
-*   **Healthchecks Proactivos:** En el `docker-compose.yml`, los *healthchecks* evalúan internamente la conectividad real y dependencias. `LiteLLM` no iniciará procesamiento si PostgreSQL o Redis no están operacionales (mecanismo `depends_on: condition: service_healthy`).
+* **Volúmenes Docker:** Se aplican Docker Volumes estándar manejados localmente. Los datos clave de Prometheus, PostgreSQL, Qdrant y Redis garantizan durabilidad incluso tras demoler y relanzar contenedores (`docker compose down && docker compose up -d`).
+* **Permisología Multi-tenant:** Una consulta originada para el entorno X es adjuntada internamente con el `tenant_id` que filtra filas de SQL y sub-índices (payloads) de vectores Qdrant; un pilar innegociable *Security by Design*.
+* **Healthchecks Proactivos:** En el `docker-compose.yml`, los *healthchecks* evalúan internamente la conectividad real y dependencias. `LiteLLM` no iniciará procesamiento si PostgreSQL o Redis no están operacionales (mecanismo `depends_on: condition: service_healthy`).
 
 ### 4.1 Patrón de Persistencia Dual: Cerebro Lógico vs Semántico
 
-La arquitectura de Masteria utiliza intencionalmente dos sistemas de bases de datos especializados en lugar de uno solo. Esta separación (PostgreSQL + Qdrant) constituye el núcleo del sistema RAG avanzado:
+La arquitectura de LinkAnvil utiliza intencionalmente dos sistemas de bases de datos especializados en lugar de uno solo. Esta separación (PostgreSQL + Qdrant) constituye el núcleo del sistema RAG avanzado:
 
-*   **PostgreSQL (El Cerebro Lógico y Transaccional):** Actúa como la única fuente de verdad estructurada. Gestiona textos fuente (*raw data*), metadatos exactos, historial inmutable y relaciones directas. Garantiza la seguridad matemática mediante *Row-Level Security (RLS)* aislándolos por `tenant_id` y asegura la integridad de los eventos asíncronos mediante el patrón *Outbox*. Su poder radica en la precisión (ACID) y rigidez transaccional.
-*   **Qdrant (El Cerebro Semántico e Intuitivo):** Actúa como la capa asociativa. Exclusivamente almacena los vectores matemáticos de alta dimensionalidad (*embeddings*) unidos al `tenant_id` y un ID del registro que apunta a la base de datos principal. Su única labor es ejecutar búsquedas de similitud (HNSW y Similitud del coseno) en milisegundos, encontrando datos "afines en significado" auque no compartan palabras coincidentes exactas.
+* **PostgreSQL (El Cerebro Lógico y Transaccional):** Actúa como la única fuente de verdad estructurada. Gestiona textos fuente (*raw data*), metadatos exactos, historial inmutable y relaciones directas. Garantiza la seguridad matemática mediante *Row-Level Security (RLS)* aislándolos por `tenant_id` y asegura la integridad de los eventos asíncronos mediante el patrón *Outbox*. Su poder radica en la precisión (ACID) y rigidez transaccional.
+* **Qdrant (El Cerebro Semántico e Intuitivo):** Actúa como la capa asociativa. Exclusivamente almacena los vectores matemáticos de alta dimensionalidad (*embeddings*) unidos al `tenant_id` y un ID del registro que apunta a la base de datos principal. Su única labor es ejecutar búsquedas de similitud (HNSW y Similitud del coseno) en milisegundos, encontrando datos "afines en significado" auque no compartan palabras coincidentes exactas.
 
 Esta filosofía de **Doble Cerebro** permite aprovechar la intuición difusa de la Inteligencia Artificial (Qdrant) mientras se resguarda bajo la seguridad, coste-eficiencia y transaccionalidad de un motor relacional en frío (Postgres), protegiendo al sistema de escalar incorrectamente.
 
 ### 4.2. Exportacin Fsica a Gemelo Digital (Offline-First)
-Un mecanismo on-demand extrae los datos aislados por tenant_id en PostgreSQL/Qdrant, recompila los grafos lógicos como _callouts_ de Markdown (`> [!info] Relacionado con [[Topic]]`) y transmite un `.zip` conformando un LLM Wiki.
+
+Un mecanismo on-demand extrae los datos aislados por tenant_id en PostgreSQL/Qdrant, recompila los grafos lógicos como *callouts* de Markdown (`> [!info] Relacionado con [[Topic]]`) y transmite un `.zip` conformando un LLM Wiki.
 
 **Seguridad de Exportación en RAM (Zero-Disk Storage)**:
 > Esta operación es altamente segura dado que **todo el motor de empaquetado y archivos `.md` se ejecutan exclusivamente en Memoria RAM**. El sistema transfiere un bloque bytes al backend UI de forma nativa sin abrir, escribir, generar ni retener estructuras temporales `.zip` en el disco local del servidor, salvaguardando por completo el aislamiento del tenant y el multi-arrendamiento seguro (RLS de extremo a extremo).

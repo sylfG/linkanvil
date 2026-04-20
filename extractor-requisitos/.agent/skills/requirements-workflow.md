@@ -5,6 +5,7 @@ Activa el pipeline completo de ingeniería de requisitos de este workspace.
 ## Cuándo usar este skill
 
 Usa `@requirements-workflow` cuando quieras:
+
 - Iniciar un proceso de extracción de requisitos (`/iniciar-requisitos`)
 - Revisar y propagar cambios sobre el backlog existente (`/revisar-cambios`)
 - Generar o actualizar backlogs, arquitectura o diagramas del proyecto

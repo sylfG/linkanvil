@@ -32,19 +32,23 @@ Antes de generar el plan, investigar el estado actual según el tipo de feature:
 **Incluir en el plan** una sección "Estado actual (comunidad)" con los hallazgos clave, fuentes y fechas. Si no hay datos recientes suficientes, indicarlo explícitamente.
 
 ### 1. Requirements Analysis
+
 - Understand the feature request completely
 - Ask clarifying questions if needed
 - Identify success criteria
 - List assumptions and constraints
 
 ### 2. Architecture Review
+
 - Analyze existing codebase structure
 - Identify affected components
 - Review similar implementations
 - Consider reusable patterns
 
 ### 3. Step Breakdown
+
 Create detailed steps with:
+
 - Clear, specific actions
 - File paths and locations
 - Dependencies between steps
@@ -52,6 +56,7 @@ Create detailed steps with:
 - Potential risks
 
 ### 4. Implementation Order
+
 - Prioritize by dependencies
 - Group related changes
 - Minimize context switching
@@ -224,4 +229,3 @@ Each phase should be mergeable independently. Avoid plans that require all phase
 - Phases that cannot be delivered independently
 
 **Remember**: A great plan is specific, actionable, and considers both the happy path and edge cases. The best plans enable confident, incremental implementation.
-

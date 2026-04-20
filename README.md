@@ -1,43 +1,104 @@
-# 🧠 Segundo Cerebro Autónomo — Infraestructura Local
+<div align="center">
+  <img src="https://raw.githubusercontent.com/tandpfun/skill-icons/65dea6c4eaca7da319e552c09f01fa9b14b0870d/icons/Docker.svg" alt="Logo" width="80" height="80">
 
-> Plataforma event-driven de gestión de conocimiento personal: captura, procesa y conversa con tu propia base de conocimiento mediante RAG + LLM Gateway + grafo semántico.
+  <h1 align="center">🧠 LinkAnvil: Autonomous Knowledge Extractor</h1>
 
-El repositorio cuenta con un despliegue local dockerizado con un ecosistema completo para operar una IA soberana y personal enlazada a una base de datos relacional orientada a grafos y RAG.
+  <p align="center">
+    Plataforma orientada al procesamiento ágil y desatendido de URLs para construir grafos semánticos privados.
+    <br />
+    <a href="https://silvia.github.io/linkanvil"><strong>Explora la Documentación »</strong></a>
+    <br />
+    <br />
+    <a href="docs/src/8_instalacion_y_configuracion.md">Ver Instalación</a>
+    ·
+    <a href="docs/src/1_epics_and_features.md">Reportar un Bug</a>
+    ·
+    <a href="docs/src/1_epics_and_features.md">Proponer Funcionalidad</a>
+  </p>
 
-## ⚡ Enlaces Rápidos y Documentación
-
-Toda la arquitectura, registros de diseño, documentación detallada y despliegue del proyecto están unificados a través de [VitePress](https://vitepress.dev/) e integrados mediante GitHub Actions para su publicación automatizada.
-
-* 📖 **[Visita la Documentación Oficial Web (GitHub Pages)](https://silvia.github.io/masteria)** *(Reemplaza la URL según tu repositorio y GitHub Pages configurado)*
-* ⚙️ **[Guía de Instalación y Configuración](docs/src/8_instalacion_y_configuracion.md)**
-* 🏗️ **[Arquitectura y Diseño de Sistemas](docs/src/6_arquitectura.md)**
-
----
-
-## 🔑 Integraciones API y Requisitos Externos
-
-Para que el modelo de enrutamiento dinámico, fallbacks automáticos, limitador de tasas y clasificación funcione correctamente, nuestro servicio unificado LLM Gateway (basado en LiteLLM) requiere credenciales de APIs de Inteligencia Artificial externas, las cuales actúan según configuración y fallos jerárquicos (ej: intentar primero OpenAI GPT-4o, si cae, usar Anthropic Claude y luego Local LLM).
-
-A nivel interno existen credenciales o secretos locales entre los contenedores, pero a nivel externo dependemos de:
-
-* **Proveedor OpenAI**: Requiere `OPENAI_API_KEY=sk-...` (Recomendable para GPT-4o y Embedding APIs)
-* **Proveedor Anthropic**: Requiere `ANTHROPIC_API_KEY=sk-ant-...` (Recomendado como nodo primario de RAG o fallback)
-* **Otros Proveedores**: Azure, Fireworks, etc., configurables directo desde LiteLLM.
-
-Estas variables deben ser ubicadas en tu archivo `.env` configurado localmente a partir de la copia o despliegue inicial en `.env.example`. Además, requerirás asignar configuraciones de seguridad por defecto para tus servicios internos (Contraseñas de RabbitMQ, PostgreSQL, Panel de control UI de N8N y Grafana). Puedes acceder a todos los detalles de los secretos y variables de entorno en la **[Guía de Instalación Detallada](docs/src/8_instalacion_y_configuracion.md)**.
+  [![VitePress](https://img.shields.io/badge/docs-VitePress-blue)](https://silvia.github.io/linkanvil)
+  [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](#-tecnologias-y-servicios)
+  [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+</div>
 
 ---
 
-## 🗄️ Stack Principal de Servicios y Tecnologías
+## 🎯 Sobre el Proyecto
 
-Todo el ecosistema del Segundo Cerebro se administra y empaqueta detrás de un orquestador local compuesto por:
+LinkAnvil no es únicamente un "cerebro digital" genérico; es una **plataforma analítica diseñada para el procesamiento asíncrono de URLs**.
 
-1. **Traefik Gateway**: API y control de rutas para tus contenedores.
-2. **LiteLLM**: Enrutador/Proxy agnóstico para múltiples LLMs externo/local con tolerancias a fallos (Circuit Breakers).
-3. **RabbitMQ & Redis**: Motores potentes y comprobados para gestión asíncrona (DLQ) de encolamientos de documentos y caches sub-milisegundo.
-4. **PostgreSQL + Outbox + RLS**: Capa relacional para estructurar, auditar, organizar metadatos, y realizar un particionado con multi-tenancy usando *Row-Level Security*.
-5. **Qdrant**: Base de datos nativamente vectorial en la que se guardan los "embeddings" de largo contexto.
-6. **n8n**: Tu centro de administración gráfico para *workflows*. Todo evento y sub-procesamiento de pipelines se puede orquestar aquí.
-7. **Observabilidad Full-Stack**: Integrado con Opentelemetry Collector recogiendo las métricas que viajan hacia **Prometheus**, **Jaeger** (trazas visuales del gateway LLM y BD) y un dashboard final en **Grafana**.
+El objetivo principal es proporcionar un cauce estructurado donde puedas "enviar y olvidar" enlaces (artículos, documentación, foros). LinkAnvil se encarga de extraer el contenido, procesarlo mediante LLMs, vectorizarlo (RAG), y establecer **colisiones semánticas** (relacionar automáticamente conceptos similares) mediante su grafo de conocimiento interno.
 
-Para empezar e inicializar tu **Segundo Cerebro**: [Documentación de Setup](docs/src/8_instalacion_y_configuracion.md).
+### ✨ Ventajas y Características Principales
+
+* **Ingesta Desatendida de URLs**: Uso de colas (RabbitMQ) para procesar información web en segundo plano, sin bloqueos ni latencia para el usuario final.
+* **Colisión Semántica Vectorial**: Interconexión autónoma de recursos utilizando similitud del coseno en Qdrant, desvelando relaciones ocultas entre tus documentos guardados.
+* **Proxy LLM Resiliente y Privado**: Fallbacks automatizados (ej: OpenAI → Anthropic → Local) usando LiteLLM. Además, es **100% compatible con Ollama**, permitiendo ejecutar modelos de IA de forma totalmente privada y desconectada si tu hardware lo permite.
+* **Pipeline Zero-Defect**: Aislamiento de fallos mediante Dead Letter Queues (DLQ). Si el scraping de una URL falla, el ecosistema sigue funcionando y el error se audita.
+* **Observabilidad Completa**: Telemetría, métricas y trazas nativas con OpenTelemetry, Jaeger, Prometheus y Grafana.
+
+---
+
+## 🛠️ Tecnologías y Servicios
+
+El backend de LinkAnvil está desacoplado y funciona mediante una orquestación de contenedores.
+
+* **API Gateway**: Traefik
+* **Message Broker**: RabbitMQ
+* **Bases de Datos**: PostgreSQL (Relacional + RLS) y Qdrant (Vectorial)
+* **Caché Temporal**: Redis
+* **Lógica y Orquestación**: LiteLLM (Gateway de IA) y n8n (Workflows)
+* **Observabilidad**: OpenTelemetry, Jaeger, Prometheus, Grafana
+
+---
+
+## 💻 Requisitos del Sistema
+
+LinkAnvil está compuesto por una arquitectura de microservicios ligera que puede desplegarse en cualquier entorno compatible con Docker (Servidor VPS, NAS, Nube o Local). Los siguientes requisitos contemplan **únicamente la ejecución de los servicios base** del sistema (bases de datos, orquestador, colas y telemetría), excluyendo el host (SO) y excluyendo la ejecución de Modelos de Lenguaje (IA).
+
+| Recurso | Mínimos | Recomendados |
+| :--- | :--- | :--- |
+| **CPU** | 2 Cores (x86_64 o ARM64) | 4+ Cores (x86_64 o ARM64) |
+| **Memoria RAM (Docker)**| 4 GB asignados a los contenedores | 8 GB asignados a los contenedores |
+| **Dependencias** | Docker Engine v24+, Compose v2 | Docker Engine v24+, Compose v2 |
+| **Almacenamiento** | 10 GB (Imágenes y volúmenes base) | 20 GB+ (Persistencia a largo plazo) |
+
+> **Aceleración y Modelos Privados (Ollama)**: El sistema envía y delega todo el cómputo de inteligencia artificial a través de LiteLLM. Puedes usar APIs externas (OpenAI, Anthropic) sin un aumento en el uso del hardware, o si lo prefieres, LinkAnvil es compatible directamente para conectar con motores locales como **[Ollama](https://ollama.com/)** permitiendo un ecosistema 100% privado y sin red.
+>
+> *Nota: Si decides alojar modelos privados mediante Ollama en esa misma máquina, deberás sumarle al sistema los requisitos proporcionales del LLM seleccionado (p. ej. sumar +8GB extra de RAM/VRAM para correr un Llama 3 de 8B parámetros).*
+
+---
+
+## 🚀 Empezar: Instalación y Pruebas
+
+Para mantener este README conciso, la guía completa paso a paso con configuración de variables, arranque de contenedores, scripts de health-check e inyección de la primera URL, se encuentra en nuestra documentación:
+
+👉 **[Ir al Tutorial Paso a Paso: Guía de Instalación y Configuración](docs/src/8_instalacion_y_configuracion.md)**
+
+---
+
+## 📚 Documentación Técnica Interna
+
+Toda la arquitectura, diagramas e hitos de desarrollo residen en [VitePress](https://vitepress.dev/) y GitHub Pages. Si eres desarrollador, te sugerimos leer:
+
+* 🏛️ **[Arquitectura y Diseño de Sistemas](docs/src/6_arquitectura.md)**
+* 📐 **[Diagramas C4 de Componentes](docs/src/3_c4_diagrams.md)**
+* 📋 **[Planificación y Registro de Épicas](docs/src/1_epics_and_features.md)**
+
+---
+
+## 🤝 Contribución
+
+¡Las contribuciones hacen que la comunidad de código abierto sea un lugar increíble para aprender, inspirar y crear! Cualquier contribución que hagas será **muy apreciada**.
+
+1. Haz un Fork del proyecto
+2. Crea tu rama para la nueva Feature (`git checkout -b feature/IncreibleFeature`)
+3. Haz commit de tus cambios (`git commit -m 'Add some IncreibleFeature'`)
+4. Sube la rama (`git push origin feature/IncreibleFeature`)
+5. Abre un Pull Request
+
+---
+
+## 📄 Licencia
+
+Distribuido bajo la Licencia MIT. Consulta el archivo `LICENSE` para más información.

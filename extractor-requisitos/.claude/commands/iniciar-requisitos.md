@@ -3,6 +3,7 @@ Ejecuta la **Fase 1: Descubrimiento y Desglose** del pipeline de ingeniería de 
 Sigue estrictamente las instrucciones de `docs/workflow/pipeline.md` sección FASE 1, aplicando el skill de `docs/skills/business-analyst.md`.
 
 Pasos obligatorios:
+
 1. Revisar `docs/src/ERROR_PREVENTION_LOG.md` antes de actuar.
 2. Leer `docs/src/0_descripcion_proyecto.md` como fuente única de contexto.
 3. Validar completitud mínima en bloques 0, 2, 3, 4, 5, 6, 7 y semáforo de 9.

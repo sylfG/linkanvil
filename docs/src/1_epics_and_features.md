@@ -1,6 +1,6 @@
-# 📋 Épicas y Features — My Second Brain Organizer
+# 📋 Épicas y Features — LinkAnvil
 
-**Proyecto:** My Second Brain Organizer
+**Proyecto:** LinkAnvil
 **Fecha:** 2026-04-09
 **Stack:** Traefik, n8n, LiteLLM, RabbitMQ, Redis, PostgreSQL, Qdrant, OpenTelemetry, Prometheus, Jaeger, Grafana
 **Estado:** FASE 1 Completada
@@ -8,6 +8,7 @@
 ---
 
 ## EPIC-00: Setup e Infraestructura Base
+>
 > Fundamentos técnicos y despliegue del ecosistema local orientado a eventos.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -22,6 +23,7 @@
 ---
 
 ## EPIC-01: Inclusión Omnicanal y Captura Asíncrona
+>
 > El Recolector: Puerta de entrada para ingestión de URLs desde múltiples orígenes, protección contra colisiones en sub-milisegundo.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -35,6 +37,7 @@
 ---
 
 ## EPIC-02: Extracción Dinámica y Procesamiento IA Estructurado
+>
 > El Analista: Ruteo resiliente para scraping de origen y análisis de información a través del LLM Gateway (LiteLLM).
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -47,6 +50,7 @@
 ---
 
 ## EPIC-03: Almacenamiento Centralizado y Auto-descubrimiento RAG
+>
 > La Memoria RAG: Consistencia de estado, prevención de Dual-Write problem y cruce de datos inteligente.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -60,6 +64,7 @@
 ---
 
 ## EPIC-04: Interacción, Memoria Híbrida y Control
+>
 > El Asistente Personal: Consumo dual entre Chatbot y panel métrico global.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -73,6 +78,7 @@
 ---
 
 ## EPIC-05: Curación Defensiva e Higiene Documental
+>
 > El Curador: Mantenimiento automatizado que no dispara rentabilidad IA o LLM.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -84,6 +90,7 @@
 ---
 
 ## EPIC-06: Observabilidad Integral del Clúster
+>
 > Trace ID completo de extremo a extremo, medición general y aislamiento para equidad de rendimiento.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -96,6 +103,7 @@
 ---
 
 ## EPIC-07: Gemelo Digital Offline y Ecosistema Local LLM Wiki
+>
 > Bóveda auto-contenida offline (Exportador) orquestada como un LLM Wiki nativo (Obsidian/Cursor) con grafos bidireccionales y hot cache cognitiva. Todo el proceso sucede íntegramente en memoria RAM y nunca se almacena en disco para total privacidad por Tenant.
 
 | Feature ID | Feature | Prioridad MoSCoW |
@@ -114,6 +122,7 @@
 | SHOULD | 8 |
 | COULD | 4 |
 | WON'T | 0 |
+
 # 📋 Épicas y Features — [NOMBRE DEL PROYECTO]
 
 <!--

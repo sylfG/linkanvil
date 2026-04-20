@@ -237,6 +237,6 @@ When reviewing AI-generated changes, prioritize:
 4. Unnecessary model-cost-inducing complexity
 
 Cost-awareness check:
+
 - Flag workflows that escalate to higher-cost models without clear reasoning need.
 - Recommend defaulting to lower-cost tiers for deterministic refactors.
-

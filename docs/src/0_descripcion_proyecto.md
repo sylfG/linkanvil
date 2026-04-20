@@ -28,7 +28,7 @@ Regla clave:
 
 | Campo | Valor |
 | --- | --- |
-| Nombre del proyecto | My Second Brain Organizer |
+| Nombre del proyecto | LinkAnvil |
 | Codigo interno (si existe) | SCA-01 |
 | Fecha ultima actualizacion (YYYY-MM-DD) | 2026-04-09 |
 | Responsable funcional | No disponible |
@@ -41,8 +41,8 @@ Regla clave:
 
 | Campo | Valor | Ejemplo |
 | --- | --- | --- |
-| URL del repositorio | https://github.com/sylfG/masteria | <https://github.com/mi-org/mi-repo> |
-| Repositorio (`OWNER/REPO`) | sylfG/masteria | mi-org/mi-repo |
+| URL del repositorio | <https://github.com/sylfG/linkanvil> | <https://github.com/mi-org/mi-repo> |
+| Repositorio (`OWNER/REPO`) | sylfG/linkanvil | mi-org/mi-repo |
 | Organizacion GitHub | sylfG | mi-org |
 | GitHub Project Number (numero) | 5 | 14 |
 | Publicar milestones por epica (`Si` o `No`) | Si | Si |

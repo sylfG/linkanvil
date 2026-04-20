@@ -744,8 +744,9 @@ except SpecificError as e:
     logger.error(f"Operation failed: {e}")
 ```
 
-__Remember__: Python code should be readable, explicit, and follow the principle of least surprise. When in doubt, prioritize clarity over cleverness.
+__Remember__: Python code should be readable, explicit, and follow the principle of least surprise. When in doubt, prioritize clarity over cleverness
 ---
+
 name: python-testing
 description: Python testing strategies using pytest, TDD methodology, fixtures, mocking, parametrization, and coverage requirements.
 origin: ECC
@@ -768,9 +769,9 @@ Comprehensive testing strategies for Python applications using pytest, TDD metho
 
 Always follow the TDD cycle:
 
-1. **RED**: Write a failing test for the desired behavior
-2. **GREEN**: Write minimal code to make the test pass
-3. **REFACTOR**: Improve code while keeping tests green
+1. __RED__: Write a failing test for the desired behavior
+2. __GREEN__: Write minimal code to make the test pass
+3. __REFACTOR__: Improve code while keeping tests green
 
 ```python
 # Step 1: Write failing test (RED)
@@ -787,8 +788,8 @@ def add(a, b):
 
 ### Coverage Requirements
 
-- **Target**: 80%+ code coverage
-- **Critical paths**: 100% coverage required
+- __Target__: 80%+ code coverage
+- __Critical paths__: 100% coverage required
 - Use `pytest --cov` to measure coverage
 
 ```bash
@@ -1385,25 +1386,25 @@ class TestUserService:
 
 ### DO
 
-- **Follow TDD**: Write tests before code (red-green-refactor)
-- **Test one thing**: Each test should verify a single behavior
-- **Use descriptive names**: `test_user_login_with_invalid_credentials_fails`
-- **Use fixtures**: Eliminate duplication with fixtures
-- **Mock external dependencies**: Don't depend on external services
-- **Test edge cases**: Empty inputs, None values, boundary conditions
-- **Aim for 80%+ coverage**: Focus on critical paths
-- **Keep tests fast**: Use marks to separate slow tests
+- __Follow TDD__: Write tests before code (red-green-refactor)
+- __Test one thing__: Each test should verify a single behavior
+- __Use descriptive names__: `test_user_login_with_invalid_credentials_fails`
+- __Use fixtures__: Eliminate duplication with fixtures
+- __Mock external dependencies__: Don't depend on external services
+- __Test edge cases__: Empty inputs, None values, boundary conditions
+- __Aim for 80%+ coverage__: Focus on critical paths
+- __Keep tests fast__: Use marks to separate slow tests
 
 ### DON'T
 
-- **Don't test implementation**: Test behavior, not internals
-- **Don't use complex conditionals in tests**: Keep tests simple
-- **Don't ignore test failures**: All tests must pass
-- **Don't test third-party code**: Trust libraries to work
-- **Don't share state between tests**: Tests should be independent
-- **Don't catch exceptions in tests**: Use `pytest.raises`
-- **Don't use print statements**: Use assertions and pytest output
-- **Don't write tests that are too brittle**: Avoid over-specific mocks
+- __Don't test implementation__: Test behavior, not internals
+- __Don't use complex conditionals in tests__: Keep tests simple
+- __Don't ignore test failures__: All tests must pass
+- __Don't test third-party code__: Trust libraries to work
+- __Don't share state between tests__: Tests should be independent
+- __Don't catch exceptions in tests__: Use `pytest.raises`
+- __Don't use print statements__: Use assertions and pytest output
+- __Don't write tests that are too brittle__: Avoid over-specific mocks
 
 ## Common Patterns
 
@@ -1560,5 +1561,4 @@ pytest --pdb
 | `pytest --cov` | Generate coverage report |
 | `assert` | Simple and readable assertions |
 
-**Remember**: Tests are code too. Keep them clean, readable, and maintainable. Good tests catch bugs; great tests prevent them.
-
+__Remember__: Tests are code too. Keep them clean, readable, and maintainable. Good tests catch bugs; great tests prevent them.

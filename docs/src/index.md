@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: "My Second Brain Organizer"
+  name: "LinkAnvil"
   text: "Plataforma RAG orientada a eventos para extraer y organizar conocimiento."
   tagline: "Ingesta asíncrona, RAG híbrido multi-tenant y Zero-Defect pipeline con despliegue local."
   actions:
@@ -11,7 +11,7 @@ hero:
       link: /1_epics_and_features
     - theme: alt
       text: Ver en GitHub
-      link: https://github.com/sylfG/masteria
+      link: https://github.com/sylfG/linkanvil
 
 features:
   - icon: ⚡

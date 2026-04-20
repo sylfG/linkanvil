@@ -1,118 +1,108 @@
-# ⚙️ Instalación y Configuración
+# 🚀 Tutorial Interactivo: Instalación y Configuración
 
-Esta guía te detallará los pasos para configurar, descargar, e iniciar el stack de los servicios en un entorno local mediante Docker Compose.
+Bienvenidos a la guía práctica para inicializar LinkAnvil, tu backend soberano de conocimiento estructurado. Este tutorial paso a paso está diseñado para instalar la plataforma en local o tu cloud personal, entender el flujo de datos y enviar tu primer enlace de conocimiento para asegurar que todo funciona.
 
-## 1. Prerrequisitos
+---
 
-* [Docker Desktop](https://www.docker.com/products/docker-desktop/) ≥ 4.25 (con Docker Compose v2)
-* **Recursos recomendados**: 8 a 12 GB de RAM dedicados a Docker (dado que se levantan varios servicios Java, bases de datos vectoriales y mensajería).
-* **Puertos Disponibles**:
-  * HTTP/Gateway: `80`, `8080` (Traefik)
-  * Dashboards UI: `3000` (Grafana), `5678` (n8n), `6333` (Qdrant), `9090` (Prometheus), `15672` (RabbitMQ), `16686` (Jaeger)
-  * Servicios Internos: `4000` (LiteLLM), `5432` (PostgreSQL), `5672` (RabbitMQ AMQP), `6379` (Redis), `4317-4318` (OTel)
+## FASE 1: Preparación del Entorno
 
-## 2. APIs y Variables de Entorno
+1. **Obtener y validar las herramientas base**:
+   * Asegúrate de contar con Git, una terminal Bash/Zsh o PowerShell.
+   * Confirma que cuentas con [Docker y Docker Compose V2](https://docs.docker.com/compose/) instalado ejecutando:
 
-El sistema necesita poder contactar con varios LLMs en caso de que un proveedor falle, esto está cubierto con **LiteLLM**. Existen otros servicios que requieren configuraciones de administración local.
-Todo esto se maneja desde el archivo principal de entorno de variables oculto desde su plantilla.
+     ```bash
+     docker compose version
+     ```
 
-```bash
-# Paso 1: Crea el archivo de entorno basado en la plantilla:
-cp .env.example .env
-```
+   * Si no devuelve un error y la versión es superior a la 2.22, estás listo.
 
-### Configuración de Secretos
+2. **Clonar y Analizar la Raíz**:
+   * Accede al directorio `linkanvil` (`cd linkanvil`)
+   * Verás varias carpetas como `/infra`, donde residen las configuraciones de cada uno de los contenedores Docker locales (Traefik, Redis, Grafana, PostgreSQL, LiteLLM, Qdrant).
 
-Es **absolutamente necesario** definir o revisar las variables clave en tu fichero `.env`:
+---
 
-#### A. APIs de Inteligencia Artificial
+## FASE 2: Tokens de Inteligencia Artificial y `.env`
 
-Estas APIs se proveen al gateway LiteLLM. Puedes configurar tantas como necesites en `infra/litellm/config.yaml`, pero mínimamente sugerimos:
+El corazón de extracción y vectorización de URLs funciona gracias a nuestro enrutador **LiteLLM**. Necesitaremos proporcionar credenciales seguras.
 
-```env
-# Llaves de Proveedores Externos
-OPENAI_API_KEY=sk-proj-xxxxxx...
-ANTHROPIC_API_KEY=sk-ant-xxxxxx...
+1. Copia nuestra plantilla a tu fichero local secreto (recuerda que este fichero NUNCA debe subirse a un repositorio público):
 
-# Llave Interna Masteria
-# Cualquier petición que enviemos a nuestro gateway deberá usar está llave.
-LITELLM_MASTER_KEY=sk-cerebro-master-key
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-#### B. Credenciales Locales e Infraestructura
+2. Edita `.env` con un editor como Nano, Vim o VS Code:
+   * **Variables de API (*CRÍTICAS*)**: Proporciona las llaves de OpenAI o Anthropic. En `infra/litellm/config.yaml` se pueden configurar otras, pero la plantilla general exige:
 
-*Recomendadas para desarrollo local de la BD y dashboards (pueden venir con un valor predeterminado seguro en desarrollo).*
+     ```env
+     OPENAI_API_KEY=sk-proj-xxxxxx...
+     ANTHROPIC_API_KEY=sk-ant-xxxxxx...
+     ```
 
-```env
-# Bases de datos y Brokers
-POSTGRES_USER=cerebro
-POSTGRES_PASSWORD=cerebro_db_pass
-POSTGRES_DB=cerebro_brain
+   * **Contraseña del Gateway Local**: Necesitas una llave tuya propia que protegerá cualquier llamada interna. Por defecto es `sk-cerebro-master-key`, pero es muy recomendable cambiarla por seguridad (y usar la nueva en todas las peticiones).
 
-REDIS_PASSWORD=cerebro_redis_pass
+     ```env
+     LITELLM_MASTER_KEY=sk-tullave-privada-y-segura
+     ```
 
-RABBITMQ_USER=cerebro
-RABBITMQ_PASS=cerebro_pass
-RABBITMQ_VHOST=/
+   * **Contraseñas del resto del Stack**: Modifica a placer las contraseñas predefinidas en el fichero de las bases de datos (RabbitMQ, Postgre, Redis, Grafana...).
 
-# Administración de Interfaces de Usuario
-N8N_USER=admin
-N8N_PASSWORD=cerebro_n8n_pass
+     ```env
+     POSTGRES_PASSWORD=cerebro_db_pass
+     RABBITMQ_PASS=cerebro_pass
+     # ...
+     ```
 
-GRAFANA_USER=admin
-GRAFANA_PASSWORD=cerebro_grafana_pass
-```
+---
 
-## 3. Preparando e Inicializando la Infraestructura
+## FASE 3: Despliegue e Inicialización (Bootstrapping)
 
-Una vez dispongas de tu `.env` completado, podrás levantar todo el cluster.
-
-### Levantando el clúster
-
-Ejecuta el siguiente comando en la raíz del proyecto para descargar e iniciar la capa orquestada (los contenedores se descargan e instancian entre 2 y 4 minutos dependiendo de la conexión):
+Ahora que las llaves están configuradas, instruiremos a Docker Compose que descargue las imágenes, cree las redes (red interna invisible que solo pueden hablar los contenedores entre sí) y aplique los init scripts (como la recreación de tablas relacionales en `init.sql`).
 
 ```bash
 docker compose up -d
 ```
 
-### Comprobado Logs y Status
+> **NOTA:** Tardará varios minutos dependiendo de tu ancho de banda ya que se han de descargar orquestadores, la BD Vectorial (Qdrant) y la cola de mensajería (RabbitMQ). Puedes chequear los logs de todos ellos a la vez lanzando `docker compose logs -f`.
+
+---
+
+## FASE 4: Verificación Integral del Ecosistema
+
+LinkAnvil posee un script inteligente oficial escrito en Python que simula ser un flujo de datos y prueba la disponibilidad, la inserción relacional, las políticas RLS y las colas de fallos.
+
+1. Confirma que tienes Python en el sistema.
+2. Ejecuta el test integral:
+
+   ```bash
+   python infra/test_health.py
+   ```
+
+3. Cada validación (Conexión LLM, Creación de Colección Vectorial de Qdrant, Exchange AMQP) debe reportar un **OK** color verde. Si notas que la base de datos reporta un error de puerto o conexión "rechazada", a veces se debe a que PostgreSQL todavía tardará unos segundos extra en inicializar la Base de datos en vacío la primera vez. Vuelve a ejecutar el check.
+
+---
+
+## FASE 5: Prueba Manual y Dashboards UI
+
+¡Si estás aquí, la instalación ha concluido con éxito! La mejor forma de visualizar que los logs de telemetría y Traefik funcionan es navegando por los paneles expuestos:
+
+| Dashboard y URL Directa | Puerto  | Credenciales Configurable en tu `.env` |
+|:--- |:--- |:--- |
+| **Orquestador (n8n)** | [http://localhost:5678](http://localhost:5678) | `N8N_USER` & `N8N_PASSWORD` |
+| **Colas (RabbitMQ)** | [http://localhost:15672](http://localhost:15672) | `RABBITMQ_USER` & `RABBITMQ_PASS` |
+| **Métricas (Grafana)** | [http://localhost:3000](http://localhost:3000) | `GRAFANA_USER` & `GRAFANA_PASSWORD` |
+| **Trazas Visuales (Jaeger)**| [http://localhost:16686](http://localhost:16686) | Libre |
+| **BD Vectorial (Qdrant)** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Libre |
+
+***Tip Pro***: Como Traefik está como Gateway proxy, puedes editar las redirecciones oportunas en tu fichero anfitrión local (`/etc/hosts` o de Windows) para acceder a subdominios como *`n8n.localhost`*, resultando en un acceso limpio y centralizado.
+
+### Tu primera ingesta
+
+Puedes probar que RabbitMQ encola URLs correctas si ejecutas desde el terminal principal `n8n` para arrancar un web-hook, o enviando un payload REST post directamente simulando la lectura.
 
 ```bash
-# Ver los contenedores desplegados
-docker compose ps
-
-# Si quieres ver qué está haciendo el workflow u otro gateway
-docker compose logs -f n8n
-docker compose logs -f litellm
+docker exec -it cerebro-rabbitmq rabbitmqadmin publish exchange=amq.default routing_key="q.url.ingesta" payload='{"url":"https://vitepress.dev/"}'
 ```
 
-## 4. Ejecución del Health Check 🩺
-
-Se dispone de un script centralizado hecho en Python (`test_health.py`) diseñado para la verificación e introspección de todos los conectores. Nos dirá si todos los contenedores arrancaron de forma correcta.
-
-```bash
-# Requiere Python 3.9+
-python infra/test_health.py
-```
-
-El log validará:
-
-* Disponibilidad y códigos HTTP (200 OK correspondientes).
-* Migración y esquemas de BD aplicados en PostgreSQL en el init (`init.sql`).
-* Existencia de exchanges y encolamientos listos en Rabbit (`definitions.json`).
-* Si todo está en verde tu **Segundo Cerebro** es operacional!
-
-## 5. Accediendo al Frontend de tus Servicios
-
-Si la inicialización y el script completaron con éxito, tendrás a nivel local las siguientes rutas e interfaces a interactuar:
-
-| Servicio / Dashboard | Endpoint Interno | Credenciales Requeridas |
-|---|---|---|
-| **API Gateway - Traefik** | `http://localhost:8080/dashboard/` | Ninguna |
-| **Broker MQ - RabbitMQ** | `http://localhost:15672` | `RABBITMQ_USER` / `RABBITMQ_PASS` |
-| **Vector DB - Qdrant** | `http://localhost:6333/dashboard` | Ninguna |
-| **Observability - Jaeger**| `http://localhost:16686` | Ninguna |
-| **Observability - Grafana**| `http://localhost:3000` | `GRAFANA_USER` / `GRAFANA_PASSWORD` |
-| **Workflows - n8n** | `http://localhost:5678` | `N8N_USER` / `N8N_PASSWORD` |
-
-*Opcional*: Si añades las redirecciones oportunas a tu `/etc/hosts` nativo para resolver las direcciones en modo clúster (Ej: `127.0.0.1  traefik.localhost n8n.localhost rabbitmq.localhost`), utilizarás la funcionalidad DNS del gateway Traefik y todo será más fácil bajo estos subdominios.
+*¡Felicidades! LinkAnvil ya forma parte de tu ecosistema.* Avanza con las integraciones manuales de Telegram o los scrapers modulares de Python en tu [Siguiente Sección de la Documentación](./0_0_resumen.md).

@@ -1,6 +1,6 @@
-# 🏗️ Arquitectura y Riesgos (Fase 2) — My Second Brain Organizer
+# 🏗️ Arquitectura y Riesgos (Fase 2) — LinkAnvil
 
-Este documento define los Requisitos No Funcionales (NFRs) y el modelado de amenazas (STRIDE) basados en la arquitectura orientada a eventos del proyecto My Second Brain Organizer.
+Este documento define los Requisitos No Funcionales (NFRs) y el modelado de amenazas (STRIDE) basados en la arquitectura orientada a eventos del proyecto LinkAnvil.
 
 ---
 
@@ -18,9 +18,9 @@ Este documento define los Requisitos No Funcionales (NFRs) y el modelado de amen
 
 ## 2. Decisiones de Arquitectura (ADRs Resumidos)
 
-*   **PostgreSQL sobre MongoDB:** Se requiere el **Patrón Outbox** transaccional para garantizar la consistencia relacional y publicar posteriormente los eventos en RabbitMQ de manera atómica, algo fundamental en una arquitectura *Event-Driven* pura. Se integran además políticas locales RLS (*Row-Level Security*).
-*   **Docker Compose (Standalone) sobre Cloud Administrado:** Restricción de coste y filosofía del producto. El Segundo Cerebro debe poder vivir en *localhost* o en una única VPS, garantizando privacidad absoluta (sin *Vendor Lock-in* a herramientas SaaS propietarias) mediante red virtual interna aislada (`cerebro-net`).
-*   **LiteLLM Proxy + Zod (Zero-Defect):** Obligatorio obligar a los LLMs a estructurar respuestas tabulares JSON en la salida para alimentar Qdrant/PostgreSQL, rechazando explícitamente contenido malformado antes de contaminar la base de conocimiento.
+* **PostgreSQL sobre MongoDB:** Se requiere el **Patrón Outbox** transaccional para garantizar la consistencia relacional y publicar posteriormente los eventos en RabbitMQ de manera atómica, algo fundamental en una arquitectura *Event-Driven* pura. Se integran además políticas locales RLS (*Row-Level Security*).
+* **Docker Compose (Standalone) sobre Cloud Administrado:** Restricción de coste y filosofía del producto. El Segundo Cerebro debe poder vivir en *localhost* o en una única VPS, garantizando privacidad absoluta (sin *Vendor Lock-in* a herramientas SaaS propietarias) mediante red virtual interna aislada (`cerebro-net`).
+* **LiteLLM Proxy + Zod (Zero-Defect):** Obligatorio obligar a los LLMs a estructurar respuestas tabulares JSON en la salida para alimentar Qdrant/PostgreSQL, rechazando explícitamente contenido malformado antes de contaminar la base de conocimiento.
 
 ---
 

@@ -134,4 +134,3 @@ La infraestructura desplegada abarca 15 contenedores operando en sintonía. Su f
 ### 6. 🧠 Exportación y Gemelo Digital
 
 * **`Exportador LLM Wiki`**: Utilidad encargada de consolidar y exportar la bóveda local (Markdown) a partir del estado relacional y semántico almacenado en PostgreSQL y Qdrant. Genera una estructura de archivos físicos (`raw/`, `wiki/`) con enlaces bidireccionales nativos compatibles con Obsidian, además de una caché caliente (`hot.md`) para agilizar la sincronización del contexto conversacional offline.  Esta generación se produce en tiempo de ejecución **puramente en la Memoria RAM** (sin disco) por motivos de seguridad; no se guardan logs residuales, descargas tempranas, ni rastros de exportes multi-tenants en los clústers.
-

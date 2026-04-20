@@ -27,6 +27,50 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
+  # Modelo usando Gemini 
+  - model_name: cerebro-gemini
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  # Modelo de xAI: Grok
+  - model_name: cerebro-grok
+    litellm_params:
+      model: xai/grok-beta
+      api_key: os.environ/XAI_API_KEY
+
+  # Modelos de OpenRouter con Fallback Automático (Si falla el primero, intenta con el siguiente)
+  
+  # 1. Opción Principal: Gemma 4 31B (El más potente: 31 Billones, 256K de contexto)
+  - model_name: cerebro-openrouter
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # 2. Respaldo Eficiente: Gemma 4 26B A4B (Arquitectura MoE, rinde como 31B gastando mucho menos cómputo)
+  - model_name: cerebro-openrouter
+    litellm_params:
+      model: openrouter/google/gemma-4-26b-a4b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # 3. Respaldo Analítico: NVIDIA Nemotron 3 Super (MoE híbrido enfocado en agentes, 1M de contexto de memoria)
+  - model_name: cerebro-openrouter
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # 4. Respaldo Productivo: MiniMax M2.5 (SOTA en operación de herramientas ofimáticas y agentes)
+  - model_name: cerebro-openrouter
+    litellm_params:
+      model: openrouter/minimax/minimax-m2.5:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # 5. Último recurso: El enrutador gratuito general de OpenRouter
+  - model_name: cerebro-openrouter
+    litellm_params:
+      model: openrouter/openrouter/free
+      api_key: os.environ/OPENROUTER_API_KEY
+
 # Configuración general
 litellm_settings:
   # Reintentos y Circuit Breaker

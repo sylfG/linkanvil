@@ -1,0 +1,76 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB}"
+      ]
+    },
+    "qdrant": {
+      "command": "uvx",
+      "args": ["mcp-server-qdrant"],
+      "env": {
+        "QDRANT_URL": "http://localhost:6333",
+        "COLLECTION_NAME": "cerebro_recursos"
+      }
+    },
+    "n8n": {
+      "command": "npx",
+      "args": ["-y", "@czlonkowski/n8n-mcp"],
+      "env": {
+        "N8N_API_URL": "http://localhost:5678/api/v1",
+        "N8N_API_KEY": "${N8N_API_KEY}"
+      }
+    },
+    "redis": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@gongrzhe/server-redis-mcp",
+        "redis://:${REDIS_PASSWORD}@localhost:6379"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    },
+    "docker": {
+      "command": "uvx",
+      "args": ["mcp-server-docker"]
+    },
+    "telegram": {
+      "command": "npx",
+      "args": ["-y", "telegram-mcp"],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}"
+      }
+    },
+    "prometheus": {
+      "command": "uvx",
+      "args": ["prometheus-mcp-server"],
+      "env": {
+        "PROMETHEUS_URL": "http://localhost:9090"
+      }
+    }
+  }
+}

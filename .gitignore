@@ -15,3 +15,6 @@ __pycache__/
 node_modules/
 dist/
 cache/
+
+# Claude Code (configuración local, no compartir)
+.claude/settings.local.json

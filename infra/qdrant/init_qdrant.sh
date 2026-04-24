@@ -12,7 +12,7 @@ curl -X PUT "$QDRANT_HOST/collections/cerebro_recursos" \
   -H "Content-Type: application/json" \
   -d '{
     "vectors": {
-      "size": 1536,
+      "size": 768,
       "distance": "Cosine"
     }
   }'

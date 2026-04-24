@@ -33,11 +33,10 @@ El corazón de extracción y vectorización de URLs funciona gracias a nuestro e
    ```
 
 2. Edita `.env` con un editor como Nano, Vim o VS Code:
-   * **Variables de API (*CRÍTICAS*)**: Proporciona las llaves de OpenAI o Anthropic. En `infra/litellm/config.yaml` se pueden configurar otras, pero la plantilla general exige:
+   * **Variables de API (*CRÍTICAS*)**: Proporciona la llave de OpenRouter. En `infra/litellm/config.yaml` se pueden configurar otras, pero la plantilla general exige:
 
      ```env
-     OPENAI_API_KEY=sk-proj-xxxxxx...
-     ANTHROPIC_API_KEY=sk-ant-xxxxxx...
+     OPENROUTER_API_KEY=sk-or-xxxxxx...
      ```
 
    * **Contraseña del Gateway Local**: Necesitas una llave tuya propia que protegerá cualquier llamada interna. Por defecto es `sk-cerebro-master-key`, pero es muy recomendable cambiarla por seguridad (y usar la nueva en todas las peticiones).

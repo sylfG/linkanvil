@@ -1,90 +1,43 @@
-# LiteLLM Gateway — LinkAnvil
-# Fallback automático: OpenAI → Anthropic → Local
-# Circuit Breakers activados por defecto
+﻿# LiteLLM Gateway - Cerebro
+# Estrategia: Lite + Pro con modelos de OpenRouter
+# Routing: least-busy (menos ocupado primero)
+# Fallback automático al siguiente modelo si da error
 
 model_list:
-  # Modelo primario: OpenAI GPT-4o
-  - model_name: cerebro-gpt
+  # ---- GRUPO cerebro-lite: Modelos ligeros y rápidos ----
+  - model_name: cerebro-lite
     litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
+      model: openrouter/anthropic/claude-haiku-4.5
+      api_key: os.environ/OPENROUTER_API_KEY
 
-  # Fallback 1: Anthropic Claude Sonnet
-  - model_name: cerebro-gpt
+  - model_name: cerebro-lite
     litellm_params:
-      model: anthropic/claude-sonnet-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: openrouter/deepseek/deepseek-v4-flash
+      api_key: os.environ/OPENROUTER_API_KEY
 
-  # Embeddings: OpenAI text-embedding-3-small (v3, 1536 dims)
+  # ---- GRUPO cerebro-pro: Modelos grandes para razonamiento complejo ----
+  - model_name: cerebro-pro
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-pro
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: cerebro-pro
+    litellm_params:
+      model: openrouter/deepseek/deepseek-r1
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # Embeddings - Qwen3 Embedding 8B
   - model_name: cerebro-embeddings
     litellm_params:
-      model: openai/text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
-
-  # Modelo rápido/barato: GPT-4o-mini (para clasificación y tagging)
-  - model_name: cerebro-mini
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  # Modelo usando Gemini 
-  - model_name: cerebro-gemini
-    litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_key: os.environ/GEMINI_API_KEY
-
-  # Modelo de xAI: Grok
-  - model_name: cerebro-grok
-    litellm_params:
-      model: xai/grok-beta
-      api_key: os.environ/XAI_API_KEY
-
-  # Modelos de OpenRouter con Fallback Automático (Si falla el primero, intenta con el siguiente)
-  
-  # 1. Opción Principal: Gemma 4 31B (El más potente: 31 Billones, 256K de contexto)
-  - model_name: cerebro-openrouter
-    litellm_params:
-      model: openrouter/google/gemma-4-31b-it:free
+      model: openrouter/qwen/qwen3-embedding-8b
       api_key: os.environ/OPENROUTER_API_KEY
 
-  # 2. Respaldo Eficiente: Gemma 4 26B A4B (Arquitectura MoE, rinde como 31B gastando mucho menos cómputo)
-  - model_name: cerebro-openrouter
-    litellm_params:
-      model: openrouter/google/gemma-4-26b-a4b-it:free
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  # 3. Respaldo Analítico: NVIDIA Nemotron 3 Super (MoE híbrido enfocado en agentes, 1M de contexto de memoria)
-  - model_name: cerebro-openrouter
-    litellm_params:
-      model: openrouter/nvidia/nemotron-3-super:free
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  # 4. Respaldo Productivo: MiniMax M2.5 (SOTA en operación de herramientas ofimáticas y agentes)
-  - model_name: cerebro-openrouter
-    litellm_params:
-      model: openrouter/minimax/minimax-m2.5:free
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  # 5. Último recurso: El enrutador gratuito general de OpenRouter
-  - model_name: cerebro-openrouter
-    litellm_params:
-      model: openrouter/openrouter/free
-      api_key: os.environ/OPENROUTER_API_KEY
-
-# Configuración general
 litellm_settings:
-  # Reintentos y Circuit Breaker
   num_retries: 3
-  request_timeout: 60
-  retry_after: 5
-  allowed_fails: 3           # Fallos permitidos antes de abrir circuit breaker
-  cooldown_time: 30          # Segundos que permanece abierto el circuit breaker
-
-  # Salidas estructuradas (Zero-Defect Pipeline)
-  success_callback: []
-  failure_callback: []
-
-  # Caché de respuestas (Redis) — ahorra tokens en consultas repetidas
+  request_timeout: 90
+  retry_after: 3
+  allowed_fails: 1
+  cooldown_time: 15
   cache: true
   cache_params:
     type: redis
@@ -92,23 +45,22 @@ litellm_settings:
     port: 6379
     password: os.environ/REDIS_PASSWORD
     supported_call_types: ["completion", "embedding"]
-    ttl: 3600                # 1 hora de caché por defecto
-
-  # Logging detallado a Prometheus
+    ttl: 3600
   set_verbose: false
+  success_callback: []
+  failure_callback: []
 
-# Parámetros del servidor
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
   store_model_in_db: true
-
-  # Rate Limiting (Noisy Neighbor Defense)
   global_max_parallel_requests: 100
-  max_budget: 50             # USD máximo por día (hard limit)
+  max_budget: 50
 
 router_settings:
-  routing_strategy: "latency-based-routing"
+  routing_strategy: least-busy
   num_retries: 3
-  timeout: 30
-  retry_after: 5
+  timeout: 90
+  retry_after: 3
+  allowed_fails: 1
+  cooldown_time: 15

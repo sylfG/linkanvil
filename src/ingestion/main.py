@@ -10,6 +10,7 @@ from src.ingestion.deduplicator import RedisDeduplicator
 from src.ingestion.publisher import RabbitMQPublisher
 from src.telemetry import configure_telemetry, trace_operation
 import redis
+import httpx
 
 # Logging format that captures logic visually
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -152,6 +153,9 @@ async def ingest_url(request: IngestionRequest):
                 is_valid=True
             )
             
+    except HTTPException as httpe:
+        # Re-raise HTTP exceptions (like 429 Too Many Requests) without wrapping them in 500
+        raise httpe
     except Exception as e:
         logger.error(f"[{request.trace_id}] Fallo interno en /ingest: {e}")
         # Fallback a DLQ simulado para Edge Cases de LLM / Puente o error general

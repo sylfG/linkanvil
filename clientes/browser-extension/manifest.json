@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "LinkAnvil One-Click Ingest",
+  "version": "1.0",
+  "description": "Herramienta cliente de LinkAnvil para inyectar la URL actual a la cola de ingesta asincrona de Cerebro.",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Enviar a Cerebro"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js"
+  }
+}

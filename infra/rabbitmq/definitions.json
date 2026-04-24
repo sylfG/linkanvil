@@ -1,6 +1,25 @@
 {
+  "rabbit_version": "3.13.0",
+  "users": [
+    {
+      "name": "cerebro",
+      "password": "cerebro_pass",
+      "tags": [
+        "administrator"
+      ]
+    }
+  ],
   "vhosts": [
     { "name": "cerebro" }
+  ],
+  "permissions": [
+    {
+      "user": "cerebro",
+      "vhost": "cerebro",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
   ],
   "exchanges": [
     {

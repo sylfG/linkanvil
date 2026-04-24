@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir fastapi uvicorn aio-pika redis pydantic pydantic-settings
 
-COPY src/ingestion /app/src/ingestion
+COPY src /app/src
 
 ENV PYTHONPATH=/app
 

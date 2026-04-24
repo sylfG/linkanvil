@@ -84,7 +84,7 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
-      # LITELLM_API_KEY could be injected from env here
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key-CHANGE_ME}
       QDRANT_URL: http://qdrant:6333
       LITELLM_EMBEDDINGS_URL: http://litellm:4000/v1/embeddings
     networks:
@@ -108,6 +108,8 @@ services:
       LITELLM_URL: "http://litellm:4000"
       QDRANT_URL: "http://qdrant:6333"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-cerebro-master-key}"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-cerebro_redis_pass}
     networks:
       - cerebro-net
     depends_on:
@@ -115,6 +117,10 @@ services:
         condition: service_started
       litellm:
         condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
   # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
@@ -281,8 +287,10 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
       STORE_MODEL_IN_DB: "True"
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-placeholder}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-ant-placeholder}
+
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-placeholder}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-sk-or-placeholder}
+      XAI_API_KEY: ${XAI_API_KEY:-sk-xai-placeholder}
     ports:
       - "4000:4000"
     volumes:
@@ -297,8 +305,8 @@ services:
       - "traefik.http.routers.litellm.rule=Host(`llm.localhost`)"
       - "traefik.http.services.litellm.loadbalancer.server.port=4000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health')\" || exit 1"]
-      interval: 20s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; req = urllib.request.Request('http://localhost:4000/health', headers={'Authorization': 'Bearer ${LITELLM_MASTER_KEY:-sk-cerebro-master-key-CHANGE_ME}'}); urllib.request.urlopen(req)\" || exit 1"]
+      interval: 10s
       timeout: 10s
       retries: 10
       start_period: 40s

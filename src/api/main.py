@@ -1,0 +1,417 @@
+import hashlib
+import json
+import logging
+import os
+import uuid
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
+
+import httpx
+import redis.asyncio as aioredis
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from src.api import database as db
+from src.api.auth import (
+    create_access_token,
+    get_password_hash,
+    verify_password,
+    verify_token,
+)
+from src.api.models import (
+    ChatRequest,
+    CfCookiesRequest,
+    IngestRequest,
+    LoginRequest,
+    MessageIn,
+    MessageOut,
+    RegisterRequest,
+    SessionResponse,
+    TelegramBotRequest,
+    TokenResponse,
+    UserResponse,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
+LITELLM_KEY = os.getenv("LITELLM_KEY", "sk-cerebro-master-key")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+INGESTION_URL = os.getenv("INGESTION_URL", "http://ingestion-api:8000")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
+PUBLIC_INGESTION_URL = os.getenv("PUBLIC_INGESTION_URL", "")
+COLLECTION = "cerebro_recursos"
+
+_redis: Optional[aioredis.Redis] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _redis
+    _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    yield
+    if _redis:
+        await _redis.aclose()
+    await db.close_pool()
+
+
+app = FastAPI(title="Cerebro Auth API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+async def get_current_user(authorization: str = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Token requerido")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = verify_token(token)
+    except ValueError:
+        raise HTTPException(401, "Token inválido")
+    user = await db.get_user_by_id(payload["sub"])
+    if not user:
+        raise HTTPException(401, "Usuario no encontrado")
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/register", response_model=TokenResponse)
+async def register(req: RegisterRequest):
+    if await db.get_user_by_email(req.email):
+        raise HTTPException(409, "Email ya registrado")
+    hashed = get_password_hash(req.password)
+    user = await db.create_user(req.email, hashed)
+    token = create_access_token(
+        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
+    )
+    return TokenResponse(access_token=token)
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(req: LoginRequest):
+    user = await db.get_user_by_email(req.email)
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Credenciales incorrectas")
+    token = create_access_token(
+        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
+    )
+    return TokenResponse(access_token=token)
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def me(user=Depends(get_current_user)):
+    return UserResponse(
+        id=user["id"],
+        email=user["email"],
+        tenant_id=user["tenant_id"],
+        telegram_bot_active=user["telegram_bot_active"],
+        created_at=user["created_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Profile / Telegram
+# ---------------------------------------------------------------------------
+
+@app.put("/profile/telegram")
+async def update_telegram(req: TelegramBotRequest, user=Depends(get_current_user)):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"https://api.telegram.org/bot{req.bot_token}/getMe")
+        if resp.status_code != 200:
+            raise HTTPException(400, "Token de bot inválido")
+        bot_info = resp.json().get("result", {})
+
+    token_hash = hashlib.sha256(req.bot_token.encode()).hexdigest()
+    await db.update_telegram_bot(str(user["id"]), req.bot_token, token_hash)
+
+    # Cache hash→tenant_id in Redis for the ingestion API
+    if _redis:
+        await _redis.set(f"telegram:{token_hash}", user["tenant_id"])
+
+    # Register the Telegram webhook
+    base = PUBLIC_INGESTION_URL or INGESTION_URL
+    webhook_url = f"{base}/webhook/telegram/{token_hash}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.get(
+            f"https://api.telegram.org/bot{req.bot_token}/setWebhook?url={webhook_url}"
+        )
+
+    return {
+        "status": "ok",
+        "bot_username": bot_info.get("username"),
+        "webhook_url": webhook_url,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Resources (KB)
+# ---------------------------------------------------------------------------
+
+@app.get("/resources")
+async def get_resources(
+    estado: str = "todos",
+    limit: int = Query(100, gt=0, le=500),
+    user=Depends(get_current_user),
+):
+    return await db.get_resources(user["tenant_id"], estado, limit)
+
+
+# ---------------------------------------------------------------------------
+# Ingest (proxy to ingestion-api)
+# ---------------------------------------------------------------------------
+
+@app.post("/ingest")
+async def ingest(req: IngestRequest, user=Depends(get_current_user)):
+    payload = {
+        "url": req.url,
+        "tenant_id": user["tenant_id"],
+        "source": req.source,
+        "trace_id": str(uuid.uuid4()),
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(f"{INGESTION_URL}/ingest", json=payload)
+        return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# SSE: reactive ingest stream
+# ---------------------------------------------------------------------------
+
+@app.get("/ingest/stream")
+async def ingest_stream(token: str):
+    try:
+        payload = verify_token(token)
+    except ValueError:
+        raise HTTPException(401, "Token inválido")
+    tenant_id = payload.get("tenant_id", "")
+
+    async def _events() -> AsyncGenerator[str, None]:
+        pubsub = _redis.pubsub()
+        await pubsub.subscribe(f"ingest:complete:{tenant_id}")
+        try:
+            yield 'data: {"type":"connected"}\n\n'
+            async for msg in pubsub.listen():
+                if msg["type"] == "message":
+                    yield f"data: {msg['data']}\n\n"
+        finally:
+            await pubsub.unsubscribe(f"ingest:complete:{tenant_id}")
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chat (RAG + LiteLLM proxy with streaming)
+# ---------------------------------------------------------------------------
+
+@app.post("/chat")
+async def chat(req: ChatRequest, user=Depends(get_current_user)):
+    context_block = ""
+    hits: list = []
+
+    if req.use_rag and req.messages:
+        last_user = next(
+            (m.content for m in reversed(req.messages) if m.role == "user"), ""
+        )
+        if last_user:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {LITELLM_KEY}",
+                    "Content-Type": "application/json",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    er = await client.post(
+                        f"{LITELLM_URL}/v1/embeddings",
+                        headers=headers,
+                        json={"model": "cerebro-embeddings", "input": last_user},
+                    )
+                    if er.status_code == 200:
+                        vector = er.json()["data"][0]["embedding"]
+                        search = {
+                            "vector": vector,
+                            "filter": {
+                                "must": [
+                                    {"key": "tenant_id", "match": {"value": user["tenant_id"]}}
+                                ]
+                            },
+                            "limit": 5,
+                            "with_payload": True,
+                        }
+                        async with httpx.AsyncClient(timeout=5.0) as client:
+                            qr = await client.post(
+                                f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+                                json=search,
+                            )
+                            if qr.status_code == 200:
+                                raw_hits = qr.json().get("result", [])
+                                if raw_hits:
+                                    # Filter to only resources that still exist in Postgres as activo
+                                    active_ids = await db.get_active_resource_ids(
+                                        user["tenant_id"],
+                                        [str(h["id"]) for h in raw_hits],
+                                    )
+                                    active_set = set(active_ids)
+                                    hits = [h for h in raw_hits if str(h["id"]) in active_set]
+                                if hits:
+                                    frags = [
+                                        f"- **{h['payload'].get('title','')}** — "
+                                        f"{h['payload'].get('url','')} "
+                                        f"[score: {h['score']:.2f}]"
+                                        for h in hits
+                                    ]
+                                    context_block = "### Contexto:\n" + "\n".join(frags)
+            except Exception as e:
+                logger.warning(f"RAG error: {e}")
+
+    system_prompt = (
+        "Eres un asistente experto. Responde usando el contexto de la base de conocimiento "
+        "del usuario. Si no hay contexto relevante, responde con tu conocimiento general e indícalo."
+    )
+    if context_block:
+        system_prompt += f"\n\n{context_block}"
+
+    llm_msgs = [{"role": "system", "content": system_prompt}]
+    for m in req.messages[-10:]:
+        llm_msgs.append({"role": m.role, "content": m.content})
+
+    h = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+
+    rag_sources = []
+    if req.use_rag and hits:
+        rag_sources = [
+            {"title": h["payload"].get("title", ""), "url": h["payload"].get("url", ""), "score": round(h["score"], 3)}
+            for h in hits
+        ]
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        if rag_sources:
+            yield f"data: {json.dumps({'type': 'sources', 'sources': rag_sources})}\n\n"
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST",
+                f"{LITELLM_URL}/v1/chat/completions",
+                headers=h,
+                json={"model": req.model, "messages": llm_msgs, "stream": True},
+            ) as resp:
+                async for chunk in resp.aiter_text():
+                    yield chunk
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.post("/admin/cf-cookies")
+async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user)):
+    cookies = [{"name": "cf_clearance", "value": req.cf_clearance,
+                "domain": req.domain, "path": "/"}]
+    if req.extra:
+        cookies.extend([
+            {"name": k, "value": v, "domain": req.domain, "path": "/"}
+            for k, v in req.extra.items()
+        ])
+    await _redis.setex(f"cf:cookies:{req.domain}", req.ttl_hours * 3600, json.dumps(cookies))
+    return {"status": "ok", "domain": req.domain, "expires_in_hours": req.ttl_hours}
+
+
+@app.delete("/admin/cf-cookies/{domain}")
+async def clear_cf_cookies(domain: str, user=Depends(get_current_user)):
+    await _redis.delete(f"cf:cookies:{domain}")
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Chat sessions & messages
+# ---------------------------------------------------------------------------
+
+def _session_out(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "titulo": row.get("titulo"),
+        "ultimo_acceso": row["ultimo_acceso"],
+        "created_at": row["created_at"],
+    }
+
+
+def _message_out(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "role": row["rol"],
+        "content": row["contenido"],
+        "sources": row.get("fuentes") or [],
+        "created_at": row["created_at"],
+    }
+
+
+@app.post("/chats", response_model=SessionResponse)
+async def create_chat(user=Depends(get_current_user)):
+    session = await db.create_chat_session(user["tenant_id"])
+    return _session_out(session)
+
+
+@app.get("/chats", response_model=list[SessionResponse])
+async def list_chats(user=Depends(get_current_user)):
+    sessions = await db.list_chat_sessions(user["tenant_id"])
+    return [_session_out(s) for s in sessions]
+
+
+@app.get("/chats/{session_id}", response_model=SessionResponse)
+async def get_chat(session_id: str, user=Depends(get_current_user)):
+    session = await db.get_chat_session(user["tenant_id"], session_id)
+    if not session:
+        raise HTTPException(404, "Sesión no encontrada")
+    return _session_out(session)
+
+
+@app.delete("/chats/{session_id}")
+async def delete_chat(session_id: str, user=Depends(get_current_user)):
+    deleted = await db.delete_chat_session(user["tenant_id"], session_id)
+    if not deleted:
+        raise HTTPException(404, "Sesión no encontrada")
+    return {"status": "ok"}
+
+
+@app.get("/chats/{session_id}/messages", response_model=list[MessageOut])
+async def get_messages(session_id: str, user=Depends(get_current_user)):
+    session = await db.get_chat_session(user["tenant_id"], session_id)
+    if not session:
+        raise HTTPException(404, "Sesión no encontrada")
+    messages = await db.get_chat_messages(user["tenant_id"], session_id)
+    return [_message_out(m) for m in messages]
+
+
+@app.post("/chats/{session_id}/messages", response_model=list[MessageOut])
+async def append_messages(
+    session_id: str, body: list[MessageIn], user=Depends(get_current_user)
+):
+    session = await db.get_chat_session(user["tenant_id"], session_id)
+    if not session:
+        raise HTTPException(404, "Sesión no encontrada")
+    saved = await db.append_chat_messages(
+        user["tenant_id"],
+        session_id,
+        [{"role": m.role, "content": m.content, "sources": m.sources} for m in body],
+    )
+    return [_message_out(m) for m in saved]
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}

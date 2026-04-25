@@ -2,6 +2,7 @@ import os
 import logging
 import uuid
 import re
+from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,28 +10,18 @@ from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
 from src.ingestion.publisher import RabbitMQPublisher
 from src.telemetry import configure_telemetry, trace_operation
-import redis
+import redis.asyncio as aioredis
 import httpx
 
 # Logging format that captures logic visually
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Ingestion API", description="Omnichannel Ingestion with Rate Limiter (via Traefik) and RedisBloom")
-
-# CORS middleware para soportar extensiones de navegador (F-01.4)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Permitir inyecciones desde cualquier origen (browser extension context)
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
-
 # Global instances
-redis_client: Optional[redis.Redis] = None
+redis_client: Optional[aioredis.Redis] = None
 deduplicator: Optional[RedisDeduplicator] = None
 rabbit_publisher: Optional[RabbitMQPublisher] = None
+RATE_LIMIT_PER_MINUTE = int(os.getenv("INGESTION_RATE_LIMIT_PER_MIN", "10"))
 
 RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
 RABBIT_QUEUE = os.getenv("RABBITMQ_QUEUE", "url.nueva")
@@ -40,40 +31,46 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "cerebro_redis_pass_CHANGE_ME")
 
+# URL extractor — matches http(s) URLs but strips common trailing punctuation
+# that humans often append (".", ",", ")", etc.) so we don't fetch broken URLs.
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_URL_TRAILING_PUNCT = ".,;:!?)\"']"
 
-def handle_dlq_from_redis(item: str, tenant_id: str, trace_id: str, exc: Exception):
-    """
-    Fallback policy when Redis crashes (Edge Case F-01.1):
-    We trigger a DLQ send, but we fail-open the processing so the logic lets it continue if we don't return False here.
-    Wait, the specs logic F-01.1: If redis fails, derivation to DLQ or effectuate Fallback.
-    Here we publish to DLQ asynchronously... wait, this callback is synchronous inside Deduplicator.
-    We just log into DLQ using a sync wrapper or another async task.
-    """
-    logger.error(f"[{trace_id}] REDIS FALLO - Enviando item '{item}' a la DLQ {RABBIT_DLQ}")
-    # En un entorno de produccion, enviar a la dlq usando rabbit synchronous o agendar un task en FastAPI
-    pass
 
-@app.on_event("startup")
-async def startup_event():
+def extract_urls(text: str) -> list[str]:
+    return [u.rstrip(_URL_TRAILING_PUNCT) for u in _URL_RE.findall(text)]
+
+
+async def handle_dlq_from_redis(item: str, tenant_id: str, trace_id: str, exc: Exception):
+    """Best-effort DLQ publish cuando Redis falla; nunca propaga excepciones."""
+    logger.error(f"[{trace_id}] REDIS FALLO - Enviando item '{item}' a la DLQ {RABBIT_DLQ}: {exc}")
+    if rabbit_publisher is None:
+        return
+    try:
+        await rabbit_publisher.publish_ingestion_message(
+            queue_name=RABBIT_DLQ,
+            payload={"error": "redis_failure", "item": item, "tenant_id": tenant_id, "detail": str(exc)},
+            trace_id=trace_id,
+        )
+    except Exception as dlq_e:
+        logger.critical(f"[{trace_id}] Fallo enviando a DLQ tras caída de Redis: {dlq_e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global redis_client, deduplicator, rabbit_publisher
     logger.info("Iniciando Ingestion API, conectando a servicios dependientes...")
-
-    # Activar OpenTelemetry unificado
     configure_telemetry("ingestion-api")
 
-    # Conectar Redis
     try:
-        redis_client = redis.Redis(
+        redis_client = aioredis.Redis(
             host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
         )
-        redis_client.ping()
+        await redis_client.ping()
         deduplicator = RedisDeduplicator(redis_client=redis_client, dlq_callback=handle_dlq_from_redis)
     except Exception as e:
         logger.error(f"Fallo al conectar a Redis en el inicio: {e}")
-        # En producción podríamos fallar o simplemente arrancar en modo contingencia
-        # deduplicator será inicializado con un mock interno o manejado con fallback
 
-    # Conectar Rabbit
     rabbit_publisher = RabbitMQPublisher(rabbit_url=RABBIT_URL)
     try:
         await rabbit_publisher.connect()
@@ -81,10 +78,29 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Fallo al sincronizar con RabbitMQ: {e}")
 
-@app.on_event("shutdown")
-async def shutdown_event():
+    yield
+
     if rabbit_publisher:
         await rabbit_publisher.close()
+    if redis_client:
+        await redis_client.aclose()
+
+
+app = FastAPI(
+    title="Ingestion API",
+    description="Omnichannel Ingestion with Rate Limiter (via Traefik) and RedisBloom",
+    lifespan=lifespan,
+)
+
+# CORS — wildcard origin no admite credentials (spec del navegador), por eso False.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 # Healthcheck
 @app.get("/health")
@@ -104,31 +120,26 @@ async def ingest_url(request: IngestionRequest):
         raise HTTPException(status_code=503, detail="Servicios base (Redis o RabbitMQ) no disponibles. Fallback en curso.")
 
     try:
-        # F-06.4 Noisy Neighbor Defense (estranguilamiento individual)
+        # F-06.4 Noisy Neighbor Defense — INCR atómico evita race TOCTOU
         if redis_client:
             rate_key = f"rate_limit:{request.tenant_id}"
-            req_count = redis_client.get(rate_key)
-            if req_count and int(req_count) >= 10:  # Límite de 10 requests por minuto
+            count = await redis_client.incr(rate_key)
+            if count == 1:
+                await redis_client.expire(rate_key, 60)
+            if count > RATE_LIMIT_PER_MINUTE:
                 logger.warning(f"[{request.trace_id}] Throttling activado para tenant {request.tenant_id}")
-                # Edge Case: deriva a la DLQ o efectúa Fallback
                 try:
                     await rabbit_publisher.publish_ingestion_message(
                         queue_name=RABBIT_DLQ,
                         payload={"error": "Too Many Requests", "request": request.model_dump(), "source": "throttling"},
-                        trace_id=request.trace_id
+                        trace_id=request.trace_id,
                     )
-                except Exception as dlq_e:
+                except Exception:
                     pass
                 raise HTTPException(status_code=429, detail="Too Many Requests. Cuota excedida.")
-            
-            pipe = redis_client.pipeline()
-            pipe.incr(rate_key)
-            if not req_count:
-                pipe.expire(rate_key, 60)
-            pipe.execute()
 
         # Happy Path / Aislamiento (F-01.1)
-        is_new = deduplicator.is_new_item(request.url, request.tenant_id, request.trace_id)
+        is_new = await deduplicator.is_new_item(request.url, request.tenant_id, request.trace_id)
         
         if is_new:
             # Requisito Técnico F-01.2: Enviar a RabbitMQ
@@ -170,6 +181,40 @@ async def ingest_url(request: IngestionRequest):
             
         raise HTTPException(status_code=500, detail="Error interno procesando evento de ingesta.")
 
+@app.post("/webhook/telegram/{token_hash}")
+async def telegram_webhook_user(token_hash: str, request: Request):
+    """
+    Webhook por usuario: el hash del bot token se registra vía PUT /profile/telegram en cerebro-api.
+    Redis mapea telegram:{token_hash} → tenant_id del usuario.
+    """
+    try:
+        tenant_id = await redis_client.get(f"telegram:{token_hash}") if redis_client else None
+        if not tenant_id:
+            return {"status": "ignored", "reason": "bot token no registrado"}
+
+        data = await request.json()
+        if "message" not in data:
+            return {"status": "ignored", "reason": "not a message"}
+
+        message = data["message"]
+        text = message.get("text", "")
+        if not text:
+            return {"status": "ignored", "reason": "no text in message"}
+
+        urls = extract_urls(text)
+        if not urls:
+            return {"status": "ignored", "reason": "no url found"}
+
+        trace_id = str(uuid.uuid4())
+        ingest_req = IngestionRequest(url=urls[0], tenant_id=tenant_id, source="telegram", trace_id=trace_id)
+        result = await ingest_url(ingest_req)
+        return {"status": "processed", "result": result}
+
+    except Exception as e:
+        logger.error(f"Error en telegram_webhook_user: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     """
@@ -191,8 +236,7 @@ async def telegram_webhook(request: Request):
         if not text:
             return {"status": "ignored", "reason": "no text in message"}
             
-        # Extraer URL simple con un regex o usando el texto entero si es solo una URL
-        urls = re.findall(r'(https?://\S+)', text)
+        urls = extract_urls(text)
         if not urls:
             return {"status": "ignored", "reason": "no url found in text"}
             
@@ -240,8 +284,7 @@ async def external_webhook(request: Request, tenant_id: str = "default_ext"):
         else:
             text_content = str(data)
             
-        # Extraer URLs
-        urls = re.findall(r'(https?://[^\s\"\'<>]+)', text_content)
+        urls = extract_urls(text_content)
         if not urls:
             return {"status": "ignored", "reason": "no url found in generic payload"}
             

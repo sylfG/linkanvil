@@ -14,7 +14,8 @@ docker compose up -d \
   scraper-worker \
   outbox-worker \
   embedder-worker \
-  cerebro-chat
+  cerebro-api \
+  cerebro-web
 
 echo ""
 echo "¡Servicios fundamentales iniciados!"

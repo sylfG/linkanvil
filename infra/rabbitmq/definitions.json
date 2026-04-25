@@ -3,14 +3,13 @@
   "users": [
     {
       "name": "cerebro",
-      "password": "cerebro_pass",
+      "password_hash": "yHfiGvxbpA7ZQyfT9uQOI4BqOtHb1gpB4MyHyrIv59PTHfBZ",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
       "tags": [
         "administrator"
-      ]
+      ],
+      "limits": {}
     }
-  ],
-  "vhosts": [
-    { "name": "cerebro" }
   ],
   "permissions": [
     {
@@ -19,6 +18,11 @@
       "configure": ".*",
       "write": ".*",
       "read": ".*"
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "cerebro"
     }
   ],
   "exchanges": [
@@ -77,6 +81,12 @@
       "vhost": "cerebro",
       "durable": true,
       "auto_delete": false
+    },
+    {
+      "name": "q.embeddings.fallidos",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false
     }
   ],
   "bindings": [
@@ -93,6 +103,13 @@
       "destination": "q.url.fallidas",
       "destination_type": "queue",
       "routing_key": "dlq.url.fallidas"
+    },
+    {
+      "source": "cerebro.dlx",
+      "vhost": "cerebro",
+      "destination": "q.embeddings.fallidos",
+      "destination_type": "queue",
+      "routing_key": "dlq.embeddings.fallidos"
     },
     {
       "source": "cerebro.procesamiento",

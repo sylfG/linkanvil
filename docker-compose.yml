@@ -57,15 +57,28 @@ services:
     container_name: cerebro-scraper
     restart: unless-stopped
     shm_size: '1gb'
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+          cpus: "2.0"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key-CHANGE_ME}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
+      PLAYWRIGHT_PROFILE: /data/playwright_profile
+    volumes:
+      - playwright-profile:/data
     networks:
       - cerebro-net
     depends_on:
       rabbitmq:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   outbox-worker:
@@ -98,11 +111,18 @@ services:
     command: ["python", "-m", "src.data.embedder_worker"]
     container_name: cerebro-embedder
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key-CHANGE_ME}
       QDRANT_URL: http://qdrant:6333
       LITELLM_EMBEDDINGS_URL: http://litellm:4000/v1/embeddings
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
     networks:
       - cerebro-net
     depends_on:
@@ -112,39 +132,82 @@ services:
         condition: service_started
       litellm:
         condition: service_started
-  cerebro-chat:
+  # ---------------------------------------------------------------------------
+  # 🔐 AUTH / CHAT / RAG API — FastAPI
+  # ---------------------------------------------------------------------------
+  cerebro-api:
     build:
       context: .
-      dockerfile: infra/ui.Dockerfile
-    container_name: cerebro-chat
+      dockerfile: infra/api.Dockerfile
+    container_name: cerebro-api
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
     ports:
-      - "8501:8501"
+      - "8001:8001"
     environment:
-      LITELLM_URL: "http://litellm:4000"
-      QDRANT_URL: "http://qdrant:6333"
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-cerebro-master-key}"
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-cerebro_redis_pass}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-cerebro_jwt_dev_secret_CHANGE_ME}
+      LITELLM_URL: "http://litellm:4000"
+      LITELLM_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
+      QDRANT_URL: "http://qdrant:6333"
+      INGESTION_URL: "http://ingestion-api:8000"
+      PUBLIC_INGESTION_URL: ${PUBLIC_INGESTION_URL:-}
     networks:
       - cerebro-net
     depends_on:
-      qdrant:
-        condition: service_started
-      litellm:
-        condition: service_started
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # 🌐 WEB FRONTEND — Next.js 15
+  # ---------------------------------------------------------------------------
+  cerebro-web:
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+    container_name: cerebro-web
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
+    ports:
+      - "3001:3001"
+    environment:
+      # Server-side proxy target (never exposed to browser)
+      CEREBRO_API_URL: "http://cerebro-api:8001"
+    networks:
+      - cerebro-net
+    depends_on:
+      cerebro-api:
         condition: service_healthy
   # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
   # ---------------------------------------------------------------------------
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.6.14
     container_name: cerebro-traefik
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
     command:
       - "--api.insecure=true"
       - "--api.dashboard=true"
@@ -204,6 +267,7 @@ services:
       - "15672:15672"  # Management UI
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
       - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       - cerebro-net
@@ -285,9 +349,14 @@ services:
   #    Similitud del coseno para Colisionadores Semánticos (> 0.92)
   # ---------------------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:v1.17.1
     container_name: cerebro-qdrant
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
     environment:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
@@ -354,9 +423,14 @@ services:
   #    Curador Nocturno (cron jobs) · Bot Telegram integration
   # ---------------------------------------------------------------------------
   n8n:
-    image: n8nio/n8n:1.71.3
+    image: n8nio/n8n:1.123.37
     container_name: cerebro-n8n
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
     environment:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
@@ -406,6 +480,30 @@ services:
       start_period: 60s
 
   # ---------------------------------------------------------------------------
+  # 🔑 N8N API KEY BOOTSTRAP
+  #    Se ejecuta una sola vez por "compose up". Comprueba si N8N_API_KEY
+  #    en .env es válida; si no lo es, crea una nueva y la persiste en .env.
+  # ---------------------------------------------------------------------------
+  n8n-bootstrap:
+    image: python:3.12-alpine
+    container_name: cerebro-n8n-bootstrap
+    restart: "no"
+    environment:
+      N8N_URL: "http://n8n:5678"
+      N8N_USER: ${N8N_USER:-admin}
+      N8N_PASSWORD: ${N8N_PASSWORD:-cerebro_n8n_pass}
+      ENV_FILE: /app/.env
+    volumes:
+      - ./.env:/app/.env
+      - ./infra/n8n/bootstrap-apikey.py:/app/bootstrap-apikey.py:ro
+    depends_on:
+      n8n:
+        condition: service_healthy
+    networks:
+      - cerebro-net
+    command: ["python3", "/app/bootstrap-apikey.py"]
+
+  # ---------------------------------------------------------------------------
   # 🔭 DISTRIBUTED TRACING — Jaeger
   #    Trace-ID por URL entrante · MTTR sub-milisegundo
   # ---------------------------------------------------------------------------
@@ -444,9 +542,14 @@ services:
   #    Centraliza trazas de todos los servicios → Jaeger + Prometheus
   # ---------------------------------------------------------------------------
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.1
+    image: otel/opentelemetry-collector-contrib:0.150.1
     container_name: cerebro-otel
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./infra/otel/config.yaml:/etc/otel/config.yaml:ro
@@ -460,20 +563,21 @@ services:
     networks:
       - cerebro-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:13133/healthz || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
+      disable: true
 
   # ---------------------------------------------------------------------------
   # 📊 MÉTRICAS — Prometheus
   #    Scrape de todos los servicios · Alertas de cuotas (Noisy Neighbor)
   # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v3.0.1
+    image: prom/prometheus:v3.11.2
     container_name: cerebro-prometheus
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -561,20 +665,21 @@ services:
     networks:
       - cerebro-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9419/metrics || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      disable: true
 
   # ---------------------------------------------------------------------------
   # 🔴 REDIS EXPORTER (adicional)
   #    Expone métricas Redis a Prometheus (memoria, TTL, evictions)
   # ---------------------------------------------------------------------------
   redis-exporter:
-    image: oliver006/redis_exporter:v1.67.0-alpine
+    image: oliver006/redis_exporter:v1.82.0-alpine
     container_name: cerebro-redis-exporter
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
     environment:
       REDIS_ADDR: redis://redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-cerebro_redis_pass}
@@ -594,9 +699,14 @@ services:
   #    Expone métricas PostgreSQL a Prometheus (conexiones, transacciones)
   # ---------------------------------------------------------------------------
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.16.0
+    image: prometheuscommunity/postgres-exporter:v0.19.1
     container_name: cerebro-postgres-exporter
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
     environment:
       DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}?sslmode=disable
     depends_on:
@@ -622,6 +732,7 @@ volumes:
   jaeger-data:
   prometheus-data:
   grafana-data:
+  playwright-profile:
 
 # =============================================================================
 # NETWORK — todos los servicios comparten la misma red interna

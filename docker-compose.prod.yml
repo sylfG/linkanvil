@@ -1,0 +1,149 @@
+# =============================================================================
+# Production overlay for LinkAnvil
+#
+# Apply ON TOP of docker-compose.yml:
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Differences from the base file:
+#  · Removes host-port publication for every internal service. Only
+#    Traefik exposes 80/443 to the host. Internal traffic still flows
+#    over the cerebro-net bridge.
+#  · Switches Traefik to TLS (HTTPS) with Let's Encrypt automatic
+#    certificate provisioning, and removes the insecure API/Dashboard.
+#  · Loads sensitive variables (JWT_SECRET, DB & Redis & RabbitMQ
+#    passwords, LiteLLM master key, LLM provider keys) from Docker
+#    secrets mounted at /run/secrets/<name> instead of plain env
+#    interpolation. The sample below uses file-based secrets which
+#    works for both Compose and Swarm. For Vault/Doppler, add an
+#    init container that templates /run/secrets/* from the upstream.
+#
+# Required env in the production .env (only):
+#   ACME_EMAIL=ops@example.com
+#   PUBLIC_HOSTNAME=linkanvil.example.com
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Gateway: HTTPS-only, ACME, no insecure dashboard
+  # ---------------------------------------------------------------------------
+  traefik:
+    command:
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--ping=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.middlewares=global-ratelimit@docker,global-retry@docker"
+      - "--entrypoints.websecure.http.tls=true"
+      - "--entrypoints.websecure.http.tls.certresolver=letsencrypt"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.buckets=0.1,0.3,1.5,10.0"
+      - "--tracing.otlp.http.endpoint=http://otel-collector:4318/v1/traces"
+      - "--log.level=INFO"
+    ports: !reset
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik-acme:/letsencrypt
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+  # ---------------------------------------------------------------------------
+  # Stop publishing internal services on host ports.
+  # Traffic stays inside cerebro-net; the Traefik labels expose them
+  # via Host(..) routing rules.
+  # ---------------------------------------------------------------------------
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  rabbitmq:
+    ports: !reset []
+  qdrant:
+    ports: !reset []
+  litellm:
+    ports: !reset []
+  cerebro-api:
+    ports: !reset []
+  cerebro-web:
+    ports: !reset []
+  n8n:
+    ports: !reset []
+  jaeger:
+    ports: !reset []
+  prometheus:
+    ports: !reset []
+  grafana:
+    ports: !reset []
+  otel-collector:
+    ports: !reset []
+
+  # ---------------------------------------------------------------------------
+  # Secret injection — services read their secret material from
+  # /run/secrets/<name>. The application code falls back to the env
+  # variable shape so dev compose still works.
+  # ---------------------------------------------------------------------------
+  postgres:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+
+  redis:
+    environment:
+      REDIS_ARGS: "--requirepass ${REDIS_PASSWORD_PROD:?wire from secrets} --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000 --appendonly yes"
+    secrets:
+      - redis_password
+
+  rabbitmq:
+    secrets:
+      - rabbitmq_password
+
+  cerebro-api:
+    environment:
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      LITELLM_KEY_FILE: /run/secrets/litellm_master_key
+    secrets:
+      - jwt_secret
+      - litellm_master_key
+
+  litellm:
+    environment:
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+    secrets:
+      - litellm_master_key
+      - openai_api_key
+      - anthropic_api_key
+
+# =============================================================================
+# Secrets — provide files at the listed paths (Vault agent, Doppler
+# render, Infisical CLI, or plain `docker secret create` in Swarm).
+# In single-host Compose the simplest setup is /etc/cerebro/secrets/*
+# with mode 0400 root:root.
+# =============================================================================
+secrets:
+  postgres_password:
+    file: /etc/cerebro/secrets/postgres_password
+  redis_password:
+    file: /etc/cerebro/secrets/redis_password
+  rabbitmq_password:
+    file: /etc/cerebro/secrets/rabbitmq_password
+  jwt_secret:
+    file: /etc/cerebro/secrets/jwt_secret
+  litellm_master_key:
+    file: /etc/cerebro/secrets/litellm_master_key
+  openai_api_key:
+    file: /etc/cerebro/secrets/openai_api_key
+  anthropic_api_key:
+    file: /etc/cerebro/secrets/anthropic_api_key
+
+volumes:
+  traefik-acme:

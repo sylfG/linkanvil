@@ -147,6 +147,7 @@ SERVICES_WITH_HC=(
     "cerebro-postgres"
     "cerebro-litellm"
     "cerebro-api"
+    "cerebro-ingestion"
     "cerebro-prometheus"
     "cerebro-grafana"
     "cerebro-jaeger"

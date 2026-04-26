@@ -8,7 +8,7 @@ from typing import AsyncGenerator, Optional
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -91,11 +91,47 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Rate limiting (Redis INCR with per-key TTL — atomic, low overhead).
+# Fails open if Redis is unavailable so a degraded cache never causes
+# a customer-visible outage.
+# ---------------------------------------------------------------------------
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def _rate_limit(key: str, limit: int, window_seconds: int) -> None:
+    if _redis is None:
+        return
+    count = await _redis.incr(key)
+    if count == 1:
+        await _redis.expire(key, window_seconds)
+    if count > limit:
+        raise HTTPException(429, "Too Many Requests")
+
+
+async def rate_limit_login(request: Request) -> None:
+    await _rate_limit(f"rl:login:{_client_ip(request)}", limit=5, window_seconds=60)
+
+
+async def rate_limit_register(request: Request) -> None:
+    await _rate_limit(f"rl:register:{_client_ip(request)}", limit=3, window_seconds=3600)
+
+
+async def rate_limit_chat(user: dict = Depends(get_current_user)) -> dict:
+    await _rate_limit(f"rl:chat:{user['tenant_id']}", limit=30, window_seconds=60)
+    return user
+
+
+# ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 
 @app.post("/auth/register", response_model=TokenResponse)
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, _=Depends(rate_limit_register)):
     if await db.get_user_by_email(req.email):
         raise HTTPException(409, "Email ya registrado")
     hashed = get_password_hash(req.password)
@@ -107,7 +143,7 @@ async def register(req: RegisterRequest):
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, _=Depends(rate_limit_login)):
     user = await db.get_user_by_email(req.email)
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Credenciales incorrectas")
@@ -226,7 +262,7 @@ async def ingest_stream(token: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/chat")
-async def chat(req: ChatRequest, user=Depends(get_current_user)):
+async def chat(req: ChatRequest, user=Depends(rate_limit_chat)):
     context_block = ""
     hits: list = []
 

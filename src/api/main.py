@@ -19,6 +19,7 @@ from src.api.auth import (
     verify_password,
     verify_token,
 )
+from src.observability.logging import configure_json_logging
 from src.api.models import (
     ChatRequest,
     CfCookiesRequest,
@@ -33,7 +34,7 @@ from src.api.models import (
     UserResponse,
 )
 
-logging.basicConfig(level=logging.INFO)
+configure_json_logging("cerebro-api")
 logger = logging.getLogger(__name__)
 
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")

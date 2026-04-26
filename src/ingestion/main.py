@@ -10,11 +10,11 @@ from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
 from src.ingestion.publisher import RabbitMQPublisher
 from src.telemetry import configure_telemetry, trace_operation
+from src.observability.logging import configure_json_logging
 import redis.asyncio as aioredis
 import httpx
 
-# Logging format that captures logic visually
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+configure_json_logging("ingestion-api")
 logger = logging.getLogger(__name__)
 
 # Global instances

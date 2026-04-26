@@ -123,13 +123,27 @@ async def create_chat_session(tenant_id: str) -> dict:
     return dict(row)
 
 
-async def list_chat_sessions(tenant_id: str) -> list[dict]:
+async def list_chat_sessions(
+    tenant_id: str, limit: int = 50, offset: int = 0
+) -> list[dict]:
     p = await get_pool()
     rows = await p.fetch(
-        "SELECT * FROM sesiones_chat WHERE tenant_id = $1 ORDER BY ultimo_acceso DESC LIMIT 100",
-        tenant_id,
+        """SELECT * FROM sesiones_chat
+           WHERE tenant_id = $1
+           ORDER BY ultimo_acceso DESC
+           LIMIT $2 OFFSET $3""",
+        tenant_id, limit, offset,
     )
     return [dict(r) for r in rows]
+
+
+async def count_chat_sessions(tenant_id: str) -> int:
+    p = await get_pool()
+    row = await p.fetchrow(
+        "SELECT COUNT(*) AS n FROM sesiones_chat WHERE tenant_id = $1",
+        tenant_id,
+    )
+    return int(row["n"])
 
 
 async def get_chat_session(tenant_id: str, session_id: str) -> Optional[dict]:

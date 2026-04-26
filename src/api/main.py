@@ -404,10 +404,20 @@ async def create_chat(user=Depends(get_current_user)):
     return _session_out(session)
 
 
-@app.get("/chats", response_model=list[SessionResponse])
-async def list_chats(user=Depends(get_current_user)):
-    sessions = await db.list_chat_sessions(user["tenant_id"])
-    return [_session_out(s) for s in sessions]
+@app.get("/chats")
+async def list_chats(
+    limit: int = Query(50, gt=0, le=200),
+    offset: int = Query(0, ge=0),
+    user=Depends(get_current_user),
+):
+    sessions = await db.list_chat_sessions(user["tenant_id"], limit=limit, offset=offset)
+    total = await db.count_chat_sessions(user["tenant_id"])
+    return {
+        "items": [_session_out(s) for s in sessions],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/chats/{session_id}", response_model=SessionResponse)

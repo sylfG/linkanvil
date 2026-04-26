@@ -17,6 +17,11 @@ services:
       dockerfile: infra/ingestion.Dockerfile
     container_name: cerebro-ingestion
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -70,6 +75,11 @@ services:
     command: ["python", "-m", "src.data.outbox_publisher"]
     container_name: cerebro-outbox
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
     environment:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
@@ -178,6 +188,11 @@ services:
     container_name: cerebro-rabbitmq
     hostname: cerebro-rabbitmq          # hostname fijo: evita cookie mismatch
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cerebro}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cerebro_pass}
@@ -212,6 +227,11 @@ services:
     image: redis/redis-stack-server:latest
     container_name: cerebro-redis
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
     environment:
       REDIS_ARGS: "--requirepass ${REDIS_PASSWORD:-cerebro_redis_pass} --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000 --appendonly yes"
     ports:
@@ -235,6 +255,11 @@ services:
     image: postgres:16-alpine
     container_name: cerebro-postgres
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cerebro}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cerebro_db_pass}
@@ -289,6 +314,11 @@ services:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: cerebro-litellm
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
@@ -383,6 +413,11 @@ services:
     image: jaegertracing/all-in-one:latest
     container_name: cerebro-jaeger
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: memory        # Ephemeral: evita problemas de permisos en vol
@@ -470,6 +505,11 @@ services:
     image: grafana/grafana:11.4.0
     container_name: cerebro-grafana
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-cerebro_grafana_pass}
@@ -505,6 +545,11 @@ services:
     image: kbudde/rabbitmq-exporter:latest
     container_name: cerebro-rabbitmq-exporter
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
     environment:
       RABBIT_URL: http://rabbitmq:15672
       RABBIT_USER: ${RABBITMQ_USER:-cerebro}

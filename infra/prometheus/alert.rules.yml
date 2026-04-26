@@ -30,3 +30,64 @@ groups:
         annotations:
           summary: "Tasa de errores 5xx alta"
           description: "Los endpoints web (Traefik/Ingesta) están retornando errores 5xx por encima de 5%."
+
+      # API p99 latency
+      - alert: APIHighP99Latency
+        expr: histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"cerebro-api.*"}[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 de cerebro-api > 2s"
+          description: "La latencia p99 del API ha superado los 2s durante 5 minutos seguidos."
+
+      # Cola de ingesta saturada
+      - alert: IngestionQueueBacklog
+        expr: rabbitmq_queue_messages{queue="q.url.ingesta"} > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cola q.url.ingesta con backlog > 1000"
+          description: "Más de 1000 mensajes pendientes durante 10 min. El scraper-worker no consume al ritmo de la ingesta."
+
+      # DLQ de embeddings (NO debería tener nunca mensajes)
+      - alert: EmbeddingsDLQAny
+        expr: rabbitmq_queue_messages{queue="q.embeddings.fallidos"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mensajes en q.embeddings.fallidos"
+          description: "El embedder-worker ha agotado los reintentos en al menos un mensaje. Revisar logs."
+
+      # Conexiones Postgres cerca del techo
+      - alert: PostgresConnectionsHigh
+        expr: pg_stat_activity_count > 160  # 80% of max_connections=200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres usa > 80% del pool"
+          description: "El número de conexiones activas a Postgres supera el 80% de max_connections (200) durante 5 min."
+
+      # Worker heartbeats: si el container está unhealthy en docker, esto
+      # se detecta por separado, pero también vigilamos la métrica directa
+      - alert: WorkerStuck
+        expr: up{job=~"scraper-worker|embedder-worker|outbox-worker"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker {{ $labels.job }} caído"
+          description: "El worker {{ $labels.job }} no responde a scraping de métricas durante 3 minutos."
+
+      # Disco de volúmenes
+      - alert: VolumeDiskHigh
+        expr: 1 - (node_filesystem_avail_bytes{mountpoint=~".*postgres.*|.*qdrant.*"} / node_filesystem_size_bytes) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Volumen {{ $labels.mountpoint }} > 80% lleno"
+          description: "El disco del volumen de datos crítico está al 80%. Planificar limpieza/expansión."

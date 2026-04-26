@@ -309,7 +309,10 @@ services:
   #    Política allkeys-lru para evitar saturación de memoria
   # ---------------------------------------------------------------------------
   redis:
-    image: redis/redis-stack-server:latest
+    # Pinned to the bytes that were validated locally — :latest moves
+    # without warning. Replace the digest after `docker pull
+    # redis/redis-stack-server:<new-tag>` and re-running the audit.
+    image: redis/redis-stack-server:latest@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
     container_name: cerebro-redis
     restart: unless-stopped
     deploy:
@@ -415,7 +418,7 @@ services:
   #    Circuit Breakers · Multi-provider routing
   # ---------------------------------------------------------------------------
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: ghcr.io/berriai/litellm:main-latest@sha256:7c311546c25e7bb6e8cafede9fcd3d0d622ac636b5c9418befaa32e85dfb0186
     container_name: cerebro-litellm
     restart: unless-stopped
     deploy:
@@ -543,7 +546,7 @@ services:
   #    Trace-ID por URL entrante · MTTR sub-milisegundo
   # ---------------------------------------------------------------------------
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:latest@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
     container_name: cerebro-jaeger
     restart: unless-stopped
     deploy:
@@ -681,7 +684,7 @@ services:
   #    Expone métricas RabbitMQ a Prometheus (colas DLQ, mensajes pendientes)
   # ---------------------------------------------------------------------------
   rabbitmq-exporter:
-    image: kbudde/rabbitmq-exporter:latest
+    image: kbudde/rabbitmq-exporter:latest@sha256:12f27d6d84e6dbdd72c6bc2605e48af9910517394483c1dfa3230e49d3e32107
     container_name: cerebro-rabbitmq-exporter
     restart: unless-stopped
     deploy:

@@ -8,13 +8,17 @@ from typing import AsyncGenerator, Optional
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from src.api import database as db
 from src.api.auth import (
+    CSRF_COOKIE,
+    CSRF_HEADER,
+    SESSION_COOKIE,
     create_access_token,
+    generate_csrf_token,
     get_password_hash,
     verify_password,
     verify_token,
@@ -77,10 +81,21 @@ app.add_middleware(
 # Auth dependency
 # ---------------------------------------------------------------------------
 
-async def get_current_user(authorization: str = Header(None)) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
+async def get_current_user(
+    authorization: str = Header(None),
+    cerebro_session: str | None = Cookie(None),
+) -> dict:
+    """
+    Read the session token from either an httpOnly cookie (preferred for
+    browser flows) or the Authorization: Bearer header (legacy / Telegram).
+    """
+    token: str | None = None
+    if cerebro_session:
+        token = cerebro_session
+    elif authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    if not token:
         raise HTTPException(401, "Token requerido")
-    token = authorization.split(" ", 1)[1]
     try:
         payload = verify_token(token)
     except ValueError:
@@ -89,6 +104,55 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
     if not user:
         raise HTTPException(401, "Usuario no encontrado")
     return user
+
+
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
+COOKIE_MAX_AGE_SEC = 24 * 3600
+
+
+def _set_session_cookies(response: Response, token: str) -> str:
+    """Set the httpOnly session cookie + a non-httpOnly CSRF cookie. Returns the CSRF token."""
+    csrf = generate_csrf_token()
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=COOKIE_MAX_AGE_SEC,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE,
+        csrf,
+        max_age=COOKIE_MAX_AGE_SEC,
+        httponly=False,  # the JS needs to read it
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+    return csrf
+
+
+async def verify_csrf(
+    request: Request,
+    x_csrf_token: str | None = Header(None, alias=CSRF_HEADER),
+    cerebro_csrf: str | None = Cookie(None),
+    cerebro_session: str | None = Cookie(None),
+) -> None:
+    """
+    Double-submit cookie CSRF check. Only enforced when the request is
+    cookie-authenticated; pure Bearer-token requests (Telegram, scripts)
+    skip the check, since they cannot be triggered cross-site.
+    """
+    if not cerebro_session:
+        return
+    if not cerebro_csrf or not x_csrf_token or cerebro_csrf != x_csrf_token:
+        raise HTTPException(403, "CSRF token mismatch")
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +195,8 @@ async def rate_limit_chat(user: dict = Depends(get_current_user)) -> dict:
 # Auth
 # ---------------------------------------------------------------------------
 
-@app.post("/auth/register", response_model=TokenResponse)
-async def register(req: RegisterRequest, _=Depends(rate_limit_register)):
+@app.post("/auth/register")
+async def register(req: RegisterRequest, response: Response, _=Depends(rate_limit_register)):
     if await db.get_user_by_email(req.email):
         raise HTTPException(409, "Email ya registrado")
     hashed = get_password_hash(req.password)
@@ -140,18 +204,29 @@ async def register(req: RegisterRequest, _=Depends(rate_limit_register)):
     token = create_access_token(
         {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
     )
-    return TokenResponse(access_token=token)
+    csrf = _set_session_cookies(response, token)
+    # The access_token is still in the body so the legacy Authorization
+    # header path keeps working until the frontend fully migrates.
+    return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
 
 
-@app.post("/auth/login", response_model=TokenResponse)
-async def login(req: LoginRequest, _=Depends(rate_limit_login)):
+@app.post("/auth/login")
+async def login(req: LoginRequest, response: Response, _=Depends(rate_limit_login)):
     user = await db.get_user_by_email(req.email)
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Credenciales incorrectas")
     token = create_access_token(
         {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
     )
-    return TokenResponse(access_token=token)
+    csrf = _set_session_cookies(response, token)
+    return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
+
+
+@app.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie(CSRF_COOKIE, path="/", domain=COOKIE_DOMAIN)
+    return {"status": "ok"}
 
 
 @app.get("/auth/me", response_model=UserResponse)
@@ -170,7 +245,11 @@ async def me(user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @app.put("/profile/telegram")
-async def update_telegram(req: TelegramBotRequest, user=Depends(get_current_user)):
+async def update_telegram(
+    req: TelegramBotRequest,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
     resp = await _http.get(
         f"https://api.telegram.org/bot{req.bot_token}/getMe", timeout=10.0
     )
@@ -216,7 +295,7 @@ async def get_resources(
 # ---------------------------------------------------------------------------
 
 @app.post("/ingest")
-async def ingest(req: IngestRequest, user=Depends(get_current_user)):
+async def ingest(req: IngestRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     payload = {
         "url": req.url,
         "tenant_id": user["tenant_id"],
@@ -263,7 +342,7 @@ async def ingest_stream(token: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/chat")
-async def chat(req: ChatRequest, user=Depends(rate_limit_chat)):
+async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(verify_csrf)):
     context_block = ""
     hits: list = []
 
@@ -357,7 +436,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat)):
 
 
 @app.post("/admin/cf-cookies")
-async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user)):
+async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     cookies = [{"name": "cf_clearance", "value": req.cf_clearance,
                 "domain": req.domain, "path": "/"}]
     if req.extra:
@@ -370,7 +449,7 @@ async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user)):
 
 
 @app.delete("/admin/cf-cookies/{domain}")
-async def clear_cf_cookies(domain: str, user=Depends(get_current_user)):
+async def clear_cf_cookies(domain: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     await _redis.delete(f"cf:cookies:{domain}")
     return {"status": "ok"}
 
@@ -399,7 +478,7 @@ def _message_out(row: dict) -> dict:
 
 
 @app.post("/chats", response_model=SessionResponse)
-async def create_chat(user=Depends(get_current_user)):
+async def create_chat(user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     session = await db.create_chat_session(user["tenant_id"])
     return _session_out(session)
 
@@ -429,7 +508,7 @@ async def get_chat(session_id: str, user=Depends(get_current_user)):
 
 
 @app.delete("/chats/{session_id}")
-async def delete_chat(session_id: str, user=Depends(get_current_user)):
+async def delete_chat(session_id: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     deleted = await db.delete_chat_session(user["tenant_id"], session_id)
     if not deleted:
         raise HTTPException(404, "Sesión no encontrada")
@@ -447,7 +526,7 @@ async def get_messages(session_id: str, user=Depends(get_current_user)):
 
 @app.post("/chats/{session_id}/messages", response_model=list[MessageOut])
 async def append_messages(
-    session_id: str, body: list[MessageIn], user=Depends(get_current_user)
+    session_id: str, body: list[MessageIn], user=Depends(get_current_user), _csrf=Depends(verify_csrf)
 ):
     session = await db.get_chat_session(user["tenant_id"], session_id)
     if not session:

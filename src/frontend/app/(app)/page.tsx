@@ -222,9 +222,18 @@ export default function ChatPage() {
     let aborted = false;
 
     try {
+      const csrf = (typeof document !== "undefined")
+        ? (document.cookie.match(/(?:^|; )cerebro_csrf=([^;]*)/)?.[1] ?? "")
+        : "";
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}),
+      };
       const res = await fetch(`${API_URL}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers,
+        credentials: "include",
         body: JSON.stringify({ messages: newMessages, model, use_rag: useRag }),
         signal: ac.signal,
       });

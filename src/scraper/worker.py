@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.scraper.strategy import ScraperContext
 from src.scraper._retry import with_retries
 from src.data.db import DatabaseManager
+from src.data.heartbeat import start_heartbeat
 from src.telemetry import configure_telemetry, trace_operation
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ class ScraperWorker:
         self.db = DatabaseManager()
         self.redis: Optional[aioredis.Redis] = None
         self.http: Optional[httpx.AsyncClient] = None
+        self.heartbeat_task: Optional[asyncio.Task] = None
 
     async def connect(self):
         self.connection = await aio_pika.connect_robust(self.rabbit_url)
@@ -132,6 +134,7 @@ class ScraperWorker:
         await self.db.connect()
         self.redis = aioredis.from_url(REDIS_URL, decode_responses=True)
         self.http = httpx.AsyncClient(timeout=30.0)
+        self.heartbeat_task = start_heartbeat(self.redis, "scraper")
 
     @trace_operation("process_scraper_message")
     async def process_message(self, message: aio_pika.IncomingMessage):
@@ -185,6 +188,8 @@ class ScraperWorker:
         await queue.consume(self.process_message)
 
     async def close(self):
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
         if self.connection:
             await self.connection.close()
         if hasattr(self, "db"):

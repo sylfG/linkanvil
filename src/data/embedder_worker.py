@@ -12,6 +12,7 @@ import redis.asyncio as aioredis
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.telemetry import configure_telemetry, trace_operation
 from src.data.db import DatabaseManager
+from src.data.heartbeat import start_heartbeat
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -36,11 +37,13 @@ class EmbedderWorker:
         self.db = DatabaseManager()
         self.redis: Optional[aioredis.Redis] = None
         self.http: Optional[httpx.AsyncClient] = None
+        self.heartbeat_task: Optional[asyncio.Task] = None
 
     async def connect(self):
         await self.db.connect()
         self.redis = aioredis.from_url(REDIS_URL, decode_responses=True)
         self.http = httpx.AsyncClient(timeout=30.0)
+        self.heartbeat_task = start_heartbeat(self.redis, "embedder")
         self.connection = await aio_pika.connect_robust(RABBIT_URL)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=10) # Paralelismo
@@ -247,6 +250,8 @@ class EmbedderWorker:
         await self.queue.consume(self.process_message)
 
     async def close(self):
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
         if self.connection:
             await self.connection.close()
         if self.redis:

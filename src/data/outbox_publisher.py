@@ -7,7 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.data.db import DatabaseManager
+from src.data.heartbeat import start_heartbeat
 from src.telemetry import configure_telemetry, trace_operation
+
+import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +26,19 @@ class OutboxPublisher:
         self.db = DatabaseManager()
         self.connection = None
         self.channel = None
+        self.redis = None
+        self.heartbeat_task = None
         self.exchange_name = os.getenv("RABBITMQ_EXCHANGE_PROCESAMIENTO", "cerebro.procesamiento")
 
     async def connect(self):
         await self.db.connect()
         self.connection = await aio_pika.connect_robust(self.rabbit_url)
         self.channel = await self.connection.channel()
+        self.redis = aioredis.from_url(
+            os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379"),
+            decode_responses=True,
+        )
+        self.heartbeat_task = start_heartbeat(self.redis, "outbox")
 
     @trace_operation("poll_outbox")
     async def poll_outbox(self):
@@ -85,6 +95,10 @@ class OutboxPublisher:
                 await asyncio.sleep(5)
 
     async def close(self):
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+        if self.redis:
+            await self.redis.aclose()
         if self.connection:
             await self.connection.close()
         await self.db.close()

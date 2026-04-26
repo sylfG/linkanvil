@@ -7,6 +7,8 @@ import os
 import sys
 from typing import Optional
 
+import redis.asyncio as aioredis
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.telemetry import configure_telemetry, trace_operation
 from src.data.db import DatabaseManager
@@ -24,6 +26,7 @@ RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:56
 EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_PROCESAMIENTO", "cerebro.procesamiento")
 QUEUE_NAME = "q.recurso.embedder"
 DLQ_ROUTING_KEY = "dlq.url.fallidas"
+REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
 
 class EmbedderWorker:
     def __init__(self):
@@ -31,9 +34,13 @@ class EmbedderWorker:
         self.channel: Optional[aio_pika.RobustChannel] = None
         self.queue: Optional[aio_pika.RobustQueue] = None
         self.db = DatabaseManager()
+        self.redis: Optional[aioredis.Redis] = None
+        self.http: Optional[httpx.AsyncClient] = None
 
     async def connect(self):
         await self.db.connect()
+        self.redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+        self.http = httpx.AsyncClient(timeout=30.0)
         self.connection = await aio_pika.connect_robust(RABBIT_URL)
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=10) # Paralelismo
@@ -55,11 +62,10 @@ class EmbedderWorker:
     async def _generate_embedding(self, text: str, trace_id: str) -> list[float]:
         headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
         payload = {"model": "cerebro-embeddings", "input": text}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(LITELLM_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["data"][0]["embedding"]
+        resp = await self.http.post(LITELLM_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["data"][0]["embedding"]
 
     async def _inject_to_qdrant(self, recurso_id: str, tenant_id: str, vector: list[float], extracted_info: dict, url: str, trace_id: str):
         points_payload = {
@@ -78,9 +84,11 @@ class EmbedderWorker:
             ]
         }
         
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.put(f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true", json=points_payload)
-            resp.raise_for_status()
+        resp = await self.http.put(
+            f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true",
+            json=points_payload,
+        )
+        resp.raise_for_status()
 
     async def _classify_collision_type(self, trace_id: str, tenant_id: str, new_info: dict, old_id: str) -> str:
         # Fetch the old document info from the DB
@@ -120,19 +128,16 @@ class EmbedderWorker:
         }
         
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # Usa un puerto de chat (generalmente el mismo que /v1/chat/completions)
-                url_chat = LITELLM_URL.replace("/embeddings", "/chat/completions")
-                resp = await client.post(url_chat, headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                tipo = data["choices"][0]["message"]["content"].strip().upper()
-                
-                # Normalize output
-                for t in ["VUELVE_OBSOLETO", "CONTRADICE", "EXTIENDE", "ES_UN"]:
-                    if t in tipo:
-                        return t
-                return "ASOCIACION_GENERAL"
+            url_chat = LITELLM_URL.replace("/embeddings", "/chat/completions")
+            resp = await self.http.post(url_chat, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            tipo = data["choices"][0]["message"]["content"].strip().upper()
+
+            for t in ["VUELVE_OBSOLETO", "CONTRADICE", "EXTIENDE", "ES_UN"]:
+                if t in tipo:
+                    return t
+            return "ASOCIACION_GENERAL"
         except Exception as e:
             logger.warning(f"[{trace_id}] Fallo de IA en tipificación (fallback): {e}")
             return "ASOCIACION_GENERAL"
@@ -150,12 +155,14 @@ class EmbedderWorker:
             "with_payload": False
         }
         
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{QDRANT_URL}/collections/cerebro_recursos/points/search", json=payload)
-            if resp.status_code != 200:
-                logger.error(f"[{trace_id}] Error consultando Qdrant para similitud: {resp.text}")
-                return
-            results = resp.json().get("result", [])
+        resp = await self.http.post(
+            f"{QDRANT_URL}/collections/cerebro_recursos/points/search",
+            json=payload,
+        )
+        if resp.status_code != 200:
+            logger.error(f"[{trace_id}] Error consultando Qdrant para similitud: {resp.text}")
+            return
+        results = resp.json().get("result", [])
             
         collisions = []
         for r in results:
@@ -210,6 +217,22 @@ class EmbedderWorker:
                 # 3. Colisionador Semántico (F-03.3)
                 await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
                 logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
+
+                # 4. Actualizar estado → 'activo' en PostgreSQL
+                await self.db.update_recurso_estado(recurso_id, tenant_id, "activo")
+                logger.info(f"[{trace_id}] Estado actualizado a 'activo' para ID {recurso_id}")
+
+                # 5. Notificar completado vía Redis pub/sub (para SSE en cerebro-api)
+                if self.redis:
+                    titulo = ext_info.get("title") or url
+                    completion = json.dumps({
+                        "recurso_id": recurso_id,
+                        "url": url,
+                        "titulo": titulo,
+                        "estado": "activo",
+                    })
+                    await self.redis.publish(f"ingest:complete:{tenant_id}", completion)
+                    logger.info(f"[{trace_id}] Publicado evento ingest:complete para tenant {tenant_id}")
                 
             except Exception as e:
                 logger.error(f"[{trace_id}] F-03.2 Fallo crítico procesando embedding/qdrant: {e}")
@@ -226,6 +249,10 @@ class EmbedderWorker:
     async def close(self):
         if self.connection:
             await self.connection.close()
+        if self.redis:
+            await self.redis.aclose()
+        if self.http:
+            await self.http.aclose()
         await self.db.close()
 
 async def run_worker():

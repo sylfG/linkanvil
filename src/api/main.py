@@ -45,15 +45,19 @@ PUBLIC_INGESTION_URL = os.getenv("PUBLIC_INGESTION_URL", "")
 COLLECTION = "cerebro_recursos"
 
 _redis: Optional[aioredis.Redis] = None
+_http: Optional[httpx.AsyncClient] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _redis
+    global _redis, _http
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=10.0))
     yield
     if _redis:
         await _redis.aclose()
+    if _http:
+        await _http.aclose()
     await db.close_pool()
 
 
@@ -130,26 +134,25 @@ async def me(user=Depends(get_current_user)):
 
 @app.put("/profile/telegram")
 async def update_telegram(req: TelegramBotRequest, user=Depends(get_current_user)):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"https://api.telegram.org/bot{req.bot_token}/getMe")
-        if resp.status_code != 200:
-            raise HTTPException(400, "Token de bot inválido")
-        bot_info = resp.json().get("result", {})
+    resp = await _http.get(
+        f"https://api.telegram.org/bot{req.bot_token}/getMe", timeout=10.0
+    )
+    if resp.status_code != 200:
+        raise HTTPException(400, "Token de bot inválido")
+    bot_info = resp.json().get("result", {})
 
     token_hash = hashlib.sha256(req.bot_token.encode()).hexdigest()
     await db.update_telegram_bot(str(user["id"]), req.bot_token, token_hash)
 
-    # Cache hash→tenant_id in Redis for the ingestion API
     if _redis:
         await _redis.set(f"telegram:{token_hash}", user["tenant_id"])
 
-    # Register the Telegram webhook
     base = PUBLIC_INGESTION_URL or INGESTION_URL
     webhook_url = f"{base}/webhook/telegram/{token_hash}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.get(
-            f"https://api.telegram.org/bot{req.bot_token}/setWebhook?url={webhook_url}"
-        )
+    await _http.get(
+        f"https://api.telegram.org/bot{req.bot_token}/setWebhook?url={webhook_url}",
+        timeout=10.0,
+    )
 
     return {
         "status": "ok",
@@ -183,9 +186,8 @@ async def ingest(req: IngestRequest, user=Depends(get_current_user)):
         "source": req.source,
         "trace_id": str(uuid.uuid4()),
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(f"{INGESTION_URL}/ingest", json=payload)
-        return resp.json()
+    resp = await _http.post(f"{INGESTION_URL}/ingest", json=payload, timeout=15.0)
+    return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -238,47 +240,46 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
                     "Authorization": f"Bearer {LITELLM_KEY}",
                     "Content-Type": "application/json",
                 }
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    er = await client.post(
-                        f"{LITELLM_URL}/v1/embeddings",
-                        headers=headers,
-                        json={"model": "cerebro-embeddings", "input": last_user},
+                er = await _http.post(
+                    f"{LITELLM_URL}/v1/embeddings",
+                    headers=headers,
+                    json={"model": "cerebro-embeddings", "input": last_user},
+                    timeout=15.0,
+                )
+                if er.status_code == 200:
+                    vector = er.json()["data"][0]["embedding"]
+                    search = {
+                        "vector": vector,
+                        "filter": {
+                            "must": [
+                                {"key": "tenant_id", "match": {"value": user["tenant_id"]}}
+                            ]
+                        },
+                        "limit": 5,
+                        "with_payload": True,
+                    }
+                    qr = await _http.post(
+                        f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+                        json=search,
+                        timeout=5.0,
                     )
-                    if er.status_code == 200:
-                        vector = er.json()["data"][0]["embedding"]
-                        search = {
-                            "vector": vector,
-                            "filter": {
-                                "must": [
-                                    {"key": "tenant_id", "match": {"value": user["tenant_id"]}}
-                                ]
-                            },
-                            "limit": 5,
-                            "with_payload": True,
-                        }
-                        async with httpx.AsyncClient(timeout=5.0) as client:
-                            qr = await client.post(
-                                f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
-                                json=search,
+                    if qr.status_code == 200:
+                        raw_hits = qr.json().get("result", [])
+                        if raw_hits:
+                            active_ids = await db.get_active_resource_ids(
+                                user["tenant_id"],
+                                [str(h["id"]) for h in raw_hits],
                             )
-                            if qr.status_code == 200:
-                                raw_hits = qr.json().get("result", [])
-                                if raw_hits:
-                                    # Filter to only resources that still exist in Postgres as activo
-                                    active_ids = await db.get_active_resource_ids(
-                                        user["tenant_id"],
-                                        [str(h["id"]) for h in raw_hits],
-                                    )
-                                    active_set = set(active_ids)
-                                    hits = [h for h in raw_hits if str(h["id"]) in active_set]
-                                if hits:
-                                    frags = [
-                                        f"- **{h['payload'].get('title','')}** — "
-                                        f"{h['payload'].get('url','')} "
-                                        f"[score: {h['score']:.2f}]"
-                                        for h in hits
-                                    ]
-                                    context_block = "### Contexto:\n" + "\n".join(frags)
+                            active_set = set(active_ids)
+                            hits = [h for h in raw_hits if str(h["id"]) in active_set]
+                        if hits:
+                            frags = [
+                                f"- **{h['payload'].get('title','')}** — "
+                                f"{h['payload'].get('url','')} "
+                                f"[score: {h['score']:.2f}]"
+                                for h in hits
+                            ]
+                            context_block = "### Contexto:\n" + "\n".join(frags)
             except Exception as e:
                 logger.warning(f"RAG error: {e}")
 

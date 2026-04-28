@@ -19,6 +19,13 @@
 | F-00.4 | Esquemas de base de datos relacional y configuración inicial (PostgreSQL) | MUST |
 | F-00.5 | Despliegue de almacenamiento en caché (Redis) y bus de mensajes (RabbitMQ) | MUST |
 | F-00.6 | Despliegue de base de datos vectorial con colecciones iniciales (Qdrant) | MUST |
+| F-00.7 | Límites de recursos y modernización del compose para producción | MUST |
+| F-00.8 | Hardening de contenedores: ejecución no-root | MUST |
+| F-00.9 | Tuning de PostgreSQL y pool de conexiones | SHOULD |
+| F-00.10 | Framework de migraciones de schema idempotentes | MUST |
+| F-00.11 | Pin de imágenes Docker por digest | SHOULD |
+| F-00.12 | Overlay de producción con TLS, secrets y puertos cerrados | MUST |
+| F-00.13 | Backup automático de volúmenes críticos (Postgres, Qdrant) | MUST |
 
 ---
 
@@ -33,6 +40,7 @@
 | F-01.3 | Soporte para captura mediante Bot de Telegram | MUST |
 | F-01.4 | Soporte para captura mediante extensiones de navegador y webhooks externos | SHOULD |
 | F-01.5 | Cola de Mensajes Muertos (DLQ) para tolerancia a fallos crónicos en la extracción | MUST |
+| F-01.6 | Robustez de Ingestion API: rate limiter atómico, async Redis, lifespan y healthcheck | MUST |
 
 ---
 
@@ -46,6 +54,7 @@
 | F-02.2 | LLM Gateway con Circuit Breaker, Fallback Automático entre proveedores y caché local | MUST |
 | F-02.3 | Pipeline Zero-Defect: Forzar Salidas Estructuradas del LLM validando JSON inquebrantable mediante Zod/Pydantic | MUST |
 | F-02.4 | Clasificación inteligente de contenido y estimación lógica de la fecha útil (Volatilidad) para futuro | MUST |
+| F-02.5 | Pool compartido de clientes HTTP (httpx) en API y workers | SHOULD |
 
 ---
 
@@ -74,6 +83,8 @@
 | F-04.3 | Panel de Control web administrativo unificado (Dashboard general con métricas locales) | SHOULD |
 | F-04.4 | Compactación de Largo Contexto del Historial (Sliding Window relacional) para preservar rentabilidad del Tokenizado | SHOULD |
 | F-04.5 | Function Calling Activo y Soberano del LLM al histórico RAG crudo almacenado para rebatir ambigüedad a petición expresa | COULD |
+| F-04.6 | Servicio cerebro-api (FastAPI) con persistencia de chats en Postgres | MUST |
+| F-04.7 | Resiliencia del frontend con Error Boundaries | SHOULD |
 
 ---
 
@@ -99,6 +110,8 @@
 | F-06.2 | Exportación y despliegue del registro y rastreo Inter-Servicios general y distribuido a una interfaz Jaeger central | MUST |
 | F-06.3 | Setup monitor activo Prometheus acoplado vía alertas al panel unificado de Grafana en el cerebro-net | MUST |
 | F-06.4 | Límite Automático / Estrangulamiento individual y Cuota Equitativa (Throttling local / Noisy Neighbor Defense) | COULD |
+| F-06.5 | Logging estructurado JSON unificado | SHOULD |
+| F-06.6 | Liveness healthchecks de workers vía heartbeat en Redis | SHOULD |
 
 ---
 
@@ -122,6 +135,8 @@
 | --- | --- | --- |
 | F-08.1 | Sistema de login unificado para acceso a la plataforma | MUST |
 | F-08.2 | Sistema de roles y Tenant único por usuario (eliminación de selector de Tenant) | MUST |
+| F-08.3 | Autenticación basada en cookies httpOnly y doble submit CSRF | MUST |
+| F-08.4 | Rate limiting en endpoints de autenticación y chat | MUST |
 
 ---
 
@@ -140,10 +155,11 @@
 
 | Prioridad | Cantidad de Features |
 | --- | --- |
-| MUST | 25 |
-| SHOULD | 10 |
+| MUST | 34 |
+| SHOULD | 16 |
 | COULD | 4 |
 | WON'T | 0 |
+| **Total** | **54** |
 
 # 📋 Épicas y Features — [NOMBRE DEL PROYECTO]
 

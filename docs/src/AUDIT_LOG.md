@@ -57,3 +57,15 @@
   - `docs/src/5_resumen_servicios.md`
   - `docs/src/backlog/F-00.4...md`
   - `docs/src/backlog/F-00.6...md`
+
+## 2026-04-28 — Fase auditoría completada (commits 5dc5739..64eae38)
+
+- **Skill usada**: Change Manager + Business Analyst
+- **Acción**: Mapeo de los 23 commits de la auditoría (bugs A1-A11, mejoras B1-B4, hardening de producción C1-C15) a backlogs en `docs/src/backlog/`. Se generan 15 backlogs nuevos y se amplían 3 existentes con sección "Historial de Cambios". Se actualiza `1_epics_and_features.md` (tablas de Epics + resumen de prioridades) para reflejar las nuevas Features.
+- **Backlogs nuevos**: F-00.7, F-00.8, F-00.9, F-00.10, F-00.11, F-00.12, F-00.13, F-01.6, F-02.5, F-04.6, F-04.7, F-06.5, F-06.6, F-08.3, F-08.4
+- **Backlogs modificados**: F-00.1, F-01.5, F-06.3 (sección Historial de Cambios)
+- **Archivos generados/modificados**:
+  - 15 archivos en `docs/src/backlog/`
+  - `docs/src/1_epics_and_features.md` (filas nuevas + tabla de resumen 25/10/4 → 34/16/4)
+  - `docs/src/AUDIT_LOG.md` (esta entrada)
+- **Pendiente de confirmación**: subir los nuevos Issues a GitHub vía `bash .github/scripts/upload_backlog_to_github.sh` (skill change-manager exige confirmación explícita).

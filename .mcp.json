@@ -71,6 +71,10 @@
       "env": {
         "PROMETHEUS_URL": "http://localhost:9090"
       }
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
     }
   }
 }

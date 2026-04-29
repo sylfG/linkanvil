@@ -6,19 +6,182 @@ Bienvenidos a la guía práctica para inicializar LinkAnvil, tu backend soberano
 
 ## FASE 1: Preparación del Entorno
 
-1. **Obtener y validar las herramientas base**:
-   * Asegúrate de contar con Git, una terminal Bash/Zsh o PowerShell.
-   * Confirma que cuentas con [Docker y Docker Compose V2](https://docs.docker.com/compose/) instalado ejecutando:
+### 1.1 Software indispensable
 
-     ```bash
-     docker compose version
-     ```
+Instala las siguientes herramientas antes de continuar. Todas son necesarias para levantar el stack y los MCP servers de Claude Code.
 
-   * Si no devuelve un error y la versión es superior a la 2.22, estás listo.
+---
 
-2. **Clonar y Analizar la Raíz**:
-   * Accede al directorio `linkanvil` (`cd linkanvil`)
-   * Verás varias carpetas como `/infra`, donde residen las configuraciones de cada uno de los contenedores Docker locales (Traefik, Redis, Grafana, PostgreSQL, LiteLLM, Qdrant).
+#### Git
+
+::: code-group
+
+```bash [Linux (Debian/Ubuntu)]
+sudo apt-get update && sudo apt-get install -y git
+```
+
+```bash [macOS]
+brew install git
+```
+
+```powershell [Windows]
+winget install Git.Git
+```
+
+:::
+
+```bash
+git --version   # debe devolver 2.x o superior
+```
+
+---
+
+#### Docker Engine + Docker Compose V2
+
+Docker Compose V2 viene incluido con Docker Engine ≥ 24 y Docker Desktop.
+
+::: code-group
+
+```bash [Linux (Debian/Ubuntu)]
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # permite usar docker sin sudo (requiere re-login)
+```
+
+```bash [macOS / Windows]
+# Instala Docker Desktop desde https://www.docker.com/products/docker-desktop/
+# Docker Compose V2 viene incluido.
+```
+
+:::
+
+```bash
+docker compose version   # debe ser ≥ 2.22
+```
+
+---
+
+#### curl
+
+Necesario para descargar los instaladores de Node.js y uv.
+
+::: code-group
+
+```bash [Linux (Debian/Ubuntu)]
+sudo apt-get install -y curl
+```
+
+```bash [macOS]
+# Incluido por defecto en macOS
+curl --version
+```
+
+:::
+
+---
+
+#### Python 3.9 o superior
+
+Necesario para ejecutar `infra/test_health.py`. No requiere paquetes externos (solo stdlib).
+
+::: code-group
+
+```bash [Linux (Debian/Ubuntu)]
+sudo apt-get install -y python3
+```
+
+```bash [macOS]
+brew install python3
+```
+
+```powershell [Windows]
+winget install Python.Python.3
+```
+
+:::
+
+```bash
+python3 --version   # debe ser ≥ 3.9
+```
+
+---
+
+#### Node.js 20 LTS + npm
+
+Necesario para los MCP servers distribuidos via `npx` (PostgreSQL, n8n, Redis, GitHub, Brave Search, Sequential Thinking, Telegram).
+
+::: code-group
+
+```bash [Linux (Debian/Ubuntu)]
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+```bash [macOS]
+brew install node@20
+```
+
+```powershell [Windows]
+winget install OpenJS.NodeJS.LTS
+```
+
+:::
+
+```bash
+node --version   # debe ser v20.x
+npx --version
+```
+
+---
+
+#### uv (gestor de paquetes Python ultrarrápido)
+
+Necesario para los MCP servers distribuidos via `uvx` (Qdrant, Fetch, Docker, Prometheus).
+
+::: code-group
+
+```bash [Linux / macOS]
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Si uvx no está en el PATH, añade ~/.local/bin:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+```powershell [Windows]
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+:::
+
+```bash
+uvx --version   # debe ser ≥ 0.11
+```
+
+---
+
+### 1.2 Verificación rápida de prerrequisitos
+
+Ejecuta este bloque para confirmar que todo está disponible antes de continuar:
+
+```bash
+echo "Git:     $(git --version)"
+echo "Docker:  $(docker compose version --short)"
+echo "Python:  $(python3 --version)"
+echo "Node:    $(node --version)"
+echo "npx:     $(npx --version)"
+echo "uvx:     $(uvx --version)"
+```
+
+Todos deben devolver una versión sin errores.
+
+---
+
+### 1.3 Clonar el repositorio
+
+```bash
+git clone https://github.com/sylfg/linkanvil.git
+cd linkanvil
+```
+
+Verás varias carpetas como `/infra`, donde residen las configuraciones de cada uno de los contenedores Docker locales (Traefik, Redis, Grafana, PostgreSQL, LiteLLM, Qdrant).
 
 ---
 
@@ -57,51 +220,146 @@ El corazón de extracción y vectorización de URLs funciona gracias a nuestro e
 
 ## FASE 3: Despliegue e Inicialización (Bootstrapping)
 
-Ahora que las llaves están configuradas, instruiremos a Docker Compose que descargue las imágenes, cree las redes (red interna invisible que solo pueden hablar los contenedores entre sí) y aplique los init scripts (como la recreación de tablas relacionales en `init.sql`).
+Ahora que las llaves están configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores y aplicará el `init.sql` (que crea el schema `cerebro` y todas las tablas en Postgres).
 
 ```bash
 docker compose up -d
 ```
 
-> **NOTA:** Tardará varios minutos dependiendo de tu ancho de banda ya que se han de descargar orquestadores, la BD Vectorial (Qdrant) y la cola de mensajería (RabbitMQ). Puedes chequear los logs de todos ellos a la vez lanzando `docker compose logs -f`.
+> **NOTA:** Tardará varios minutos en la primera ejecución. Puedes seguir los logs con `docker compose logs -f`.
 
 ---
 
-## FASE 4: Verificación Integral del Ecosistema
+## FASE 3b: Aplicar Migraciones de Schema
 
-LinkAnvil posee un script inteligente oficial escrito en Python que simula ser un flujo de datos y prueba la disponibilidad, la inserción relacional, las políticas RLS y las colas de fallos.
+El sistema incluye un runner de migraciones shell para mantener el schema `cerebro` actualizado sin necesidad de Alembic ni dependencias Python adicionales.
 
-1. Confirma que tienes Python en el sistema.
-2. Ejecuta el test integral:
+```bash
+bash scripts/migrate.sh
+```
 
-   ```bash
-   python infra/test_health.py
-   ```
+**Primera ejecución:** aplica `0001_baseline.sql` que registra el estado inicial del schema. Si el stack acaba de arrancar con `docker compose up -d`, el `init.sql` ya habrá creado las tablas — la migración baseline verifica su existencia y registra la versión.
 
-3. Cada validación (Conexión LLM, Creación de Colección Vectorial de Qdrant, Exchange AMQP) debe reportar un **OK** color verde. Si notas que la base de datos reporta un error de puerto o conexión "rechazada", a veces se debe a que PostgreSQL todavía tardará unos segundos extra en inicializar la Base de datos en vacío la primera vez. Vuelve a ejecutar el check.
+**Ejecuciones posteriores:** idempotente — detecta las versiones ya aplicadas y solo ejecuta las nuevas. Si no hay migraciones pendientes, imprime `schema is up to date` y sale con código 0.
+
+Para añadir una migración nueva:
+```bash
+# crear el archivo en infra/postgres/migrations/
+echo "ALTER TABLE cerebro.recursos ADD COLUMN nueva_col TEXT;" \
+  > infra/postgres/migrations/0002_nueva_columna.sql
+
+# aplicar
+bash scripts/migrate.sh
+```
 
 ---
 
-## FASE 5: Prueba Manual y Dashboards UI
+## FASE 3c: Resetear el Stack Completo
 
-¡Si estás aquí, la instalación ha concluido con éxito! La mejor forma de visualizar que los logs de telemetría y Traefik funcionan es navegando por los paneles expuestos:
+Para volver a un estado completamente limpio (útil en desarrollo o tras un cambio de configuración mayor), usa el script `reset.sh`:
 
-| Dashboard y URL Directa | Puerto  | Credenciales Configurable en tu `.env` |
+```bash
+./reset.sh
+```
+
+Este script:
+1. Para y elimina todos los contenedores del proyecto
+2. Elimina los volúmenes de datos (`postgres-data`, `qdrant-data`, etc.)
+3. Opcionalmente elimina las imágenes locales (pregunta confirmación)
+4. Rehash de la contraseña de RabbitMQ en `definitions.json` desde `.env`
+5. Vuelve a levantar todo con `docker compose up -d`
+6. Espera a que los servicios con healthcheck estén `healthy`
+
+> **Importante:** `reset.sh` borra todos los datos. Las sesiones de chat, recursos capturados y embeddings se perderán. Usar solo en desarrollo o cuando se quiera un estado completamente limpio.
+
+---
+
+## FASE 4: Verificación del Ecosistema
+
+Verifica que todos los contenedores están sanos:
+
+```bash
+docker compose ps
+```
+
+Todos los servicios con healthcheck deben mostrar `(healthy)`. Los workers (`cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`) se marcarán como healthy una vez que su heartbeat Redis esté activo (puede tardar hasta 60 segundos).
+
+Para ver los logs en tiempo real:
+```bash
+docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
+```
+
+---
+
+## FASE 5: Acceso a la Plataforma y Dashboards
+
+| Servicio | URL | Credenciales (`.env`) |
 |:--- |:--- |:--- |
+| **App Principal** | [http://localhost:3001](http://localhost:3001) | Registro en la propia app |
+| **API Backend** | [http://localhost:8001/docs](http://localhost:8001/docs) | JWT (Swagger UI) |
 | **Orquestador (n8n)** | [http://localhost:5678](http://localhost:5678) | `N8N_USER` & `N8N_PASSWORD` |
 | **Colas (RabbitMQ)** | [http://localhost:15672](http://localhost:15672) | `RABBITMQ_USER` & `RABBITMQ_PASS` |
 | **Métricas (Grafana)** | [http://localhost:3000](http://localhost:3000) | `GRAFANA_USER` & `GRAFANA_PASSWORD` |
-| **Trazas Visuales (Jaeger)**| [http://localhost:16686](http://localhost:16686) | Libre |
+| **Trazas Visuales (Jaeger)** | [http://localhost:16686](http://localhost:16686) | Libre |
 | **BD Vectorial (Qdrant)** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Libre |
+| **API Gateway (Traefik)** | [http://localhost:8080](http://localhost:8080) | Libre (solo local) |
 
-***Tip Pro***: Como Traefik está como Gateway proxy, puedes editar las redirecciones oportunas en tu fichero anfitrión local (`/etc/hosts` o de Windows) para acceder a subdominios como *`n8n.localhost`*, resultando en un acceso limpio y centralizado.
+> **Tip:** Añade las entradas `*.localhost` en tu `/etc/hosts` para acceder mediante subdominios: `cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc. Traefik enruta automáticamente según el `Host` header.
 
 ### Tu primera ingesta
 
-Puedes probar que RabbitMQ encola URLs correctas si ejecutas desde el terminal principal `n8n` para arrancar un web-hook, o enviando un payload REST post directamente simulando la lectura.
+Crea una cuenta en `http://localhost:3001`, inicia sesión y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API:
 
 ```bash
-docker exec -it cerebro-rabbitmq rabbitmqadmin publish exchange=amq.default routing_key="q.url.ingesta" payload='{"url":"https://vitepress.dev/"}'
+curl -X POST http://localhost:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://vitepress.dev/", "tenant_id": "mi-tenant"}'
 ```
 
-*¡Felicidades! LinkAnvil ya forma parte de tu ecosistema.* Avanza con las integraciones manuales de Telegram o los scrapers modulares de Python en tu [Siguiente Sección de la Documentación](./0_0_resumen.md).
+La respuesta `202 Accepted` confirma que la URL fue encolada. En pocos segundos aparecerá procesada en el panel.
+
+---
+
+## FASE 6: Despliegue en Producción
+
+Para desplegar en un servidor real con HTTPS:
+
+### 6.1 Prerrequisitos
+
+- Dominio apuntando a la IP del servidor
+- Variables de entorno de producción en `.env` (o Docker secrets)
+- Docker Engine en el servidor
+
+### 6.2 Levantar con el overlay de producción
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+El overlay `docker-compose.prod.yml` activa:
+- **TLS automático** con Let's Encrypt (certResolver Traefik)
+- **Redirección HTTP→HTTPS** en todos los routers públicos
+- **Puertos internos cerrados**: Postgres, Redis, RabbitMQ, Qdrant no exponen ports al host — solo accesibles dentro de `cerebro-net`
+- **Docker secrets**: `JWT_SECRET_FILE`, `POSTGRES_PASSWORD_FILE` leen de `/run/secrets/` en lugar de variables de entorno
+
+### 6.3 Variables críticas para producción
+
+```env
+# En .env o como Docker secrets
+SESSION_COOKIE_SECURE=true          # requiere HTTPS para la cookie de sesión
+JWT_SECRET=<clave-aleatoria-fuerte> # mínimo 32 caracteres, sin predeterminados
+DOMAIN=tu-dominio.com               # Traefik construye rutas desde aquí
+ACME_EMAIL=admin@tu-dominio.com     # Let's Encrypt notifications
+```
+
+Consulta `docs/PRODUCTION.md` para la guía completa incluyendo Docker secrets, configuración de firewall y backups programados.
+
+### 6.4 Backup automático
+
+```bash
+bash scripts/backup.sh
+```
+
+Genera `pg_dump` gzipado del schema `cerebro` y snapshots de Qdrant. Configura `BACKUP_RETENTION_DAYS` en `.env` para la retención automática.
+
+*¡Felicidades! LinkAnvil está operativo.* Consulta la [Arquitectura](./6_arquitectura.md) para entender las decisiones de diseño, o las [Épicas y Features](./1_epics_and_features.md) para el roadmap del producto.

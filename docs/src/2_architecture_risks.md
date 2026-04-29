@@ -18,9 +18,40 @@ Este documento define los Requisitos No Funcionales (NFRs) y el modelado de amen
 
 ## 2. Decisiones de Arquitectura (ADRs Resumidos)
 
-* **PostgreSQL sobre MongoDB:** Se requiere el **Patrón Outbox** transaccional para garantizar la consistencia relacional y publicar posteriormente los eventos en RabbitMQ de manera atómica, algo fundamental en una arquitectura *Event-Driven* pura. Se integran además políticas locales RLS (*Row-Level Security*).
-* **Docker Compose (Standalone) sobre Cloud Administrado:** Restricción de coste y filosofía del producto. El Segundo Cerebro debe poder vivir en *localhost* o en una única VPS, garantizando privacidad absoluta (sin *Vendor Lock-in* a herramientas SaaS propietarias) mediante red virtual interna aislada (`cerebro-net`).
-* **LiteLLM Proxy + Zod (Zero-Defect):** Obligatorio obligar a los LLMs a estructurar respuestas tabulares JSON en la salida para alimentar Qdrant/PostgreSQL, rechazando explícitamente contenido malformado antes de contaminar la base de conocimiento.
+### ADR-001: PostgreSQL sobre MongoDB
+**Contexto:** Necesitamos persistencia relacional con consistencia transaccional para el Patrón Outbox y aislamiento multi-tenant.
+**Decisión:** PostgreSQL con Patrón Outbox (tabla `outbox_eventos`) para publicar eventos en RabbitMQ de forma atómica, y Row-Level Security (RLS) para aislamiento de tenants.
+**Ventaja:** Garantías ACID. La transacción que crea el recurso y el evento Outbox nunca queda en estado inconsistente, incluso si RabbitMQ está caído en ese momento.
+
+### ADR-002: Docker Compose Standalone sobre Cloud Administrado
+**Contexto:** El producto debe poder vivir en `localhost` o una VPS sin depender de servicios cloud propietarios.
+**Decisión:** Docker Compose con red privada `cerebro-net`. Todo el stack se levanta con un único `docker compose up -d`.
+**Ventaja:** Privacidad absoluta (ningún dato sale del host), sin costes de cloud, portabilidad total.
+
+### ADR-003: LiteLLM Proxy + Pydantic Zero-Defect Pipeline
+**Contexto:** Las respuestas de LLMs son texto libre y pueden llegar malformadas, contaminando Qdrant/Postgres con datos incorrectos.
+**Decisión:** LiteLLM como proxy multi-proveedor con Circuit Breaker y Fallback; todas las respuestas validadas con Pydantic antes de persistir.
+**Ventaja:** Un proveedor que cae no interrumpe el servicio. Las respuestas malformadas se rechazan antes de llegar a la base de datos.
+
+### ADR-004: Schema `cerebro` Aislado en PostgreSQL
+**Contexto:** LiteLLM usa Prisma internamente. Prisma ejecuta `schema_sync` al arrancar y **elimina cualquier tabla en `public` que no reconozca**. Las tablas de LinkAnvil en `public` se destruían en cada restart de LiteLLM.
+**Decisión:** Mover todas las tablas propias al schema `cerebro`. Configurar asyncpg con `SET search_path TO cerebro, public`. El `init.sql` crea el schema explícitamente antes que las tablas.
+**Ventaja:** Las migraciones de LiteLLM/Prisma son completamente invisibles para el schema `cerebro`. Los tres schemas coexisten sin interferencia: `public` (LiteLLM), `cerebro` (LinkAnvil), `n8n` (orquestador).
+
+### ADR-005: httpOnly Cookie + CSRF Doble Submit
+**Contexto:** El JWT de sesión estaba en `localStorage`. Cualquier XSS en el frontend podía robar el token y suplantar al usuario indefinidamente.
+**Decisión:** JWT en cookie `SESSION_COOKIE` con `httponly=True` (JS no puede leerla). Adicionalmente, cookie `CSRF_COOKIE` legible por JS + header `X-CSRF-Token` en cada request que modifica estado. La API verifica que header == cookie (doble submit pattern). Se mantiene `Authorization: Bearer` como fallback para bots/scripts.
+**Ventaja:** Elimina el vector XSS para robo de token. El doble submit CSRF no requiere estado server-side (sin tabla de tokens). Tradeoff: el cliente debe enviar explícitamente el header `X-CSRF-Token` y configurar `credentials: "include"` en fetch.
+
+### ADR-006: Heartbeat Redis + TTL para Liveness de Workers
+**Contexto:** Los workers Python (scraper, embedder, outbox) pueden bloquearse internamente (esperando conexión, procesando mensaje muy grande) mientras el proceso sigue "vivo" para Docker. El healthcheck basado en `CMD` no detecta esta condición.
+**Decisión:** Cada worker ejecuta una tarea asyncio que escribe `worker:<name>:heartbeat` en Redis con TTL de 45 segundos. El healthcheck de Docker lee esa clave — si no existe, el contenedor se marca `unhealthy`.
+**Ventaja:** Detecta workers zombi con latencia máxima de 45s. No requiere exponer un puerto HTTP adicional por worker. Si el worker se cuelga, Docker puede reiniciarlo automáticamente según la política `restart: unless-stopped`.
+
+### ADR-007: Runner de Migraciones Shell sin Alembic
+**Contexto:** Necesitamos aplicar migraciones SQL idempotentes sin añadir dependencias Python extra ni un runtime de migración separado.
+**Decisión:** `scripts/migrate.sh` — script Bash que invoca `psql` (disponible en `postgres:16-alpine`). Usa la tabla `cerebro.schema_migrations` para bookkeeping. Cada migración corre en una transacción; un fallo revierte solo esa migración y para la ejecución.
+**Ventaja:** Zero dependencias adicionales. Reproducible en cualquier entorno con `psql`. Idempotente y seguro de ejecutar en CI/CD. Nota técnica: los nombres de archivo usan `0001`, `0002`, etc. — Bash interpreta estos como octal en aritmética. Se usa `$((10#${version}))` para forzar base-10 y evitar bugs silenciosos.
 
 ---
 

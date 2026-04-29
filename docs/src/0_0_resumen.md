@@ -2,7 +2,9 @@
 
 El proyecto "LinkAnvil" presenta una propuesta de valor excepcional: transformar el caos de la información en conocimiento accionable. A través de una Arquitectura Orientada a Eventos (Event-Driven) profundamente desacoplada y la optimización en el uso de modelos de inteligencia artificial, el sistema se erige como una plataforma resiliente, ultra rápida y altamente rentable, capaz de escalar operativamente a miles de usuarios sin disparar costes.
 
-El sistema permite al usuario "dialogar" con su propia base de conocimiento, generar contenido nuevo (tutoriales, menús, ideas) y realizar búsquedas web en tiempo real. Sus pilares técnicos garantizan consistencia absoluta de datos, tiempos de respuesta imperceptibles y omnicanalidad sin fricción.
+El sistema permite al usuario "dialogar" con su propia base de conocimiento, generar contenido nuevo (tutoriales, menús, ideas) y realizar búsquedas semánticas en tiempo real. Sus pilares técnicos garantizan consistencia absoluta de datos, tiempos de respuesta imperceptibles y omnicanalidad sin fricción.
+
+> **Estado actual del stack:** 21 contenedores Docker en `cerebro-net` (20 servicios long-running + 1 bootstrap one-shot), 54 features documentadas (34 MUST / 16 SHOULD / 4 COULD), hardening de producción completado (TLS, non-root, rate limiting atómico, autenticación httpOnly cookie + CSRF, backups automáticos).
 
 1. Arquitectura y Módulos del Sistema
 El proyecto se divide en cinco componentes principales distribuidos y asíncronos:
@@ -41,12 +43,14 @@ Auditoría IA Bajo Demanda: La IA actúa de forma proactiva como "juez" de obsol
 
 Bandeja de Cuarentena (Decaimiento de Conceptos): Nada se borra automáticamente; el sistema preclasifica y acumula de forma rentable la basura digital en una bandeja de "Caducados" o los mueve a colecciones tipo `wiki/archived` permitiendo que el conocimiento fugaz desaparezca progresivamente sin afectar el cerebro base.
 
-E. Interfaz, Memoria Centralizada y Chatbot (El Asistente Personal)
-La capa de interacción, soportada por un gestor de caché ultrarrápido (Redis) para inyectar hilos conversacionales masivos de inmediato:
+E. Interfaz, Autenticación Segura y Chatbot (El Asistente Personal)
+La capa de interacción compuesta por dos servicios dedicados: `cerebro-api` (FastAPI backend) y `cerebro-web` (Next.js 15 frontend), con persistencia de sesiones de chat en PostgreSQL (no en el navegador):
 
-Panel de Control (Dashboard): Visualización de analíticas métricas, de enlaces expirados y el administrador del histórico de las sesiones.
+Panel de Control (Dashboard): Visualización de analíticas métricas, recursos capturados, enlaces en cuarentena y el historial completo de sesiones de conversación.
 
-Chatbot RAG Multimodal (Caché Compartida y Memoria Híbrida): Interfaz conversacional asistida con persistencia multiplataforma en vivo usando Redis (reanudación de web a Telegram a las 48h con latencia cero). Integra "Memoria Híbrida": utiliza Compactación de Contexto (resúmenes en el Sliding Window para atenuar costes de tokens), pero guarda en paralelo cada mensaje crudo en la base vectorial. El LLM dispone de herramientas de *Function Calling* para auto-consultar el historial de chat hiper-detallado de forma selectiva, logrando rentabilidad masiva sin padecer amnesia de resolución.
+Chatbot RAG con SSE Streaming: Interfaz conversacional con búsqueda semántica en tiempo real sobre la base de conocimiento del usuario. Las respuestas llegan en streaming (Server-Sent Events) con las fuentes RAG adjuntas. Las sesiones y mensajes se persisten en Postgres y se cargan bajo demanda — el historial sobrevive limpieza del navegador y es accesible desde cualquier dispositivo autenticado.
+
+Seguridad de Autenticación: JWT en cookie `httpOnly` (protegida contra XSS) con CSRF doble submit para protección contra ataques cross-site. Rate limiting en los endpoints de login (5/min por IP) y chat (30/min por tenant). Los tokens nunca tocan `localStorage`.
 
 1. Flujo de Funcionamiento Práctico (El Viaje del Dato)
 

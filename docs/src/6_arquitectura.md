@@ -1,203 +1,476 @@
-# 🏗️ Arquitectura e Infraestructura Local — LinkAnvil
+# 🏗️ Arquitectura e Infraestructura — LinkAnvil
 
-Este documento detalla la infraestructura local basada en Docker Compose del proyecto **LinkAnvil**, explicando la topología de la red, los componentes desplegados, sus responsabilidades y cómo fluye la información a través del sistema.
+Este documento detalla la infraestructura del proyecto **LinkAnvil** basada en Docker Compose, explicando los componentes desplegados, sus responsabilidades, las decisiones de arquitectura tomadas durante el desarrollo y las ventajas de cada elección.
 
 ---
 
-## 1. Topología del Sistema y Conexiones
+## 1. Topología del Sistema
 
-Todos los servicios se ejecutan dentro del mismo entorno aislado interconectado mediante la red Docker privada `cerebro-net`. Las peticiones externas entran exclusivamente a través de **Traefik**, garantizando control de tráfico, balanceo y autenticación perimetral.
+Todos los servicios corren dentro de la red Docker privada `cerebro-net`. Las peticiones externas entran exclusivamente por **Traefik** en el puerto 80/443. Los servicios internos no exponen puertos al host salvo en desarrollo.
 
 ```mermaid
 graph TD
-    %% Estilos
-    classDef proxy fill:#2b3c5a,stroke:#3b82f6,stroke-width:2px,color:#fff
-    classDef engine fill:#1f2937,stroke:#10b981,stroke-width:2px,color:#fff
-    classDef storage fill:#374151,stroke:#f59e0b,stroke-width:2px,color:#fff
-    classDef observability fill:#1e3a8a,stroke:#8b5cf6,stroke-width:2px,color:#fff
+    classDef gateway fill:#2b3c5a,stroke:#3b82f6,color:#fff
+    classDef api fill:#1f3a2a,stroke:#10b981,color:#fff
+    classDef worker fill:#2d2050,stroke:#a78bfa,color:#fff
+    classDef db fill:#374151,stroke:#f59e0b,color:#fff
+    classDef obs fill:#1e3a8a,stroke:#8b5cf6,color:#fff
 
-    User((Usuario/API))
+    User((Usuario))
 
-    subgraph Red Interna ["Red Docker (cerebro-net)"]
-        Traefik["🔀 Traefik (API Gateway)"]:::proxy
-        
-        subgraph Motor de Procesamiento
-            n8n["🔄 n8n (Orquestador)"]:::engine
-            LiteLLM["🤖 LiteLLM Gateway"]:::engine
+    subgraph Red["Red Docker (cerebro-net)"]
+        Traefik["🔀 Traefik (Gateway)"]:::gateway
+
+        subgraph APIs["Capa API"]
+            Ingestion["📥 ingestion-api\nFastAPI · Bloom Filter · Rate Limit"]:::api
+            API["⚙️ cerebro-api\nFastAPI · Auth · Chat RAG"]:::api
+            Web["🌐 cerebro-web\nNext.js 15 · SSE · Zustand"]:::api
         end
-        
-        subgraph Capa de Almacenamiento y Eventos
-            RabbitMQ["📨 RabbitMQ (Mensajería)"]:::storage
-            Redis["⚡ Redis (Caché & Sesiones)"]:::storage
-            Postgres["🗄️ PostgreSQL (Outbox+Relacional)"]:::storage
-            Qdrant["🧠 Qdrant (Base Vectorial)"]:::storage
-            Exportador_LLMWiki["🗂️ Exportador a Bóveda Local (LLM Wiki)"]:::storage
+
+        subgraph Workers["Workers Asíncronos"]
+            Scraper["🕷️ cerebro-scraper\nScrapling · Playwright"]:::worker
+            Embedder["🧮 cerebro-embedder\nVectorización · Qdrant"]:::worker
+            Outbox["📤 cerebro-outbox\nOutbox Pattern Publisher"]:::worker
         end
-        
-        subgraph Observabilidad
-            OTel["📡 OTel Collector"]:::observability
-            Jaeger["🔭 Jaeger (Trazas)"]:::observability
-            Prometheus["📊 Prometheus (Métricas)"]:::observability
-            Grafana["📈 Grafana (Dashboards)"]:::observability
+
+        subgraph Engine["Motor LLM"]
+            LiteLLM["🤖 LiteLLM\nCircuit Breaker · Fallback · Caché"]:::worker
+            n8n["🔄 n8n\nOrquestador Visual"]:::worker
+        end
+
+        subgraph Storage["Almacenamiento"]
+            Postgres["🗄️ PostgreSQL\nSchema cerebro · Outbox · RLS"]:::db
+            Redis["⚡ Redis\nBloom Filter · Rate Limit · Heartbeat"]:::db
+            RabbitMQ["📨 RabbitMQ\nColas + DLQ"]:::db
+            Qdrant["🧠 Qdrant\nVectores · HNSW · Tenant Filter"]:::db
+        end
+
+        subgraph Obs["Observabilidad"]
+            OTel["📡 OTel Collector"]:::obs
+            Prometheus["📊 Prometheus + Alertas"]:::obs
+            Jaeger["🔭 Jaeger"]:::obs
+            Grafana["📈 Grafana"]:::obs
         end
     end
 
-    %% Conexiones de Entrada
-    User -->|":80 / :443"| Traefik
-    
-    %% Enrutamiento Traefik
-    Traefik -->|":5678"| n8n
-    Traefik -->|":4000"| LiteLLM
-    Traefik -->|":15672"| RabbitMQ
-    Traefik -->|":3000"| Grafana
-    
-    %% Conexiones desde n8n
-    n8n -.->|"Publica/Consume"| RabbitMQ
-    n8n -.->|"Guarda/Lee Estado"| Postgres
-    n8n -.->|"Llama a IA"| LiteLLM
-    n8n -.->|"Búsqueda Vectorial"| Qdrant
-    Postgres -->|"Exportación ZIP Estructurada"| Exportador_LLMWiki
-    Exportador_LLMWiki -.->|"Bóveda para Obsidian/Cursor"| User
-    
-    %% Conexiones desde LiteLLM
-    LiteLLM -.->|"Caché de Prompts"| Redis
-    LiteLLM -.->|"Almacena Modelos"| Postgres
-    
-    %% Observabilidad
-    Traefik ==>|"Envía Trazas (gRPC)"| OTel
-    n8n ==>|"Envía Trazas"| OTel
-    LiteLLM ==>|"Envía Trazas"| OTel
-    
-    OTel ==>|"Trazas Export"| Jaeger
-    OTel ==>|"Métricas Export"| Prometheus
-    Prometheus ==>|"Lee Metrics"| Grafana
-    Jaeger ==>|"Visualiza Trazas"| Grafana
+    User --> Traefik
+    Traefik --> Ingestion
+    Traefik --> API
+    Traefik --> Web
+    Traefik --> n8n
+    Traefik --> Grafana
+    Web -->|proxy server-side| API
+    Ingestion --> Redis
+    Ingestion --> RabbitMQ
+    API --> Postgres
+    API --> Redis
+    API --> LiteLLM
+    API --> Qdrant
+    Scraper --> RabbitMQ
+    Scraper --> LiteLLM
+    Scraper --> Postgres
+    Scraper --> Redis
+    Outbox --> Postgres
+    Outbox --> RabbitMQ
+    Outbox --> Redis
+    Embedder --> RabbitMQ
+    Embedder --> LiteLLM
+    Embedder --> Qdrant
+    Embedder --> Redis
+    Traefik -.->|OTLP| OTel
+    API -.->|OTLP| OTel
+    OTel --> Jaeger
+    OTel --> Prometheus
+    Grafana --> Prometheus
+    Grafana --> Jaeger
 ```
 
 ---
 
 ## 2. Descripción de Componentes
 
-### 🚪 Puerta de Enlace (API Gateway)
+### 🚪 API Gateway — Traefik
 
-* **Traefik (`cerebro-traefik`)**: Actúa como el único punto de entrada (reverse proxy). Se encarga del enrutamiento dinámico basado en nombres de dominio (`*.localhost`), *rate limiting* para proteger la infraestructura, y generación inicial del `Trace-ID` mediante OpenTelemetry para hacer seguimiento a la petición en todo el clúster.
+Único punto de entrada al clúster. Se encarga de enrutamiento dinámico (lee labels Docker), rate limiting global (100 req/s, burst 50), reintentos automáticos (3 intentos por request), y genera el `Trace-ID` de correlación para OpenTelemetry. En producción añade TLS automático con Let's Encrypt y redirige HTTP→HTTPS.
 
-### ⚙️ Motores Core
+**Decisión:** Traefik se autodescubre en Docker sin archivos de configuración adicionales — basta con añadir labels al servicio nuevo. Simplifica operaciones y garantiza que toda política de seguridad perimetral está en un solo lugar.
 
-* **n8n (`cerebro-n8n`)**: Orquestador visual de flujos de trabajo (*workflows*). Recibe notificaciones webhooks y orquesta los pasos ordenando al LLM que procese la información.
-* **Scraper Worker (`cerebro-scraper`)**: Microservicio asíncrono basado en Scrapling y Playwright. Extrae inteligentemente contenido textual de sitios web estáticos y dinámicos (SPAs), evadiendo bloqueos básicos y pasando el contenido a la cola de procesamiento.
-* **LiteLLM (`cerebro-litellm`)**: Actúa como capa de abstracción para modelos de IA. Recibe peticiones de n8n y decide internamente a qué LLM llamar (OpenAI, Anthropic, o Local). Implementa *Fallback* (si OpenAI cae, intenta con Anthropic sin afectar al sistema), usa *Circuit Breakers* y guarda peticiones comunes en caché de Redis para ahorrar tokens.
+### 📥 Ingestion API — cerebro-ingestion
 
-### 💾 Almacenamiento, Estado y Eventos
+FastAPI que recibe URLs, aplica Bloom Filter en Redis para deduplicación sub-milisegundo y rate limiting atómico (INCR+EXPIRE), y publica en RabbitMQ. Responde `202 Accepted` inmediatamente.
 
-* **PostgreSQL (`cerebro-postgres`)**: Centro de la verdad. Guarda los metadatos de los recursos, la tabla del patrón *Outbox* para mantener consistencia eventual de eventos, y el histórico semántico relacional entre recursos (grafología base). Incluye políticas RLS (Row-Level Security) para aislamiento multi-tenant.
-* **Redis (`cerebro-redis`)**: Base de datos en memoria hiper-rápida. Evita en tiempo real que se capturen URLs duplicadas (mediante un Bloom Filter), guarda y recupera contextos de sesiones de chats interactivas, y provee caché en sub-milisegundos al gateway de IA.
-* **RabbitMQ (`cerebro-rabbitmq`)**: Bus de mensajes de alta resiliencia. Mantiene colas de extracción de información. Si un sistema de origen o red falla, RabbitMQ reintenta o mueve el trabajo a una "Dead Letter Queue" (DLQ) mitigando fallos silenciosos.
-* **Qdrant (`cerebro-qdrant`)**: Motor de búsqueda vectorial para recuperación híbrida y *Retrieval-Augmented Generation* (RAG). Almacena los "embeddings" que el LLM genera. Aislado lógicamente mediantes payloads de `tenant_id` y preparado para *Similitud del Coseno*.
+### ⚙️ API Principal — cerebro-api
 
-### 🔭 Observabilidad de Infraestructura
+Backend FastAPI con: autenticación JWT (cookie httpOnly), chat RAG con SSE streaming, CRUD de sesiones/mensajes, paginación, integración con LiteLLM y Qdrant.
 
-* **OTel Collector (`cerebro-otel`)**: Recolector central que unifica *Traces* (rastreo) y *Metrics* (Métricas) de todo el sistema.
-* **Prometheus (`cerebro-prometheus`)**: Monitoriza activamente (mediante *scraping*) la salud, consumo de recursos y estado interno de todos los microservicios usando exportadores.
-* **Jaeger (`cerebro-jaeger`)**: Motor de *Distributed Tracing*. Permite auditar el ciclo de vida o viaje completo de una URL ("De Web a Base de Datos").
-* **Grafana (`cerebro-grafana`)**: Cuadros de mando unificados. Permite previsualizar atascos en RabbitMQ u OpenTemeletry.
+### 🌐 Frontend — cerebro-web
+
+Next.js 15 con store Zustand API-backed (sin localStorage), error boundaries y SSE streaming.
+
+### 🕷️ Scraper Worker — cerebro-scraper
+
+Consume cola `q.url.ingesta`. Extrae contenido con Scrapling/Playwright, analiza con LiteLLM, persiste en Postgres con evento Outbox.
+
+### 🧮 Embedder Worker — cerebro-embedder
+
+Consume cola `q.embeddings`. Genera embeddings vía LiteLLM e inserta vectores en Qdrant.
+
+### 📤 Outbox Publisher — cerebro-outbox
+
+Polling de `outbox_eventos` en Postgres → publica en RabbitMQ. Implementa consistencia eventual sin riesgo de Dual-Write.
+
+### 🤖 LiteLLM Gateway
+
+Proxy multi-proveedor con Circuit Breaker, Fallback automático y caché de prompts en Redis.
+
+### 🔄 n8n
+
+Orquestador visual para workflows de scraping ligero, integración Telegram y curación nocturna.
 
 ---
 
-## 3. Flujos de Trabajo Principales (Workflows)
+## 3. Flujos de Trabajo Principales
 
-### 3.1. Flujo de Ingesta Asíncrona (El Viaje del Dato)
-
-Este esquema demuestra cómo el sistema absorbe picos masivos de entrada de información de forma controlada y la indexa tanto estructurada como semánticamente.
+### 3.1 Ingesta Asíncrona
 
 ```mermaid
 sequenceDiagram
-    participant U as Usuario/Bot
-    participant API as Traefik Gateway
+    autonumber
+    actor U as Usuario/Bot
+    participant IG as cerebro-ingestion
+    participant RD as Redis (Bloom Filter)
     participant MQ as RabbitMQ
-    participant W as n8n Worker
-    participant LLM as LiteLLM (IA)
-    participant PG as PostgreSQL
-    participant QD as Qdrant (Vector)
+    participant SC as cerebro-scraper
+    participant LLM as LiteLLM
+    participant PG as PostgreSQL (cerebro)
+    participant EM as cerebro-embedder
+    participant QD as Qdrant
 
-    U->>API: 1. POST /webhook (Pasa URL nueva)
-    API->>MQ: 2. Encola en "q.url.ingesta" (ACK rápido)
-    MQ-->>U: 3. "Enlace capturado" (ms latency)
-    
-    Note over MQ, W: Procesamiento Offline
-    
-    W->>MQ: 4. Consume evento de URL
-    W->>W: 5. Scraping / Extracción limpia
-    W->>LLM: 6. Extraer Tags, Resumen y Estructura
-    LLM-->>W: 7. JSON Estructurado
-    W->>PG: 8. Insertar Recurso en SQL (Outbox = Pendiente)
-    W->>LLM: 9. Solicitar Embeddings del texto
-    LLM-->>W: 10. Vector [0.03, 0.45, ...]
-    W->>QD: 11. Inyectar Vector + tenant_id
-    W->>PG: 12. Marcar evento Outbox como "Procesado"
+    U->>IG: POST /ingest {url}
+    IG->>RD: BF.EXISTS url_hash
+    alt URL duplicada
+        RD-->>IG: true
+        IG-->>U: 409 Conflict (ya existe)
+    else URL nueva
+        RD-->>IG: false
+        IG->>RD: INCR rate_limit_key (atómico)
+        IG->>MQ: publish q.url.ingesta
+        IG-->>U: 202 Accepted
+        MQ->>SC: consume mensaje
+        SC->>LLM: analiza texto → JSON estructurado
+        LLM-->>SC: {titulo, resumen, tags, volatilidad}
+        SC->>PG: INSERT recursos + INSERT outbox_eventos
+        Note over PG: Transacción atómica — Outbox Pattern
+        MQ->>EM: consume q.embeddings (vía outbox)
+        EM->>LLM: POST /v1/embeddings
+        LLM-->>EM: vector [0.12, -0.45, ...]
+        EM->>QD: upsert vector + tenant_id payload
+    end
 ```
 
-### 3.2. Curación Nocturna y Eliminación (Cost-Efficiency)
-
-Un proceso que ejecuta n8n programado (cron) e interactúa solo con SQL para marcar elementos expirados a un costo nulo en lugar de usar Inteligencia Artificial para auditar toda la base a lo bruto.
+### 3.2 Chat RAG con SSE Streaming
 
 ```mermaid
 sequenceDiagram
-    participant Cron as Cron (n8n)
-    participant PG as PostgreSQL
-    
-    Cron->>PG: 1. SELECT * FROM recursos WHERE estado='activo' AND fecha_caducidad < NOW()
-    PG-->>Cron: 2. Devuelve Lista de UUIDs Vencidos
-    Cron->>PG: 3. UPDATE recursos SET estado='cuarentena' WHERE id IN (...)
-    Note over Cron: Recursos aislados, vector intacto hasta<br/> que el usuario vacíe la basura
-```
-
-### 3.3. Rutado Semántico Inteligente y RAG Híbrido
-
-Cuando el usuario pregunta a la base a través de una interfaz o dashboard.
-
-```mermaid
-sequenceDiagram
-    participant U as Dashboard
-    participant API as Traefik
-    participant Redis as Redis (Caché/Estado)
+    autonumber
+    actor U as Usuario
+    participant WB as cerebro-web
+    participant AP as cerebro-api
+    participant RD as Redis
     participant LLM as LiteLLM
     participant QD as Qdrant
-    
-    U->>API: 1. Pregunta: "Resume los enlaces web3"
-    API->>Redis: 2. Recuperar historial local de sesión
-    Redis-->>API: 3. (Sliding Context Limitado)
-    API->>LLM: 4. Genera embedding de la pregunta
-    LLM-->>API: 5. Vector Semántico
-    API->>QD: 6. Búsqueda Vectorial Coseno > 0.85
-    QD-->>API: 7. Documentos Top-K Similares
-    API->>LLM: 8. Prompt(Contexto RAG + Pregunta)
-    Note over LLM: LiteLLM revisa si esta query <br/>está en la caché de Redis
-    LLM-->>U: 9. Respuesta generada
+    participant PG as PostgreSQL
+
+    U->>WB: envía pregunta (POST /chat)
+    WB->>AP: POST /chat {messages} con cookie SESSION + X-CSRF-Token
+    AP->>AP: verifica JWT (cookie httpOnly) + CSRF
+    AP->>RD: INCR rate_limit chat (30/min por tenant)
+    AP->>LLM: genera embedding de la pregunta
+    LLM-->>AP: vector semántico
+    AP->>QD: búsqueda coseno > 0.85 (filtrado por tenant_id)
+    QD-->>AP: top-K documentos relevantes
+    AP->>LLM: stream(prompt RAG + contexto + pregunta)
+    LLM-->>AP: SSE chunks de respuesta
+    AP-->>WB: SSE stream con chunks + fuentes
+    AP->>PG: INSERT mensajes_chat (tras completar stream)
+```
+
+### 3.3 Autenticación
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant WB as cerebro-web
+    participant AP as cerebro-api
+    participant RD as Redis
+    participant PG as PostgreSQL
+
+    U->>WB: POST /auth/login {email, password}
+    WB->>AP: POST /auth/login
+    AP->>RD: INCR login_rate_limit:{ip} (5/min)
+    AP->>PG: SELECT usuarios WHERE email=? (schema cerebro)
+    PG-->>AP: usuario con password_hash
+    AP->>AP: bcrypt.verify(password, hash)
+    AP-->>WB: Set-Cookie: SESSION_COOKIE (httpOnly, samesite=lax)\nSet-Cookie: CSRF_COOKIE (legible por JS)
+    Note over WB: JS lee CSRF_COOKIE y lo envía\nen X-CSRF-Token en cada mutación
+    U->>WB: cualquier acción state-changing
+    WB->>AP: request + X-CSRF-Token header
+    AP->>AP: verifica que CSRF header == CSRF cookie
+```
+
+### 3.4 Curación Nocturna (sin coste LLM)
+
+```mermaid
+sequenceDiagram
+    participant Cron as n8n (Cron)
+    participant PG as PostgreSQL
+
+    Cron->>PG: SELECT id FROM cerebro.recursos\nWHERE estado='activo'\nAND fecha_caducidad < NOW()
+    PG-->>Cron: lista de UUIDs vencidos
+    Cron->>PG: UPDATE recursos SET estado='cuarentena'\nWHERE id IN (...)
+    Note over Cron: Operación SQL pura — costo $0 en LLM
 ```
 
 ---
 
-## 4. Estrategia de Persistencia y Seguridad
+## 4. Estrategia de Persistencia
 
-* **Volúmenes Docker:** Se aplican Docker Volumes estándar manejados localmente. Los datos clave de Prometheus, PostgreSQL, Qdrant y Redis garantizan durabilidad incluso tras demoler y relanzar contenedores (`docker compose down && docker compose up -d`).
-* **Permisología Multi-tenant:** Una consulta originada para el entorno X es adjuntada internamente con el `tenant_id` que filtra filas de SQL y sub-índices (payloads) de vectores Qdrant; un pilar innegociable *Security by Design*.
-* **Healthchecks Proactivos:** En el `docker-compose.yml`, los *healthchecks* evalúan internamente la conectividad real y dependencias. `LiteLLM` no iniciará procesamiento si PostgreSQL o Redis no están operacionales (mecanismo `depends_on: condition: service_healthy`).
+### 4.1 Patrón de Doble Base de Datos (Cerebro Lógico vs Semántico)
 
-### 4.1 Patrón de Persistencia Dual: Cerebro Lógico vs Semántico
+LinkAnvil usa intencionalmente dos sistemas de persistencia complementarios:
 
-La arquitectura de LinkAnvil utiliza intencionalmente dos sistemas de bases de datos especializados en lugar de uno solo. Esta separación (PostgreSQL + Qdrant) constituye el núcleo del sistema RAG avanzado:
+**PostgreSQL — Cerebro Lógico y Transaccional:**
+- Fuente única de verdad estructurada: URLs, metadatos, relaciones, histórico
+- Garantías ACID: ningún dato se pierde ni queda en estado inconsistente
+- Multi-tenancy con Row-Level Security (RLS) por `tenant_id`
+- Patrón Outbox para consistencia eventual de eventos asíncronos
 
-* **PostgreSQL (El Cerebro Lógico y Transaccional):** Actúa como la única fuente de verdad estructurada. Gestiona textos fuente (*raw data*), metadatos exactos, historial inmutable y relaciones directas. Garantiza la seguridad matemática mediante *Row-Level Security (RLS)* aislándolos por `tenant_id` y asegura la integridad de los eventos asíncronos mediante el patrón *Outbox*. Su poder radica en la precisión (ACID) y rigidez transaccional.
-* **Qdrant (El Cerebro Semántico e Intuitivo):** Actúa como la capa asociativa. Exclusivamente almacena los vectores matemáticos de alta dimensionalidad (*embeddings*) unidos al `tenant_id` y un ID del registro que apunta a la base de datos principal. Su única labor es ejecutar búsquedas de similitud (HNSW y Similitud del coseno) en milisegundos, encontrando datos "afines en significado" auque no compartan palabras coincidentes exactas.
+**Qdrant — Cerebro Semántico e Intuitivo:**
+- Exclusivamente almacena vectores matemáticos (embeddings) de alta dimensionalidad
+- Búsquedas por similitud coseno (HNSW) en milisegundos
+- Encuentra recursos "semánticamente afines" aunque no compartan palabras exactas
+- Filtrado por `tenant_id` en la misma operación de búsqueda (sin JOIN adicional)
 
-Esta filosofía de **Doble Cerebro** permite aprovechar la intuición difusa de la Inteligencia Artificial (Qdrant) mientras se resguarda bajo la seguridad, coste-eficiencia y transaccionalidad de un motor relacional en frío (Postgres), protegiendo al sistema de escalar incorrectamente.
+Esta arquitectura de doble cerebro permite RAG avanzado: la intuición difusa de la IA (Qdrant) protegida por la seguridad transaccional del motor relacional (Postgres).
 
-### 4.2. Exportacin Fsica a Gemelo Digital (Offline-First)
+### 4.2 Persistencia de Sesiones de Chat
 
-Un mecanismo on-demand extrae los datos aislados por tenant_id en PostgreSQL/Qdrant, recompila los grafos lógicos como *callouts* de Markdown (`> [!info] Relacionado con [[Topic]]`) y transmite un `.zip` conformando un LLM Wiki.
+Las sesiones y mensajes de chat se persisten en Postgres (tablas `sesiones_chat` y `mensajes_chat`), no en `localStorage` del navegador. Esta decisión fue motivada por un problema observado: resetear el stack Docker completo (incluyendo volúmenes) no limpiaba los chats porque el estado vivía en el navegador. Ahora los mensajes se borran al borrar el volumen de Postgres, y el store Zustand del frontend los obtiene siempre de la API.
 
-**Seguridad de Exportación en RAM (Zero-Disk Storage)**:
-> Esta operación es altamente segura dado que **todo el motor de empaquetado y archivos `.md` se ejecutan exclusivamente en Memoria RAM**. El sistema transfiere un bloque bytes al backend UI de forma nativa sin abrir, escribir, generar ni retener estructuras temporales `.zip` en el disco local del servidor, salvaguardando por completo el aislamiento del tenant y el multi-arrendamiento seguro (RLS de extremo a extremo).
+La columna `seq BIGSERIAL` en `mensajes_chat` garantiza orden determinista de los mensajes dentro de un mismo timestamp (cuando se insertan varios mensajes en la misma transacción).
 
-Esto garantiza que la plataforma es solo un motor de procesamiento transitivo, no un calabozo de datos (Vendor-Lock In).
+### 4.3 Volúmenes Docker
+
+Los datos persistentes usan volúmenes Docker gestionados:
+- `postgres-data` — base de datos relacional (crítico: incluido en backup)
+- `qdrant-data` — vectores (crítico: incluido en backup)
+- `redis-data` — caché y estado de sesión Redis
+- `n8n-data` — workflows y credenciales de n8n
+- `prometheus-data` — series temporales de métricas
+- `grafana-data` — dashboards y configuración
+- `playwright-profile` — perfil de Chromium para sesiones autenticadas
+
+---
+
+## 5. Seguridad y Autenticación
+
+### 5.1 httpOnly Cookie + CSRF Doble Submit
+
+**Problema previo:** El JWT de sesión se almacenaba en `localStorage`. Cualquier vulnerabilidad XSS en el frontend podía leer el token y suplantar al usuario indefinidamente.
+
+**Solución implementada:** Dos cookies en respuesta al login:
+- `SESSION_COOKIE` — JWT firmado con `httponly=True, samesite="lax"`. JavaScript no puede leerla. El servidor la valida en cada request.
+- `CSRF_COOKIE` — token CSRF aleatorio sin `httponly`. JavaScript puede leerlo y lo envía en el header `X-CSRF-Token` en cada request que modifica estado (POST, PUT, DELETE). La API verifica que header == cookie.
+
+**Ventaja del doble submit:** No requiere sesión server-side ni tabla de tokens CSRF. El servidor solo compara los dos valores que llegan en el mismo request — un atacante externo no puede leer la cookie CSRF desde otro dominio (Same-Origin Policy).
+
+**Bearer fallback:** Si no hay cookie `SESSION_COOKIE`, la API acepta `Authorization: Bearer <token>`. Esto permite que bots de Telegram y scripts externos sigan funcionando durante la migración y en casos de uso machine-to-machine.
+
+### 5.2 Rate Limiting Atómico
+
+Todos los rate limiters usan el patrón Redis INCR+EXPIRE:
+```python
+count = await redis.incr(key)
+if count == 1:
+    await redis.expire(key, window_seconds)
+if count > limit:
+    raise HTTPException(429)
+```
+
+**Por qué este patrón:** La versión anterior usaba `GET` seguido de `INCR` — dos operaciones separadas con una race condition (TOCTOU): dos requests simultáneos podían ambos pasar el check de `GET` y luego ambos ejecutar `INCR`, omitiendo el límite. El patrón INCR+EXPIRE es atómico: solo una operación incrementa y la comparación se hace sobre el resultado.
+
+**Límites configurados:**
+- `/auth/login`: 5 requests/minuto por IP
+- `/auth/register`: 3 requests/hora por IP
+- `/chat`: 30 requests/minuto por tenant
+
+### 5.3 Contenedores Non-Root
+
+Todos los servicios con código propio (`cerebro-api`, `cerebro-ingestion`, `cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`) corren con usuario `cerebro` (uid 1000) en lugar de root. El frontend corre con usuario `node` (uid 1000 en la imagen Node.js).
+
+**Por qué:** Si un atacante logra ejecutar código en el contenedor (via inyección en el scraper o un RCE en una dependencia), el proceso no tiene privilegios de root y no puede modificar el filesystem del host, escalar privilegios, ni acceder a sockets del sistema.
+
+**Caso especial — Playwright:** Chromium requiere acceso a su caché de binarios. Como el usuario es `cerebro` y no root, hay que asegurarse de que los binarios se instalen en el home del usuario correcto: `PLAYWRIGHT_BROWSERS_PATH=/home/cerebro/.cache/ms-playwright` y el `chown -R cerebro` del directorio `/data` en el Dockerfile.
+
+### 5.4 Overlay de Producción
+
+El archivo `docker-compose.prod.yml` es un overlay que extiende `docker-compose.yml` para producción. Activa:
+- **TLS automático** con Let's Encrypt vía Traefik `certResolver`
+- **Redirección HTTP→HTTPS** en todos los routers
+- **Puertos internos cerrados**: servicios como Postgres (5432), Redis (6379), RabbitMQ (5672) no exponen ports al host — solo accesibles dentro de `cerebro-net`
+- **Docker secrets**: `JWT_SECRET_FILE`, `POSTGRES_PASSWORD_FILE`, etc. leen secretos de `/run/secrets/<nombre>` en lugar de variables de entorno
+
+Para desplegar en producción:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Documentación completa en `docs/PRODUCTION.md`.
+
+---
+
+## 6. Aislamiento de Schema en PostgreSQL
+
+### El Problema con LiteLLM y Prisma
+
+LiteLLM usa el ORM Prisma internamente para gestionar sus tablas. En cada arranque, Prisma ejecuta una migración de tipo `schema_sync` que elimina del schema `public` cualquier tabla que no reconozca como propia. Cuando las tablas de LinkAnvil (`recursos`, `sesiones_chat`, etc.) estaban en `public`, **cada restart de LiteLLM las destruía**.
+
+### La Solución: Schema `cerebro`
+
+Todas las tablas de LinkAnvil residen en el schema `cerebro`:
+
+```sql
+-- init.sql
+CREATE SCHEMA IF NOT EXISTS cerebro;
+SET search_path TO cerebro, public;
+
+CREATE TABLE IF NOT EXISTS recursos (...);
+CREATE TABLE IF NOT EXISTS sesiones_chat (...);
+-- etc.
+```
+
+El conector asyncpg en `cerebro-api` establece el search_path al conectar:
+```python
+conn = await asyncpg.connect(dsn, server_settings={"search_path": "cerebro,public"})
+```
+
+Prisma solo opera en `public` y nunca toca `cerebro`. n8n usa el schema `n8n` (configurable con `DB_POSTGRESDB_SCHEMA: n8n`).
+
+**Resultado:** Los tres sistemas coexisten en la misma instancia Postgres sin interferir:
+- `public` → tablas de LiteLLM/Prisma (efímeras, se recrean en cada start)
+- `cerebro` → tablas de LinkAnvil (persistentes, gestionadas por `scripts/migrate.sh`)
+- `n8n` → tablas del orquestador (persistentes, gestionadas por n8n)
+
+---
+
+## 7. Gestión de Migraciones de Schema
+
+### Runner Shell Puro (`scripts/migrate.sh`)
+
+LinkAnvil usa un runner de migraciones escrito en Bash que invoca `psql` directamente, sin dependencias Python adicionales.
+
+**Por qué sin Alembic:** `psql` ya está disponible en la imagen `postgres:16-alpine` que usamos para el `db-migrate` one-shot. Añadir Alembic requeriría una imagen Python separada o añadir Python a la imagen Postgres, aumentando complejidad y tamaño de imagen sin ventaja real para el volumen de migraciones previsto.
+
+**Funcionamiento:**
+1. Crea `cerebro.schema_migrations(version INTEGER, applied_at TIMESTAMPTZ)` si no existe
+2. Lee todos los archivos `infra/postgres/migrations/NNNN_*.sql` ordenados numéricamente
+3. Para cada archivo, extrae el número de versión y verifica si ya está en `schema_migrations`
+4. Si no está, lo ejecuta en una transacción y registra la versión
+
+**Idempotencia:** La segunda ejecución detecta que todas las versiones ya están registradas y sale con `"schema is up to date"`. Seguro de ejecutar en CI o en cada deploy.
+
+**Truco de la aritmética base-10:** Los nombres de archivo usan `0001`, `0002`, etc. Bash interpreta los ceros iniciales como números octales en operaciones aritméticas. La solución es forzar base 10:
+```bash
+version=$((10#${BASH_REMATCH[1]}))  # 0001 → 1, no interpretado como octal
+```
+
+Para aplicar migraciones pendientes:
+```bash
+bash scripts/migrate.sh
+```
+
+---
+
+## 8. Liveness de Workers con Heartbeat Redis
+
+### El Problema con Healthchecks Tradicionales
+
+Un worker Python que se queda bloqueado esperando una conexión de base de datos o procesando un mensaje muy grande seguirá respondiendo al `docker ps` como "running" aunque no esté procesando trabajo nuevo. El healthcheck de Docker basado en comandos de proceso no detecta esta condición.
+
+### Solución: Heartbeat Redis + TTL
+
+Cada worker (scraper, embedder, outbox) ejecuta una tarea asyncio en background que periódicamente escribe una clave en Redis:
+```python
+await redis.set(f"worker:{name}:heartbeat", "1", ex=45)  # TTL 45 segundos
+```
+
+El healthcheck de Docker del worker lee esa clave:
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "python -c \"import redis,os,sys; r=redis.Redis.from_url(os.environ['REDIS_URL']); sys.exit(0 if r.get('worker:scraper:heartbeat') else 1)\""]
+  interval: 30s
+```
+
+Si el worker se bloquea y deja de escribir el heartbeat, la clave expira en 45 segundos. En el siguiente check de Docker (30s), la clave no existe y el healthcheck falla. Docker marca el contenedor como `unhealthy` y puede reiniciarlo según la política `restart: unless-stopped`.
+
+**Ventaja:** Detecta workers zombi (proceso vivo pero no procesando) con un mecanismo mínimo que no requiere exponer un puerto HTTP adicional.
+
+---
+
+## 9. Observabilidad Integral
+
+### Distributed Tracing
+
+Cada petición entrante genera un `Trace-ID` único en Traefik que se propaga mediante headers OpenTelemetry a través de todos los servicios. El OTel Collector recibe las trazas y las envía a Jaeger, donde se puede visualizar el recorrido completo de una URL desde la ingesta hasta la inserción en Qdrant.
+
+**Corrección de configuración OTel (v0.103+):** La propiedad `service.telemetry.metrics.address` fue eliminada en OTel Collector v0.103. El archivo `infra/otel/config.yaml` usa la nueva estructura:
+```yaml
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
+```
+Sin esta corrección, el colector arrancaba en loop reiniciando indefinidamente.
+
+### Logging Estructurado JSON
+
+Todos los servicios Python usan `src/observability/logging.py` que configura un `JsonFormatter`:
+- Cada log es un objeto JSON con campos estándar: `timestamp`, `level`, `service`, `message`
+- Los campos `extra={}` pasados al logger se promueven al nivel raíz del JSON (no anidados)
+- `LOG_LEVEL` configurable por variable de entorno (default `INFO`)
+
+Esto permite que herramientas como Loki (Grafana) o cualquier agregador de logs indexen los campos del log sin parsear strings.
+
+### Alertas Prometheus
+
+El archivo `infra/prometheus/alert.rules.yml` contiene 6 reglas de alerta activas que disparan notificaciones en Grafana cuando:
+- La latencia P99 de la API supera 2 segundos
+- La cola de ingesta acumula más de 1000 mensajes
+- Cualquier mensaje llega a la DLQ de embeddings (indica fallos crónicos)
+- Las conexiones activas a Postgres superan el 80% del límite configurado
+- El heartbeat de un worker desaparece más de 2 minutos
+- El disco de un volumen crítico supera el 80% de uso
+
+---
+
+## 10. Backup Automático
+
+El script `scripts/backup.sh` genera backups de los dos almacenamientos críticos:
+
+**PostgreSQL:**
+```bash
+pg_dump --schema=cerebro | gzip > backup_postgres_YYYYMMDD_HHMMSS.sql.gz
+```
+
+**Qdrant:**
+```bash
+curl -X POST "http://qdrant:6333/collections/{collection}/snapshots"
+```
+
+Los backups se guardan en `$BACKUP_DIR` (configurable) y se eliminan los que superan `BACKUP_RETENTION_DAYS` días. El script se puede ejecutar manualmente o programar como cron job en el host.

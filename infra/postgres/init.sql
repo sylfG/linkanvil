@@ -3,15 +3,21 @@
 -- Patrón Outbox · Multi-Tenancy (RLS) · Curador Nocturno
 -- =============================================================================
 
--- Extensiones necesarias
+-- Extensiones necesarias (deben ir en public)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";       -- Búsqueda por similaridad de texto
-CREATE EXTENSION IF NOT EXISTS "unaccent";        -- Normalización de caracteres
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS "unaccent";
 
 -- -----------------------------------------------------------------------------
--- SCHEMA n8n (para n8n workflow engine)
+-- SCHEMAS
+-- cerebro: tablas propias (aisladas de las migraciones Prisma de LiteLLM)
+-- n8n:     tablas del workflow engine
 -- -----------------------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS cerebro;
 CREATE SCHEMA IF NOT EXISTS n8n;
+
+-- Mover todas las tablas propias al schema cerebro
+SET search_path TO cerebro, public;
 
 -- -----------------------------------------------------------------------------
 -- TABLA PRINCIPAL: recursos capturados
@@ -99,17 +105,19 @@ CREATE INDEX IF NOT EXISTS idx_sesiones_tenant ON sesiones_chat (tenant_id, ulti
 
 CREATE TABLE IF NOT EXISTS mensajes_chat (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    seq             BIGSERIAL NOT NULL,
     sesion_id       UUID NOT NULL REFERENCES sesiones_chat(id) ON DELETE CASCADE,
     tenant_id       VARCHAR(128) NOT NULL,
     rol             VARCHAR(20) NOT NULL CHECK (rol IN ('user', 'assistant', 'system')),
     contenido       TEXT NOT NULL,
-    embedding_id    VARCHAR(255),                    -- ID del vector en Qdrant
+    fuentes         JSONB NOT NULL DEFAULT '[]'::jsonb,
+    embedding_id    VARCHAR(255),
     tokens_entrada  INTEGER DEFAULT 0,
     tokens_salida   INTEGER DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_mensajes_sesion ON mensajes_chat (sesion_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mensajes_sesion ON mensajes_chat (sesion_id, seq ASC);
 
 -- -----------------------------------------------------------------------------
 -- ROW-LEVEL SECURITY (Multi-Tenancy) 
@@ -194,6 +202,32 @@ BEGIN
     RETURN cnt;
 END;
 $$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- TABLA: usuarios del sistema (auth multi-tenant)
+-- Auth controlado en API layer (JWT). Sin RLS — cerebro es superuser.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS usuarios (
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email                   TEXT        UNIQUE NOT NULL,
+    password_hash           TEXT        NOT NULL,
+    tenant_id               TEXT        UNIQUE NOT NULL
+                            DEFAULT 'user_' || replace(uuid_generate_v4()::text, '-', ''),
+    telegram_bot_token      TEXT,
+    telegram_bot_token_hash TEXT,
+    telegram_bot_active     BOOLEAN     DEFAULT FALSE,
+    created_at              TIMESTAMPTZ DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios (email);
+CREATE INDEX IF NOT EXISTS idx_usuarios_token_hash ON usuarios (telegram_bot_token_hash)
+    WHERE telegram_bot_token_hash IS NOT NULL;
+
+DROP TRIGGER IF EXISTS set_updated_at_usuarios ON usuarios;
+CREATE TRIGGER set_updated_at_usuarios
+    BEFORE UPDATE ON usuarios
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
 -- Datos de ejemplo para verificación
 INSERT INTO recursos (tenant_id, url, url_hash, titulo, volatilidad, estado) VALUES

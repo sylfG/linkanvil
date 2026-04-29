@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir \
     pydantic \
     pydantic-settings \
     asyncpg \
+    psycopg2-binary \
     aiohttp \
     redis \
     opentelemetry-sdk \
@@ -20,4 +21,8 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "src/ui/chatbot.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "src/ui/chatbot.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.enableCORS=false", \
+     "--server.enableXsrfProtection=false"]

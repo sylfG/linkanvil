@@ -1,0 +1,9 @@
+src/frontend/node_modules
+src/frontend/.next
+src/frontend/.next/cache
+**/__pycache__
+**/*.pyc
+.git
+.env
+.env.*
+!.env.example

@@ -16,5 +16,10 @@ node_modules/
 dist/
 cache/
 
+# Next.js build artifacts
+.next/
+out/
+
 # Claude Code (configuración local, no compartir)
 .claude/settings.local.json
+.claude/worktrees/

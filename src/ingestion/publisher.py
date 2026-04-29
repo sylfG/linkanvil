@@ -23,7 +23,7 @@ class RabbitMQPublisher:
         self.exchange = await self.channel.get_exchange("cerebro.ingesta")
 
     async def publish_ingestion_message(self, queue_name: str, payload: dict, trace_id: str):
-        if not self.channel:
+        if not self.channel or not self.exchange:
             await self.connect()
 
         # In RabbitMQ terms, queue_name passed here works as 'routing_key' -> 'url.nueva'

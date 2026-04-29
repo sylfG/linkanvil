@@ -140,6 +140,15 @@ class DatabaseManager:
                 
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")
         return recurso_id
+    async def update_recurso_estado(self, recurso_id: str, tenant_id: str, estado: str):
+        if not self.pool:
+            await self.connect()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid AND tenant_id = $3",
+                estado, recurso_id, tenant_id,
+            )
+
     async def save_semantic_collisions(self, tenant_id: str, recurso_origen: str, collisions: list[dict]):
         if not self.pool:
             await self.connect()

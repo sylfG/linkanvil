@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -24,6 +25,9 @@ configure_telemetry("scraper-worker")
 LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
 LITELLM_KEY = os.getenv("LITELLM_API_KEY", "sk-cerebro-master-key-CHANGE_ME")
 REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
+# Cuántos días de margen exigimos sobre fecha_caducidad para reusar un recurso global
+# sin re-scrapear. Por debajo se asume que conviene refrescar.
+REUSE_FRESHNESS_MARGIN_DAYS = int(os.getenv("REUSE_FRESHNESS_MARGIN_DAYS", "15"))
 
 
 def _html_to_clean_text(html: str, max_chars: int = 8000) -> tuple[str, str]:
@@ -148,9 +152,35 @@ class ScraperWorker:
                 tenant_id = body.get("tenant_id")
                 source = body.get("source")
 
-                logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Extrayendo: {url}")
+                logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Recibida URL: {url}")
+
+                # 0. Reuso global: si la URL ya existe en `recursos` con estado='activo'
+                # y la caducidad está lejos, asociarla al tenant y pedir al embedder
+                # que copie el punto Qdrant existente — saltamos scrape + LLM.
+                existing = await self.db.find_existing_recurso_by_url(url)
+                margin = timedelta(days=REUSE_FRESHNESS_MARGIN_DAYS)
+                if existing and existing["estado"] == "activo":
+                    fecha_cad = existing["fecha_caducidad"]
+                    fresh = (fecha_cad is None) or (fecha_cad > (datetime.utcnow().date() + margin))
+                    if fresh:
+                        recurso_id = str(existing["id"])
+                        await self.db.link_user_to_recurso(tenant_id, recurso_id)
+                        await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
+                        logger.info(
+                            f"[{trace_id}] Recurso reusado ({recurso_id}) — saltando scrape+LLM"
+                        )
+                        await message.ack()
+                        return
+
+                # 0.5 Pre-insert placeholder para feedback visual inmediato en KB.
+                # save_with_outbox lo enriquecerá vía ON CONFLICT DO UPDATE.
+                try:
+                    await self.db.insert_placeholder_recurso(tenant_id=tenant_id, url=url)
+                except Exception as e:
+                    logger.warning(f"[{trace_id}] No se pudo pre-insertar placeholder: {e}")
 
                 # 1. Scrape
+                logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Extrayendo: {url}")
                 scraper_ctx = ScraperContext(tenant_id=tenant_id, trace_id=trace_id, redis=self.redis)
                 raw_html = await scraper_ctx.execute(url=url, source=source)
 

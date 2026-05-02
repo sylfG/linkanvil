@@ -63,24 +63,84 @@ class DatabaseManager:
             await self.pool.close()
             logger.info("Desconectado de PostgreSQL")
 
+    async def insert_placeholder_recurso(self, tenant_id: str, url: str) -> str:
+        """Garantiza que existe una fila en `recursos` para la URL y la asocia al
+        tenant vía `usuario_recursos`. Devuelve el `recurso_id` (UUID como str).
+        Permite que la URL aparezca en la KB del usuario inmediatamente con
+        estado='procesando' antes de que el scraper extraiga los metadatos."""
+        if not self.pool:
+            await self.connect()
+
+        url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO recursos (url, url_hash, estado)
+                    VALUES ($1, $2, 'procesando')
+                    ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
+                    RETURNING id
+                    """,
+                    url, url_hash,
+                )
+                recurso_id = row["id"]
+                await conn.execute(
+                    """
+                    INSERT INTO usuario_recursos (tenant_id, recurso_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant_id, recurso_id,
+                )
+        return str(recurso_id)
+
+    async def find_existing_recurso_by_url(self, url: str) -> dict | None:
+        """Busca un recurso global por url_hash. Devuelve dict con
+        id, estado, fecha_caducidad o None si no existe."""
+        if not self.pool:
+            await self.connect()
+
+        url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, estado, fecha_caducidad FROM recursos WHERE url_hash = $1",
+                url_hash,
+            )
+            return dict(row) if row else None
+
+    async def link_user_to_recurso(self, tenant_id: str, recurso_id: str) -> None:
+        """Asocia un recurso global existente a un tenant. Idempotente."""
+        if not self.pool:
+            await self.connect()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO usuario_recursos (tenant_id, recurso_id)
+                VALUES ($1, $2::uuid)
+                ON CONFLICT DO NOTHING
+                """,
+                tenant_id, recurso_id,
+            )
+
     async def save_with_outbox(self, tenant_id: str, trace_id: str, extracted_data: dict, url: str):
         """
-        Implementa el Patrón Outbox transaccional (F-03.1) garantizando la
-        inserción atómica en 'recursos' y 'outbox_eventos' bajo RLS (tenant isolation).
+        Patrón Outbox transaccional (F-03.1): upsert global en `recursos`,
+        link en `usuario_recursos` y evento en `outbox_eventos`, todo atómico.
+        El recurso es global (sin tenant_id); el evento conserva tenant_id
+        para que el embedder genere el punto Qdrant aislado por tenant.
         """
         if not self.pool:
             await self.connect()
 
         url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-        
+
         titulo = extracted_data.get("title", "")
         resumen = extracted_data.get("summary", "")
         categoria = extracted_data.get("category", "other")
         tags_list = extracted_data.get("keywords", [])
         tags = json.dumps(tags_list)
-        
+
         volatilidad = extracted_data.get("volatility_score", "media")
-        
         vol_map = {"low": "baja", "medium": "media", "high": "alta"}
         volatilidad = vol_map.get(volatilidad, "media")
 
@@ -90,18 +150,18 @@ class DatabaseManager:
 
         recurso_id = None
 
-        logger.info(f"Guardando transaccionalmente recurso + outbox evento. Tenant ID: {tenant_id}")
+        logger.info(f"Guardando transaccionalmente recurso global + link tenant + outbox. Tenant ID: {tenant_id}")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
                     INSERT INTO recursos (
-                        tenant_id, url, url_hash, titulo, resumen, categoria, tags, 
+                        url, url_hash, titulo, resumen, categoria, tags,
                         volatilidad, fecha_caducidad, estado
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10
+                        $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9
                     )
-                    ON CONFLICT (tenant_id, url_hash)
+                    ON CONFLICT (url_hash)
                     DO UPDATE SET
                         titulo = EXCLUDED.titulo,
                         resumen = EXCLUDED.resumen,
@@ -113,12 +173,21 @@ class DatabaseManager:
                         updated_at = NOW()
                     RETURNING id
                     """,
-                    tenant_id, url, url_hash, titulo, resumen, categoria, tags,
-                    volatilidad, fecha_caducidad, estado
+                    url, url_hash, titulo, resumen, categoria, tags,
+                    volatilidad, fecha_caducidad, estado,
                 )
-                
+
                 recurso_id = row['id']
-                
+
+                await conn.execute(
+                    """
+                    INSERT INTO usuario_recursos (tenant_id, recurso_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant_id, recurso_id,
+                )
+
                 outbox_payload = {
                     "event_origin": "scraper_worker",
                     "trace_id": trace_id,
@@ -126,7 +195,7 @@ class DatabaseManager:
                     "url": url,
                     "extracted_info": extracted_data
                 }
-                
+
                 await conn.execute(
                     """
                     INSERT INTO outbox_eventos (
@@ -137,16 +206,43 @@ class DatabaseManager:
                     """,
                     tenant_id, recurso_id, json.dumps(outbox_payload)
                 )
-                
+
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")
         return recurso_id
-    async def update_recurso_estado(self, recurso_id: str, tenant_id: str, estado: str):
+
+    async def emit_reuse_event(self, tenant_id: str, trace_id: str, recurso_id: str, url: str) -> None:
+        """Emite un evento outbox `recurso.reusado` para que el embedder copie
+        el punto Qdrant existente al nuevo tenant en lugar de regenerar el embedding."""
+        if not self.pool:
+            await self.connect()
+
+        payload = {
+            "event_origin": "scraper_worker",
+            "trace_id": trace_id,
+            "recurso_id": str(recurso_id),
+            "url": url,
+            "reused": True,
+        }
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO outbox_eventos (
+                    tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
+                ) VALUES (
+                    $1, 'recurso', $2::uuid, 'recurso.reusado', $3::jsonb
+                )
+                """,
+                tenant_id, recurso_id, json.dumps(payload),
+            )
+
+    async def update_recurso_estado(self, recurso_id: str, estado: str):
+        """`estado` es global (recurso.activo/procesando/expirado). No filtra por tenant."""
         if not self.pool:
             await self.connect()
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid AND tenant_id = $3",
-                estado, recurso_id, tenant_id,
+                "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid",
+                estado, recurso_id,
             )
 
     async def save_semantic_collisions(self, tenant_id: str, recurso_origen: str, collisions: list[dict]):
@@ -191,13 +287,14 @@ class DatabaseManager:
                         tenant_id, c["recurso_destino"], recurso_origen, c["similitud"], tipo_inverso
                     )
 
-                    # Si es obsolescencia, marcamos el destino (antiguo) como expirado
+                    # Si es obsolescencia, marcamos el destino (antiguo) como expirado.
+                    # `recursos` es global → no se filtra por tenant_id.
                     if tipo_relacion in ["VUELVE_OBSOLETO", "CONTRADICE"]:
                         await conn.execute(
                             """
-                            UPDATE recursos 
+                            UPDATE recursos
                             SET estado = 'expirado', updated_at = NOW()
-                            WHERE id = $1::uuid AND tenant_id = $2
+                            WHERE id = $1::uuid
                             """,
-                            c["recurso_destino"], tenant_id
+                            c["recurso_destino"],
                         )

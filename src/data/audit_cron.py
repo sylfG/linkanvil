@@ -3,7 +3,7 @@ import logging
 import uuid
 import json
 from datetime import datetime
-from data.db import DatabaseManager
+from src.data.db import DatabaseManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,43 +22,48 @@ async def run_audit_cron():
     
     try:
         async with db.pool.acquire() as conn:
-            # 1. Buscamos y marcamos aquellos que expiraron.
-            # estado pasará a 'obsoleto' si estaban en 'procesando' o 'completado' o lo que sea
-            # excepto si ya son 'obsoleto'.
+            # 1. Marcamos los recursos cuya fecha_caducidad ha expirado.
+            # `recursos` es global, así que el cambio aplica a todos los tenants
+            # que tengan la URL en su KB.
             rows = await conn.fetch(
                 """
                 UPDATE recursos
-                SET estado = 'obsoleto',
+                SET estado = 'expirado',
                     updated_at = NOW()
                 WHERE fecha_caducidad <= NOW()
-                  AND estado != 'obsoleto'
-                RETURNING id, tenant_id, url
+                  AND estado != 'expirado'
+                RETURNING id, url
                 """
             )
-            
+
             if rows:
-                logger.info(f"[{trace_id}] Se auditaron/obsoletaron {len(rows)} recursos caducados.")
-                
-                # 2. Generar eventos outbox para cada uno para que los embeddings asíncronos también se enteren (arquitectura orientada a eventos)
+                logger.info(f"[{trace_id}] {len(rows)} recursos marcados como expirados.")
+
+                # 2. Para cada recurso, emitir un evento outbox por cada tenant que
+                # lo tiene linkeado, así el flujo de notificaciones llega a cada usuario.
                 for row in rows:
-                    outbox_payload = {
-                        "event_origin": "audit_cron",
-                        "trace_id": trace_id,
-                        "recurso_id": str(row['id']),
-                        "url": row['url'],
-                        "motivo": "caducidad_superada"
-                    }
-                    
-                    await conn.execute(
-                        """
-                        INSERT INTO outbox_eventos (
-                            tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
-                        ) VALUES (
-                            $1, 'recurso', $2, 'recurso.obsoleto', $3::jsonb
-                        )
-                        """,
-                        row['tenant_id'], row['id'], json.dumps(outbox_payload)
+                    tenants = await conn.fetch(
+                        "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+                        row['id'],
                     )
+                    for t in tenants:
+                        outbox_payload = {
+                            "event_origin": "audit_cron",
+                            "trace_id": trace_id,
+                            "recurso_id": str(row['id']),
+                            "url": row['url'],
+                            "motivo": "caducidad_superada",
+                        }
+                        await conn.execute(
+                            """
+                            INSERT INTO outbox_eventos (
+                                tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
+                            ) VALUES (
+                                $1, 'recurso', $2, 'recurso.expirado', $3::jsonb
+                            )
+                            """,
+                            t['tenant_id'], row['id'], json.dumps(outbox_payload),
+                        )
             else:
                 logger.info(f"[{trace_id}] No se encontraron recursos caducados activos en esta ejecución.")
                 

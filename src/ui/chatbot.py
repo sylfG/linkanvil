@@ -208,7 +208,7 @@ with tab_kb:
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT tenant_id FROM recursos ORDER BY tenant_id")
+            cur.execute("SELECT DISTINCT tenant_id FROM usuario_recursos ORDER BY tenant_id")
             tenants = [r[0] for r in cur.fetchall()]
             cur.close()
             conn.close()
@@ -222,16 +222,17 @@ with tab_kb:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             query = """
-                SELECT id, url, titulo, resumen, categoria, tags, estado,
-                       volatilidad, fecha_caducidad, created_at, updated_at
-                FROM recursos
-                WHERE tenant_id = %s
+                SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags, r.estado,
+                       r.volatilidad, r.fecha_caducidad, ur.created_at, r.updated_at
+                FROM recursos r
+                JOIN usuario_recursos ur ON ur.recurso_id = r.id
+                WHERE ur.tenant_id = %s
             """
             params = [tenant]
             if estado_filtro != "todos":
-                query += " AND estado = %s"
+                query += " AND r.estado = %s"
                 params.append(estado_filtro)
-            query += " ORDER BY created_at DESC LIMIT 200"
+            query += " ORDER BY ur.created_at DESC LIMIT 200"
             cur.execute(query, params)
             rows = [dict(r) for r in cur.fetchall()]
             cur.close()

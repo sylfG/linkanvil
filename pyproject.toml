@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Ejecutar `pytest` desde la raíz del proyecto. Los tests viven en `tests/`
+# y se importan desde `src/` como paquete (ej. `from src.data.db import ...`).
+testpaths = ["tests"]
+pythonpath = ["."]

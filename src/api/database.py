@@ -82,31 +82,43 @@ async def update_telegram_bot(user_id: str, bot_token: str, token_hash: str) -> 
 async def get_resources(
     tenant_id: str, estado: str = "todos", limit: int = 100
 ) -> list[dict]:
+    """Lista los recursos asociados al tenant via la pivote `usuario_recursos`.
+    `created_at` es el momento en que el usuario añadió la URL a su KB
+    (no el de creación global del recurso)."""
     p = await get_pool()
-    base = """SELECT id, url, titulo, resumen, categoria, tags,
-                     estado, volatilidad, fecha_caducidad, created_at, updated_at
-              FROM recursos
-              WHERE tenant_id = $1"""
+    base = """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
+                     r.estado, r.volatilidad, r.fecha_caducidad,
+                     ur.created_at, r.updated_at
+              FROM recursos r
+              JOIN usuario_recursos ur ON ur.recurso_id = r.id
+              WHERE ur.tenant_id = $1"""
     if estado and estado != "todos":
         rows = await p.fetch(
-            base + " AND estado = $2 ORDER BY created_at DESC LIMIT $3",
+            base + " AND r.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
             tenant_id, estado, limit,
         )
     else:
         rows = await p.fetch(
-            base + " ORDER BY created_at DESC LIMIT $2",
+            base + " ORDER BY ur.created_at DESC LIMIT $2",
             tenant_id, limit,
         )
     return [dict(r) for r in rows]
 
 
 async def get_active_resource_ids(tenant_id: str, ids: list[str]) -> list[str]:
-    """Return only the IDs from `ids` that exist in Postgres as estado='activo'."""
+    """Return only the IDs from `ids` that the tenant has linked AND are estado='activo'."""
     if not ids:
         return []
     p = await get_pool()
     rows = await p.fetch(
-        "SELECT id::text FROM recursos WHERE tenant_id = $1 AND estado = 'activo' AND id = ANY($2::uuid[])",
+        """
+        SELECT r.id::text
+        FROM recursos r
+        JOIN usuario_recursos ur ON ur.recurso_id = r.id
+        WHERE ur.tenant_id = $1
+          AND r.estado = 'activo'
+          AND r.id = ANY($2::uuid[])
+        """,
         tenant_id, ids,
     )
     return [r["id"] for r in rows]

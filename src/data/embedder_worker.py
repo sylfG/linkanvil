@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -23,6 +24,14 @@ configure_telemetry("embedder-worker")
 LITELLM_URL = os.getenv("LITELLM_EMBEDDINGS_URL", "http://litellm:4000/v1/embeddings")
 LITELLM_KEY = os.getenv("LITELLM_API_KEY", "sk-cerebro-master-key-CHANGE_ME")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+# Namespace fijo para derivar IDs UUID v5 de Qdrant a partir de (recurso_id, tenant_id).
+# Qdrant solo acepta enteros o UUID como point id; usamos v5 determinista para que
+# el mismo par siempre genere el mismo id (idempotencia en upserts).
+_QDRANT_POINT_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _qdrant_point_id(recurso_id: str, tenant_id: str) -> str:
+    return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}"))
 RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
 EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_PROCESAMIENTO", "cerebro.procesamiento")
 QUEUE_NAME = "q.recurso.embedder"
@@ -64,20 +73,22 @@ class EmbedderWorker:
 
     async def _generate_embedding(self, text: str, trace_id: str) -> list[float]:
         headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
-        payload = {"model": "cerebro-embeddings", "input": text}
+        payload = {"model": "cerebro-embeddings", "input": text, "input_type": "passage"}
         resp = await self.http.post(LITELLM_URL, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["data"][0]["embedding"]
 
     async def _inject_to_qdrant(self, recurso_id: str, tenant_id: str, vector: list[float], extracted_info: dict, url: str, trace_id: str):
+        point_id = _qdrant_point_id(recurso_id, tenant_id)
         points_payload = {
             "points": [
                 {
-                    "id": recurso_id,
+                    "id": point_id,
                     "vector": vector,
                     "payload": {
                         "tenant_id": tenant_id,
+                        "recurso_id": recurso_id,
                         "url": url,
                         "title": extracted_info.get("title", ""),
                         "category": extracted_info.get("category", "other"),
@@ -86,24 +97,47 @@ class EmbedderWorker:
                 }
             ]
         }
-        
+
         resp = await self.http.put(
             f"{QDRANT_URL}/collections/cerebro_recursos/points?wait=true",
             json=points_payload,
         )
         resp.raise_for_status()
 
+    async def _fetch_existing_vector_for_recurso(self, recurso_id: str) -> Optional[dict]:
+        """Busca cualquier punto Qdrant con el mismo recurso_id (cualquier tenant)
+        y devuelve su vector y payload. Sirve para clonar embeddings entre tenants."""
+        body = {
+            "filter": {
+                "must": [{"key": "recurso_id", "match": {"value": recurso_id}}]
+            },
+            "limit": 1,
+            "with_vector": True,
+            "with_payload": True,
+        }
+        resp = await self.http.post(
+            f"{QDRANT_URL}/collections/cerebro_recursos/points/scroll",
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        points = data.get("result", {}).get("points", [])
+        if not points:
+            return None
+        p = points[0]
+        return {"vector": p.get("vector"), "payload": p.get("payload", {})}
+
     async def _classify_collision_type(self, trace_id: str, tenant_id: str, new_info: dict, old_id: str) -> str:
-        # Fetch the old document info from the DB
+        # Fetch the old document info from the DB. `recursos` es global → no se filtra por tenant.
         if not self.db.pool:
             await self.db.connect()
-            
+
         async with self.db.pool.acquire() as conn:
             old_row = await conn.fetchrow(
-                "SELECT titulo, resumen FROM recursos WHERE id = $1::uuid AND tenant_id = $2",
-                old_id, tenant_id
+                "SELECT titulo, resumen FROM recursos WHERE id = $1::uuid",
+                old_id,
             )
-            
+
         if not old_row:
             return "ASOCIACION_GENERAL"
             
@@ -155,9 +189,9 @@ class EmbedderWorker:
             },
             "limit": 10,
             "score_threshold": 0.92,
-            "with_payload": False
+            "with_payload": True,
         }
-        
+
         resp = await self.http.post(
             f"{QDRANT_URL}/collections/cerebro_recursos/points/search",
             json=payload,
@@ -166,19 +200,21 @@ class EmbedderWorker:
             logger.error(f"[{trace_id}] Error consultando Qdrant para similitud: {resp.text}")
             return
         results = resp.json().get("result", [])
-            
+
         collisions = []
         for r in results:
-            if r["id"] == recurso_id:
+            # Los IDs de punto son UUID v5 derivados de (recurso_id, tenant_id);
+            # el recurso real está en payload.recurso_id.
+            other_recurso_id = (r.get("payload") or {}).get("recurso_id")
+            if not other_recurso_id or other_recurso_id == recurso_id:
                 continue
-            
-            # Clasificación Tipada!
-            tipo_relacion = await self._classify_collision_type(trace_id, tenant_id, extracted_info, r["id"])
-            
+
+            tipo_relacion = await self._classify_collision_type(trace_id, tenant_id, extracted_info, other_recurso_id)
+
             collisions.append({
-                "recurso_destino": r["id"], 
+                "recurso_destino": other_recurso_id,
                 "similitud": r["score"],
-                "tipo_relacion": tipo_relacion
+                "tipo_relacion": tipo_relacion,
             })
         
         if not collisions:
@@ -197,35 +233,66 @@ class EmbedderWorker:
             recurso_id = payload.get("recurso_id")
             url = payload.get("url", "")
             ext_info = payload.get("extracted_info", {})
-            
+            reused = bool(payload.get("reused"))
+
             if not recurso_id:
                 logger.error(f"[{trace_id}] Payload inválido: sin recurso_id")
-                # Al fallar, el requeue=False envía a la DLQ ("x-dead-letter-routing-key")
                 raise ValueError("Missing recurso_id in payload")
 
-            keywords_str = ','.join(ext_info.get('keywords', []))
-            text_to_embed = f"{ext_info.get('title', '')} | {ext_info.get('summary', '')} | Tags: {keywords_str}"
-            
-            logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Generando embedding. Text Length: {len(text_to_embed)}")
-            
             try:
-                # 1. Llamar a LiteLLM
-                vector = await self._generate_embedding(text_to_embed, trace_id)
-                logger.info(f"[{trace_id}] Generado vector de {len(vector)} dimensiones")
-                
-                # 2. Inyectar a Qdrant
-                await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
-                logger.info(f"[{trace_id}] Vector inyectado exitosamente en Qdrant. Aislado a tenant_id: {tenant_id}")
-                
-                # 3. Colisionador Semántico (F-03.3)
-                await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
-                logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
+                if reused:
+                    # Rama reuso: copiar vector de un punto existente del mismo recurso
+                    # (otro tenant) en vez de re-embeber. El embedding depende solo del
+                    # contenido público de la URL, así que es seguro y determinista.
+                    src = await self._fetch_existing_vector_for_recurso(recurso_id)
+                    if not src or not src.get("vector"):
+                        logger.warning(
+                            f"[{trace_id}] Reuso solicitado pero no hay punto fuente para "
+                            f"recurso {recurso_id}; cayendo a re-embedding."
+                        )
+                        ext_info = await self._fetch_recurso_ext_info(recurso_id) or ext_info
+                        keywords_str = ','.join(ext_info.get('keywords', []))
+                        text_to_embed = f"{ext_info.get('title', '')} | {ext_info.get('summary', '')} | Tags: {keywords_str}"
+                        vector = await self._generate_embedding(text_to_embed, trace_id)
+                    else:
+                        vector = src["vector"]
+                        # Heredamos title/category/volatility del payload origen para que
+                        # la nueva fila Qdrant sea coherente con la del primer tenant.
+                        src_payload = src.get("payload", {})
+                        ext_info = {
+                            "title": src_payload.get("title", ""),
+                            "category": src_payload.get("category", "other"),
+                            "volatility_score": src_payload.get("volatility", "media"),
+                            "summary": "",
+                            "keywords": [],
+                        }
+                        logger.info(
+                            f"[{trace_id}] [TENANT:{tenant_id}] Vector copiado de punto existente "
+                            f"(recurso {recurso_id}); sin llamada al embedder."
+                        )
 
-                # 4. Actualizar estado → 'activo' en PostgreSQL
-                await self.db.update_recurso_estado(recurso_id, tenant_id, "activo")
-                logger.info(f"[{trace_id}] Estado actualizado a 'activo' para ID {recurso_id}")
+                    await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
+                    await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
+                    # `estado` es global: ya estará en 'activo' por el primer tenant.
+                else:
+                    # Rama normal: nuevo recurso global, generar embedding desde cero.
+                    keywords_str = ','.join(ext_info.get('keywords', []))
+                    text_to_embed = f"{ext_info.get('title', '')} | {ext_info.get('summary', '')} | Tags: {keywords_str}"
+                    logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Generando embedding. Text Length: {len(text_to_embed)}")
 
-                # 5. Notificar completado vía Redis pub/sub (para SSE en cerebro-api)
+                    vector = await self._generate_embedding(text_to_embed, trace_id)
+                    logger.info(f"[{trace_id}] Generado vector de {len(vector)} dimensiones")
+
+                    await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
+                    logger.info(f"[{trace_id}] Vector inyectado exitosamente en Qdrant. Aislado a tenant_id: {tenant_id}")
+
+                    await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
+                    logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
+
+                    await self.db.update_recurso_estado(recurso_id, "activo")
+                    logger.info(f"[{trace_id}] Estado actualizado a 'activo' para ID {recurso_id}")
+
+                # Notificar completado vía Redis pub/sub (para SSE en cerebro-api)
                 if self.redis:
                     titulo = ext_info.get("title") or url
                     completion = json.dumps({
@@ -236,12 +303,34 @@ class EmbedderWorker:
                     })
                     await self.redis.publish(f"ingest:complete:{tenant_id}", completion)
                     logger.info(f"[{trace_id}] Publicado evento ingest:complete para tenant {tenant_id}")
-                
+
             except Exception as e:
                 logger.error(f"[{trace_id}] F-03.2 Fallo crítico procesando embedding/qdrant: {e}")
-                # Rechazar para derivar a DQL (F-03.2 Tolerancia Edge Case)
-                # raise the Exception, `message.process(requeue=False)` catches it and rejects it
                 raise e
+
+    async def _fetch_recurso_ext_info(self, recurso_id: str) -> Optional[dict]:
+        """Lee título/resumen/categoría/volatilidad del recurso global desde Postgres.
+        Usado como fallback si el reuso de vector Qdrant falla y hay que re-embeber."""
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT titulo, resumen, categoria, volatilidad, tags FROM recursos WHERE id = $1::uuid",
+                recurso_id,
+            )
+        if not row:
+            return None
+        try:
+            tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else (row["tags"] or [])
+        except Exception:
+            tags = []
+        return {
+            "title": row["titulo"] or "",
+            "summary": row["resumen"] or "",
+            "category": row["categoria"] or "other",
+            "volatility_score": row["volatilidad"] or "media",
+            "keywords": tags,
+        }
 
     async def consume(self):
         if not self.channel:

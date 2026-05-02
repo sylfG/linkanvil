@@ -16,18 +16,22 @@ class VaultExporter:
         return s.strip()[:50]
 
     async def fetch_resources(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Recursos asociados al tenant via la pivote `usuario_recursos`.
+        `created_at` es el momento en que el usuario añadió la URL a su KB."""
         if not self.db.pool:
             await self.db.connect()
 
         async with self.db.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, url, titulo, resumen, categoria, tags, volatilidad, estado, created_at, fecha_caducidad
-                FROM recursos
-                WHERE tenant_id = $1
-                ORDER BY created_at DESC
+                SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
+                       r.volatilidad, r.estado, ur.created_at, r.fecha_caducidad
+                FROM recursos r
+                JOIN usuario_recursos ur ON ur.recurso_id = r.id
+                WHERE ur.tenant_id = $1
+                ORDER BY ur.created_at DESC
                 """,
-                tenant_id
+                tenant_id,
             )
             return [dict(r) for r in rows]
 

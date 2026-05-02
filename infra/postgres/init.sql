@@ -22,9 +22,10 @@ SET search_path TO cerebro, public;
 -- -----------------------------------------------------------------------------
 -- TABLA PRINCIPAL: recursos capturados
 -- -----------------------------------------------------------------------------
+-- `recursos` es **global**: una fila por URL única (deduplicada por url_hash).
+-- La relación per-tenant vive en `usuario_recursos` (más abajo).
 CREATE TABLE IF NOT EXISTS recursos (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id       VARCHAR(128) NOT NULL,
     url             TEXT NOT NULL,
     url_hash        CHAR(64) NOT NULL,              -- SHA-256 para deduplicación
     titulo          TEXT,
@@ -42,11 +43,22 @@ CREATE TABLE IF NOT EXISTS recursos (
 );
 
 -- Índices para rendimiento
-CREATE UNIQUE INDEX IF NOT EXISTS idx_recursos_hash ON recursos (tenant_id, url_hash);
-CREATE INDEX IF NOT EXISTS idx_recursos_tenant ON recursos (tenant_id);
-CREATE INDEX IF NOT EXISTS idx_recursos_estado ON recursos (estado, tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recursos_url_hash ON recursos (url_hash);
+CREATE INDEX IF NOT EXISTS idx_recursos_estado ON recursos (estado);
 CREATE INDEX IF NOT EXISTS idx_recursos_caducidad ON recursos (fecha_caducidad) WHERE estado = 'activo';
 CREATE INDEX IF NOT EXISTS idx_recursos_tags ON recursos USING GIN (tags);
+
+-- Pivote per-tenant: qué URLs ha guardado cada usuario.
+CREATE TABLE IF NOT EXISTS usuario_recursos (
+    tenant_id    VARCHAR(128) NOT NULL,
+    recurso_id   UUID NOT NULL REFERENCES recursos(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, recurso_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usuario_recursos_tenant
+    ON usuario_recursos (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usuario_recursos_recurso
+    ON usuario_recursos (recurso_id);
 
 -- -----------------------------------------------------------------------------
 -- OUTBOX PATTERN: tabla de eventos para consistencia eventual
@@ -123,15 +135,17 @@ CREATE INDEX IF NOT EXISTS idx_mensajes_sesion ON mensajes_chat (sesion_id, seq 
 -- ROW-LEVEL SECURITY (Multi-Tenancy) 
 -- Bloquea acceso cruzado entre tenants por defecto
 -- -----------------------------------------------------------------------------
-ALTER TABLE recursos ENABLE ROW LEVEL SECURITY;
+-- `recursos` es global: NO lleva RLS (no tiene tenant_id). El aislamiento
+-- multi-tenant se aplica en `usuario_recursos` (pivote).
+ALTER TABLE usuario_recursos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sesiones_chat ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mensajes_chat ENABLE ROW LEVEL SECURITY;
 ALTER TABLE grafo_relaciones ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outbox_eventos ENABLE ROW LEVEL SECURITY;
 
 -- Política: cada usuario solo ve sus datos
-DROP POLICY IF EXISTS tenant_isolation ON recursos;
-CREATE POLICY tenant_isolation ON recursos
+DROP POLICY IF EXISTS tenant_isolation ON usuario_recursos;
+CREATE POLICY tenant_isolation ON usuario_recursos
     USING (tenant_id = current_setting('app.tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
@@ -162,7 +176,7 @@ BEGIN
         CREATE ROLE cerebro_service NOLOGIN BYPASSRLS; 
     END IF; 
 END $$;
-ALTER TABLE recursos FORCE ROW LEVEL SECURITY;
+ALTER TABLE usuario_recursos FORCE ROW LEVEL SECURITY;
 ALTER TABLE sesiones_chat FORCE ROW LEVEL SECURITY;
 ALTER TABLE mensajes_chat FORCE ROW LEVEL SECURITY;
 ALTER TABLE grafo_relaciones FORCE ROW LEVEL SECURITY;

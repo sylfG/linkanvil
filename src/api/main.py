@@ -359,7 +359,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                 er = await _http.post(
                     f"{LITELLM_URL}/v1/embeddings",
                     headers=headers,
-                    json={"model": "cerebro-embeddings", "input": last_user},
+                    json={"model": "cerebro-embeddings", "input": last_user, "input_type": "query"},
                     timeout=15.0,
                 )
                 if er.status_code == 200:
@@ -382,12 +382,22 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                     if qr.status_code == 200:
                         raw_hits = qr.json().get("result", [])
                         if raw_hits:
+                            # Los IDs de punto son UUID v5 derivados de (recurso_id, tenant_id);
+                            # `recurso_id` real está en el payload.
+                            recurso_ids = [
+                                str(h.get("payload", {}).get("recurso_id"))
+                                for h in raw_hits
+                                if h.get("payload", {}).get("recurso_id")
+                            ]
                             active_ids = await db.get_active_resource_ids(
                                 user["tenant_id"],
-                                [str(h["id"]) for h in raw_hits],
+                                recurso_ids,
                             )
                             active_set = set(active_ids)
-                            hits = [h for h in raw_hits if str(h["id"]) in active_set]
+                            hits = [
+                                h for h in raw_hits
+                                if str(h.get("payload", {}).get("recurso_id")) in active_set
+                            ]
                         if hits:
                             frags = [
                                 f"- **{h['payload'].get('title','')}** — "

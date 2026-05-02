@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # 🖼️ Documentación Visual y Diagramas C4 — LinkAnvil
+
+</div>
+
 
 Este documento provee la notación visual técnica bajo el estándar C4 Model, detallando la interacción de contenedores y el flujo distribuido de la arquitectura event-driven.
 

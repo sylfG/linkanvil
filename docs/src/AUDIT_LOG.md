@@ -1,4 +1,12 @@
-# 📋 AUDIT LOG — [NOMBRE DEL PROYECTO]
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+# 📋 AUDIT LOG — Linkanvil
+
+</div>
+
 
 <!-- La IA añade una fila por cada fase completada del workflow. No editar manualmente. -->
 

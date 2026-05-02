@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # 🏗️ Arquitectura e Infraestructura — LinkAnvil
+
+</div>
+
 
 Este documento detalla la infraestructura del proyecto **LinkAnvil** basada en Docker Compose, explicando los componentes desplegados, sus responsabilidades, las decisiones de arquitectura tomadas durante el desarrollo y las ventajas de cada elección.
 

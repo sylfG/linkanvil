@@ -1,5 +1,11 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # Documento Maestro de Entrada (Contexto Fuente)
 
+</div>
 Este archivo es la entrada principal del workflow.
 
 Objetivo:

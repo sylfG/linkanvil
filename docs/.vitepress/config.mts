@@ -18,6 +18,8 @@ export default withMermaid(
     },
 
     themeConfig: {
+      logo: { light: '/logo-light.png', dark: '/logo-dark.png' },
+      siteTitle: 'LinkAnvil',
       socialLinks: [
         { icon: 'github', link: 'https://github.com/sylfG/linkanvil' }
       ],

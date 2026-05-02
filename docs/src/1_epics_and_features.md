@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # 📋 Épicas y Features — LinkAnvil
+
+</div>
+
 
 **Proyecto:** LinkAnvil
 **Fecha:** 2026-04-09

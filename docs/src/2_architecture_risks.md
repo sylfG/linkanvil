@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # 🏗️ Arquitectura y Riesgos (Fase 2) — LinkAnvil
+
+</div>
+
 
 Este documento define los Requisitos No Funcionales (NFRs) y el modelado de amenazas (STRIDE) basados en la arquitectura orientada a eventos del proyecto LinkAnvil.
 

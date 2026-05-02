@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # 🌊 Ejemplo Completo de Flujo: Ingestión, Relaciones y Obsolescencia
+
+</div>
+
 
 Para ilustrar cómo los 21 contenedores del **LinkAnvil** interactúan en tiempo real, presentaremos un escenario de uso diario.
 

@@ -1,4 +1,11 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 # Visión General del Proyecto: "LinkAnvil"
+
+</div>
 
 El proyecto "LinkAnvil" presenta una propuesta de valor excepcional: transformar el caos de la información en conocimiento accionable. A través de una Arquitectura Orientada a Eventos (Event-Driven) profundamente desacoplada y la optimización en el uso de modelos de inteligencia artificial, el sistema se erige como una plataforma resiliente, ultra rápida y altamente rentable, capaz de escalar operativamente a miles de usuarios sin disparar costes.
 

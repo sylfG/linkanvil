@@ -1,4 +1,12 @@
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
 ## 🔌 MCPs para Claude Code
+
+</div>
+
 
 Los 11 MCP servers del proyecto están configurados en .mcp.json (versionado en el repo). Claude Code los carga automáticamente en modo project gracias a .claude/settings.json.
 

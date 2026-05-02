@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./LinkAnvil_dark.png" alt="Logo" width="80" height="80">
+  <img src="./docs/public/logo-dark.png" alt="Logo" width="80" height="80">
 
   <h1 align="center">🧠 LinkAnvil: Autonomous Knowledge Extractor</h1>
 

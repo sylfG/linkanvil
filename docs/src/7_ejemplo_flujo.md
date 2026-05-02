@@ -32,11 +32,22 @@ A lo largo de este viaje, veremos el flujo síncrono (respuesta inmediata al usu
 
 ### 3. Almacenamiento (Estado y Vectores — Patrón Outbox)
 
-1. **`cerebro-postgres`**: El scraper guarda el recurso en `cerebro.recursos` y un evento `embedding.requerido` en `cerebro.outbox_eventos` en la **misma transacción**. Estado inicial: `'procesando'`.
-2. **`cerebro-outbox`**: Lee `outbox_eventos` con estado `pendiente` y publica en la cola `q.embeddings`. Marca el evento como `procesado`.
-3. **`cerebro-embedder`**: Consume `q.embeddings`. Llama a LiteLLM para generar el embedding numérico del texto.
-4. **`cerebro-qdrant`**: El vector generado se inyecta en la colección principal asociado al UUID del recurso y al `tenant_id`.
-5. **`cerebro-postgres`**: El embedder actualiza `recursos.estado = 'activo'` y `embedding_version = 1`.
+1. **`cerebro-scraper` consulta `cerebro.recursos` por `url_hash`**: si la URL ya existe globalmente y está fresca (estado='activo', `fecha_caducidad - now() > margen`), salta el scraping y va al paso de **reuso** (ver Fase 1.b). Si no existe o está caducada, sigue el flujo normal.
+2. **`cerebro-postgres`**: El scraper guarda el recurso global en `cerebro.recursos` (sin `tenant_id`, deduplicado por `url_hash`), inserta el link `cerebro.usuario_recursos(tenant_id, recurso_id)` y un evento `recurso.procesado` en `cerebro.outbox_eventos`, todo en la **misma transacción**. Estado inicial: `'procesando'`.
+3. **`cerebro-outbox`**: Lee `outbox_eventos` con estado `pendiente` y publica en la cola `q.embeddings`. Marca el evento como `procesado`.
+4. **`cerebro-embedder`**: Consume `q.embeddings`. Llama a LiteLLM para generar el embedding numérico del texto.
+5. **`cerebro-qdrant`**: El vector se inyecta con `point_id = uuid5(ns, "<recurso_id>:<tenant_id>")` y payload con `tenant_id`, `recurso_id`, url, título, categoría, volatilidad.
+6. **`cerebro-postgres`**: El embedder actualiza `recursos.estado = 'activo'` y `embedding_version = 1`.
+
+### 1.b Reuso cross-tenant (URL ya conocida globalmente)
+
+Si la URL ya fue procesada por otro usuario y sigue fresca, el scraper:
+
+1. Asocia el recurso global al nuevo tenant: `INSERT INTO usuario_recursos (tenant_id, recurso_id) ON CONFLICT DO NOTHING`.
+2. Emite un evento `recurso.reusado` en outbox.
+3. El embedder, al consumirlo, hace `scroll filter recurso_id` en Qdrant para localizar un punto existente y crea uno nuevo con el mismo vector y el `tenant_id` actualizado — **sin llamada a LiteLLM**, porque el embedding depende solo del contenido público.
+
+Resultado: alta visibilidad inmediata en la KB del segundo usuario sin coste de scraping ni de embedder.
 
 ```mermaid
 sequenceDiagram
@@ -63,20 +74,30 @@ sequenceDiagram
 
     Note over RMQ,SC: Flujo Asíncrono en Background
     SC->>RMQ: consume evento
-    SC->>SC: Scraping (estático o Playwright)
-    SC->>LLM: analiza texto → JSON estructurado
-    LLM-->>SC: {titulo, resumen, tags, volatilidad}
-    SC->>PG: BEGIN TRANSACTION\nINSERT recursos (estado=procesando)\nINSERT outbox_eventos\nCOMMIT
+    SC->>PG: SELECT recursos WHERE url_hash=? (¿conocido globalmente?)
+    alt URL nueva o caducada
+        SC->>SC: Scraping (estático o Playwright)
+        SC->>LLM: analiza texto → JSON estructurado
+        LLM-->>SC: {titulo, resumen, tags, volatilidad}
+        SC->>PG: BEGIN TRANSACTION\nUPSERT recursos (estado=procesando)\nINSERT usuario_recursos (tenant_id, recurso_id)\nINSERT outbox_eventos 'recurso.procesado'\nCOMMIT
+    else URL ya conocida y fresca
+        SC->>PG: BEGIN TRANSACTION\nINSERT usuario_recursos (tenant_id, recurso_id)\nINSERT outbox_eventos 'recurso.reusado'\nCOMMIT
+    end
 
     OB->>PG: SELECT outbox_eventos WHERE estado=pendiente
     OB->>RMQ: publish q.embeddings
     OB->>PG: UPDATE outbox_eventos SET estado=procesado
 
     EM->>RMQ: consume q.embeddings
-    EM->>LLM: POST /v1/embeddings
-    LLM-->>EM: Vector [0.12, -0.45, ...]
-    EM->>Qdrant: upsert vector + {tenant_id}
-    EM->>PG: UPDATE recursos SET estado=activo
+    alt evento_tipo = 'recurso.procesado'
+        EM->>LLM: POST /v1/embeddings
+        LLM-->>EM: Vector [0.12, -0.45, ...]
+        EM->>Qdrant: upsert point uuid5(recurso_id:tenant_id) + payload
+        EM->>PG: UPDATE recursos SET estado=activo
+    else evento_tipo = 'recurso.reusado'
+        EM->>Qdrant: scroll filter recurso_id → vector existente
+        EM->>Qdrant: PUT point con vector copiado (sin embedder)
+    end
 ```
 
 ---

@@ -183,7 +183,7 @@ graph TD
 #### `cerebro-embedder`
 **Código:** `src/data/embedder_worker.py` | **Límites:** 768 MB RAM, 1 CPU
 
-**Qué hace:** Consume la cola `q.embeddings` en RabbitMQ. Para cada evento, llama a LiteLLM para generar el embedding numérico del recurso e inserta el vector en Qdrant con el `tenant_id` como filtro de aislamiento. Actualiza el campo `embedding_version` en Postgres.
+**Qué hace:** Consume la cola `q.embeddings` en RabbitMQ. Para eventos `recurso.procesado` (URL nueva), llama a LiteLLM para generar el embedding e inserta un punto nuevo en Qdrant con `point_id = uuid5(ns, "<recurso_id>:<tenant_id>")`. Para eventos `recurso.reusado` (URL ya conocida globalmente), localiza un punto existente del mismo `recurso_id` (cualquier tenant), copia el vector y crea el punto del nuevo tenant sin llamar a LiteLLM — el embedding depende solo del contenido público.
 
 **Por qué esta decisión:** Separar la generación de embeddings del scraping permite reintentar solo la vectorización sin repetir el scraping costoso. Si Qdrant o LiteLLM están lentos, el backlog de embeddings crece sin bloquear la ingesta de nuevas URLs.
 
@@ -237,12 +237,13 @@ graph TD
 **Qué hace:** Base de datos relacional central. Aloja el schema `cerebro` (tablas propias de LinkAnvil), el schema `n8n` (workflows del orquestador) y usa el schema `public` exclusivamente para las tablas de LiteLLM/Prisma.
 
 **Tablas principales en `cerebro`:**
-- `recursos` — URLs capturadas con metadatos, tags JSONB, estado (activo/cuarentena/expirado), volatilidad
-- `outbox_eventos` — eventos pendientes de publicar en RabbitMQ (Patrón Outbox)
+- `recursos` — **tabla global** (sin `tenant_id`): una fila por URL única (deduplicada por `url_hash`) con metadatos, tags JSONB, estado (activo/cuarentena/expirado/procesando), volatilidad, fecha de caducidad
+- `usuario_recursos(tenant_id, recurso_id)` — pivote per-tenant con RLS: registra qué recursos globales tiene cada usuario en su KB. Aquí vive el aislamiento multi-tenant
+- `outbox_eventos` — eventos pendientes de publicar en RabbitMQ (Patrón Outbox); incluye `recurso.procesado` (alta nueva) y `recurso.reusado` (alta de un recurso ya procesado por otro tenant)
 - `usuarios` — cuentas de la plataforma con `tenant_id` y hash de contraseña
 - `sesiones_chat` — sesiones de conversación persistidas (antes en localStorage, ahora en Postgres)
 - `mensajes_chat` — mensajes individuales con `seq BIGSERIAL` para orden determinista dentro del mismo timestamp
-- `relaciones` — grafo semántico: relaciones bidireccionales entre recursos
+- `grafo_relaciones` — grafo semántico per-tenant: relaciones bidireccionales entre recursos del corpus de un mismo usuario
 - `schema_migrations` — registro de migraciones aplicadas (idempotencia)
 
 **Por qué el schema `cerebro`:** LiteLLM usa Prisma que corre `schema_sync` al arrancar y borra cualquier tabla que no conozca en `public`. Cuando LinkAnvil tenía sus tablas en `public`, cada restart de LiteLLM las destruía. El schema `cerebro` es invisible para Prisma y sus tablas sobreviven cualquier reinicio de LiteLLM.
@@ -281,7 +282,9 @@ work_mem=8MB            -- memoria por operación de sort/hash
 #### `cerebro-qdrant`
 **Imagen:** `qdrant/qdrant:v1.17.1` | **Puerto:** 6333 | **Límites:** 2 GB RAM, 2 CPUs
 
-**Qué hace:** Motor de búsqueda vectorial. Almacena los embeddings (vectores numéricos de alta dimensionalidad) generados por `cerebro-embedder`. Cada vector incluye el `tenant_id` en su payload para aislamiento. Las búsquedas RAG consultan Qdrant con similitud coseno para recuperar los recursos más semánticamente relevantes a la pregunta del usuario.
+**Qué hace:** Motor de búsqueda vectorial. Almacena los embeddings (vectores numéricos de alta dimensionalidad) generados por `cerebro-embedder`. Cada punto representa un par `(recurso_id, tenant_id)` con `point_id = uuid5(ns, "<recurso_id>:<tenant_id>")` y payload con `tenant_id`, `recurso_id`, `url`, `title`, `category`, `volatility`. Las búsquedas RAG filtran por `tenant_id` en la misma operación de búsqueda.
+
+**Reuso del vector entre tenants:** el embedding depende solo del contenido público de la URL, no del usuario. Cuando un segundo tenant añade una URL ya conocida, el embedder no llama a LiteLLM: localiza el punto existente vía `scroll filter recurso_id` y crea un punto nuevo con el mismo vector y el `tenant_id` actualizado.
 
 **Por qué Qdrant sobre PostgreSQL pgvector:** Qdrant está optimizado específicamente para búsqueda vectorial con índices HNSW y ofrece filtrado por payload en la misma operación de búsqueda (el `tenant_id` se filtra sin hacer un JOIN separado). Qdrant también expone una API de snapshots que `scripts/backup.sh` usa para backups automáticos.
 

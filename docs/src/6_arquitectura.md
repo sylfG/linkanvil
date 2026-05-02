@@ -157,14 +157,23 @@ sequenceDiagram
         IG->>MQ: publish q.url.ingesta
         IG-->>U: 202 Accepted
         MQ->>SC: consume mensaje
-        SC->>LLM: analiza texto → JSON estructurado
-        LLM-->>SC: {titulo, resumen, tags, volatilidad}
-        SC->>PG: INSERT recursos + INSERT outbox_eventos
-        Note over PG: Transacción atómica — Outbox Pattern
-        MQ->>EM: consume q.embeddings (vía outbox)
-        EM->>LLM: POST /v1/embeddings
-        LLM-->>EM: vector [0.12, -0.45, ...]
-        EM->>QD: upsert vector + tenant_id payload
+        SC->>PG: SELECT recursos WHERE url_hash=? (¿existe globalmente?)
+        alt URL nueva o caducada
+            SC->>LLM: analiza texto → JSON estructurado
+            LLM-->>SC: {titulo, resumen, tags, volatilidad}
+            SC->>PG: UPSERT recursos + INSERT usuario_recursos + outbox 'recurso.procesado'
+            Note over PG: Transacción atómica — Outbox Pattern
+            MQ->>EM: consume 'recurso.procesado'
+            EM->>LLM: POST /v1/embeddings
+            LLM-->>EM: vector [0.12, -0.45, ...]
+            EM->>QD: upsert point uuid5(recurso_id:tenant_id) + payload
+        else URL ya conocida y fresca (otro tenant la procesó)
+            SC->>PG: INSERT usuario_recursos + outbox 'recurso.reusado'
+            Note over SC: salta scrape + LLM
+            MQ->>EM: consume 'recurso.reusado'
+            EM->>QD: scroll filter recurso_id → vector existente
+            EM->>QD: PUT point con vector copiado (sin embedder)
+        end
     end
 ```
 
@@ -243,14 +252,14 @@ LinkAnvil usa intencionalmente dos sistemas de persistencia complementarios:
 **PostgreSQL — Cerebro Lógico y Transaccional:**
 - Fuente única de verdad estructurada: URLs, metadatos, relaciones, histórico
 - Garantías ACID: ningún dato se pierde ni queda en estado inconsistente
-- Multi-tenancy con Row-Level Security (RLS) por `tenant_id`
+- **Modelo recurso global + pivote per-tenant:** la tabla `recursos` es global (deduplicada por `url_hash`); la asociación usuario↔recurso vive en `usuario_recursos(tenant_id, recurso_id)`, donde aplica la RLS. Si dos usuarios suben la misma URL, el contenido se procesa una vez y se reusa; cada uno mantiene su propia entrada en la pivote.
 - Patrón Outbox para consistencia eventual de eventos asíncronos
 
 **Qdrant — Cerebro Semántico e Intuitivo:**
 - Exclusivamente almacena vectores matemáticos (embeddings) de alta dimensionalidad
 - Búsquedas por similitud coseno (HNSW) en milisegundos
 - Encuentra recursos "semánticamente afines" aunque no compartan palabras exactas
-- Filtrado por `tenant_id` en la misma operación de búsqueda (sin JOIN adicional)
+- **Un punto por `(recurso_id, tenant_id)`** con `point_id = uuid5(ns, "<recurso_id>:<tenant_id>")`. El payload incluye `tenant_id` y `recurso_id` separados, así el filtrado per-tenant se hace sin JOIN adicional. Cuando un segundo tenant reusa una URL, su punto se crea **copiando el vector** del primero (sin re-embedding) y solo se varía el payload.
 
 Esta arquitectura de doble cerebro permite RAG avanzado: la intuición difusa de la IA (Qdrant) protegida por la seguridad transaccional del motor relacional (Postgres).
 
@@ -345,7 +354,8 @@ Todas las tablas de LinkAnvil residen en el schema `cerebro`:
 CREATE SCHEMA IF NOT EXISTS cerebro;
 SET search_path TO cerebro, public;
 
-CREATE TABLE IF NOT EXISTS recursos (...);
+CREATE TABLE IF NOT EXISTS recursos (...);          -- global, sin tenant_id
+CREATE TABLE IF NOT EXISTS usuario_recursos (...);  -- pivote per-tenant con RLS
 CREATE TABLE IF NOT EXISTS sesiones_chat (...);
 -- etc.
 ```

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/tandpfun/skill-icons/65dea6c4eaca7da319e552c09f01fa9b14b0870d/icons/Docker.svg" alt="Logo" width="80" height="80">
+  <img src="./LinkAnvil_dark.png" alt="Logo" width="80" height="80">
 
   <h1 align="center">🧠 LinkAnvil: Autonomous Knowledge Extractor</h1>
 

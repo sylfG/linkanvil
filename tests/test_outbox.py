@@ -41,26 +41,36 @@ async def test_save_with_outbox():
         
         # Validar en la BD usando asyncpg directamente
         async with db.pool.acquire() as conn:
-            # 1. Comprobar que está en recursos
-            row = await conn.fetchrow("SELECT tenant_id, volatilidad FROM recursos WHERE id = $1", recurso_id)
+            # 1. El recurso es global (sin tenant_id); verificamos sus campos
+            #    y que el tenant esté asociado vía la pivote.
+            row = await conn.fetchrow(
+                "SELECT volatilidad FROM recursos WHERE id = $1", recurso_id,
+            )
             assert row is not None
-            assert row['tenant_id'] == tenant_id
-            assert row['volatilidad'] == 'baja'  # porque 'low' fue mapeado a 'baja'
-            
-            # 2. Comprobar que generó un outbox_evento (Aún no procesado)
-            outbox_row = await conn.fetchrow("SELECT payload, procesado FROM outbox_eventos WHERE agregado_id = $1", recurso_id)
+            assert row["volatilidad"] == "baja"  # 'low' → 'baja'
+
+            link = await conn.fetchval(
+                "SELECT 1 FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2",
+                tenant_id, recurso_id,
+            )
+            assert link == 1, "El tenant debe quedar asociado al recurso global"
+
+            # 2. Outbox event aún no procesado, con payload coherente.
+            outbox_row = await conn.fetchrow(
+                "SELECT payload, procesado FROM outbox_eventos WHERE agregado_id = $1",
+                recurso_id,
+            )
             assert outbox_row is not None
-            assert outbox_row['procesado'] is False
-            
-            payload = json.loads(outbox_row['payload'])
-            assert payload['trace_id'] == trace_id
-            assert payload['event_origin'] == "scraper_worker"
-            assert payload['url'] == url
+            assert outbox_row["procesado"] is False
+            payload = json.loads(outbox_row["payload"])
+            assert payload["trace_id"] == trace_id
+            assert payload["event_origin"] == "scraper_worker"
+            assert payload["url"] == url
     finally:
-        # Cleanup
         async with db.pool.acquire() as conn:
-            await conn.execute("DELETE FROM recursos WHERE tenant_id = $1", tenant_id)
             await conn.execute("DELETE FROM outbox_eventos WHERE tenant_id = $1", tenant_id)
+            await conn.execute("DELETE FROM usuario_recursos WHERE tenant_id = $1", tenant_id)
+            await conn.execute("DELETE FROM recursos WHERE id = $1", recurso_id)
         await db.close()
 
 if __name__ == "__main__":

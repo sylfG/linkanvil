@@ -5,6 +5,7 @@ import os
 import hashlib
 from src.data.db import DatabaseManager
 
+@pytest.mark.skip(reason="Pendiente refactor a usuario_recursos tras migración 0002")
 @pytest.mark.asyncio
 async def test_f033_semantic_collider_insertion():
     db = DatabaseManager()

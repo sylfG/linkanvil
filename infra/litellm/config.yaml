@@ -1,5 +1,5 @@
 ﻿# LiteLLM Gateway - Cerebro
-# Estrategia: Lite + Pro con modelos de OpenRouter
+# Estrategia: Lite + Pro usando modelos gratuitos de NVIDIA NIM Preview
 # Routing: least-busy (menos ocupado primero)
 # Fallback automático al siguiente modelo si da error
 
@@ -7,30 +7,36 @@ model_list:
   # ---- GRUPO cerebro-lite: Modelos ligeros y rápidos ----
   - model_name: cerebro-lite
     litellm_params:
-      model: openrouter/anthropic/claude-haiku-4.5
-      api_key: os.environ/OPENROUTER_API_KEY
+      model: openai/meta/llama-3.1-8b-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
 
   - model_name: cerebro-lite
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-flash
-      api_key: os.environ/OPENROUTER_API_KEY
+      model: openai/mistralai/mixtral-8x7b-instruct-v0.1
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
 
   # ---- GRUPO cerebro-pro: Modelos grandes para razonamiento complejo ----
   - model_name: cerebro-pro
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
-      api_key: os.environ/OPENROUTER_API_KEY
+      model: openai/nvidia/llama-3.1-nemotron-70b-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
 
   - model_name: cerebro-pro
     litellm_params:
-      model: openrouter/deepseek/deepseek-r1
-      api_key: os.environ/OPENROUTER_API_KEY
+      model: openai/meta/llama-3.3-70b-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
 
-  # Embeddings - Qwen3 Embedding 8B
+  # Embeddings - NVIDIA
   - model_name: cerebro-embeddings
     litellm_params:
-      model: openrouter/qwen/qwen3-embedding-8b
-      api_key: os.environ/OPENROUTER_API_KEY
+      model: openai/nvidia/nv-embedqa-e5-v5
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: os.environ/NVIDIA_API_KEY
+      encoding_format: "float"
 
 litellm_settings:
   num_retries: 3

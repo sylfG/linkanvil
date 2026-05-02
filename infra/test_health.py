@@ -218,7 +218,7 @@ def check_qdrant() -> list[Result]:
 
 
 def check_litellm() -> list[Result]:
-    code, body = http_get("http://localhost:4000/health")
+    code, body = http_get("http://localhost:4000/health/readiness")
     ok = code == 200
     results = [Result("LiteLLM Gateway /health", ok, f"HTTP {code}" if code else "Sin conexión (normal sin API keys)", "http://localhost:4000")]
 

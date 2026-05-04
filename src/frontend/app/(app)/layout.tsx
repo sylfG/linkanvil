@@ -4,7 +4,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Brain, MessageSquare, Link2, BookOpen,
+  Brain, MessageSquare, Link2, BookOpen, AlertTriangle,
   LogOut, Menu, X, Plus, Trash2,
   User, Bot, CheckCircle2, AlertCircle, Loader2, Key, Copy, Check,
 } from "lucide-react";
@@ -12,10 +12,18 @@ import { useAuthStore } from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
 
-const NAV = [
+type NavItem = {
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  badge?: "quarantine";
+};
+
+const NAV: NavItem[] = [
   { href: "/", icon: MessageSquare, label: "Chat" },
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
+  { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
 ];
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
@@ -148,6 +156,35 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   const { user, clearAuth, token } = useAuthStore();
   const { sessions, activeId, setActive, createSession, deleteSession } = useChatStore();
   const [profileOpen, setProfileOpen] = useState(false);
+  const [quarantineCount, setQuarantineCount] = useState(0);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const res = await apiCall<{ count: number }>(
+          "/resources/quarantine?count_only=true",
+          {},
+          token,
+        );
+        if (!cancelled) setQuarantineCount(res.count);
+      } catch {
+        /* el badge es opcional, no rompemos el sidebar si la API falla */
+      }
+    }
+    refresh();
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    const interval = setInterval(refresh, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [token, pathname]);
 
   async function newChat() {
     if (!token) return;
@@ -169,9 +206,10 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
       {/* Scrollable nav + history */}
       <div className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
         {/* Main nav */}
-        {NAV.map(({ href, icon: Icon, label }) => {
+        {NAV.map(({ href, icon: Icon, label, badge }) => {
           const active = pathname === href && href !== "/";
           const chatActive = href === "/" && (pathname === "/" || pathname === "");
+          const showBadge = badge === "quarantine" && quarantineCount > 0;
           return (
             <Link
               key={href}
@@ -184,7 +222,12 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
               }`}
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {showBadge && (
+                <span className="ml-auto bg-amber-700/40 text-amber-200 border border-amber-600/40 text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">
+                  {quarantineCount > 99 ? "99+" : quarantineCount}
+                </span>
+              )}
             </Link>
           );
         })}

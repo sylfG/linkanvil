@@ -522,6 +522,29 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+# ---------------------------------------------------------------------------
+# Admin: audit-cron trigger (n8n / cron externo)
+# ---------------------------------------------------------------------------
+
+AUDIT_CRON_TOKEN = os.getenv("AUDIT_CRON_TOKEN", "")
+
+
+@app.post("/admin/audit-cron")
+async def trigger_audit_cron(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
+    """Dispara la auditoría temporal en dos fases (caducidad → cuarentena →
+    expirado). Pensado para un workflow n8n cron diario; se autentica por
+    header `X-Admin-Token` contra la env `AUDIT_CRON_TOKEN`."""
+    if not AUDIT_CRON_TOKEN:
+        raise HTTPException(503, "AUDIT_CRON_TOKEN no configurado")
+    if x_admin_token != AUDIT_CRON_TOKEN:
+        raise HTTPException(401, "Token administrativo inválido")
+    # Import diferido: el cron toca DatabaseManager (asyncpg directo) en
+    # vez del pool de la API, así que no compartimos conexiones.
+    from src.data.audit_cron import run_audit_cron
+    result = await run_audit_cron()
+    return {"status": "ok", **result}
+
+
 @app.post("/admin/cf-cookies")
 async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
     cookies = [{"name": "cf_clearance", "value": req.cf_clearance,

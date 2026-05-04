@@ -1,0 +1,111 @@
+{
+  "name": "linkanvil — audit cron diario",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trigger-cron",
+      "name": "Cron 03:00 diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/admin/audit-cron",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Admin-Token",
+              "value": "={{$env.AUDIT_CRON_TOKEN}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-audit-cron",
+      "name": "POST /admin/audit-cron",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.statusCode}}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-failure",
+      "name": "Status != 200",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "level": "error",
+        "message": "=audit-cron falló: status={{$json.statusCode}} body={{JSON.stringify($json.body)}}"
+      },
+      "id": "log-failure",
+      "name": "Log error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 220]
+    }
+  ],
+  "connections": {
+    "Cron 03:00 diario": {
+      "main": [[{"node": "POST /admin/audit-cron", "type": "main", "index": 0}]]
+    },
+    "POST /admin/audit-cron": {
+      "main": [[{"node": "Status != 200", "type": "main", "index": 0}]]
+    },
+    "Status != 200": {
+      "main": [
+        [{"node": "Log error", "type": "main", "index": 0}],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": ["linkanvil", "obsolescencia"]
+}

@@ -1,77 +1,142 @@
 import asyncio
-import logging
-import uuid
 import json
-from datetime import datetime
+import logging
+import os
+import uuid
+
 from src.data.db import DatabaseManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def run_audit_cron():
-    """
-    F-05.1 — Auditoría Temporal Relacional (Cron SQL ultrarrápido)
-    Identifica recursos cuya fecha_caducidad ha sido superada y los marca como obsoletos,
-    ahorrando tiempo/costo de LLM.
+# Período de gracia tras el cual un recurso en cuarentena se expira de
+# verdad (F-05.2). Permite al usuario rescatar antes de la expiración.
+GRACE_PERIOD_DAYS = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))
+
+
+async def _emit_outbox_per_tenant(
+    conn,
+    rows,
+    evento_tipo: str,
+    motivo: str,
+    trace_id: str,
+):
+    """Emite un evento outbox por cada tenant que tenga linkeado el recurso."""
+    for row in rows:
+        tenants = await conn.fetch(
+            "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+            row["id"],
+        )
+        for t in tenants:
+            payload = {
+                "event_origin": "audit_cron",
+                "trace_id": trace_id,
+                "recurso_id": str(row["id"]),
+                "url": row["url"],
+                "motivo": motivo,
+            }
+            await conn.execute(
+                """
+                INSERT INTO outbox_eventos (
+                    tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
+                ) VALUES (
+                    $1, 'recurso', $2, $3, $4::jsonb
+                )
+                """,
+                t["tenant_id"], row["id"], evento_tipo, json.dumps(payload),
+            )
+
+
+async def run_audit_cron() -> dict:
+    """F-05.1 + F-05.2 — Auditoría temporal en dos fases.
+
+    Fase A: recursos `activo` con `fecha_caducidad` superada → `cuarentena`
+            con motivo `'caducidad'` y un período de gracia configurable.
+    Fase B: recursos `cuarentena` cuyo `quarantine_grace_until` ya pasó →
+            `expirado` (limpieza definitiva).
+
+    Idempotente: ambas UPDATEs filtran por estado actual, así que rerun
+    no produce transiciones espurias. Devuelve los contadores para que
+    el endpoint admin pueda reportarlos.
     """
     logger.info("Iniciando tarea de auditoría temporal relacional...")
     db = DatabaseManager()
     await db.connect()
-    
+
     trace_id = str(uuid.uuid4())
-    
+    cuarentenados = 0
+    expirados = 0
+
     try:
         async with db.pool.acquire() as conn:
-            # 1. Marcamos los recursos cuya fecha_caducidad ha expirado.
-            # `recursos` es global, así que el cambio aplica a todos los tenants
-            # que tengan la URL en su KB.
-            rows = await conn.fetch(
+            # ----------------------------------------------------------------
+            # Fase A — caducidad → cuarentena
+            # ----------------------------------------------------------------
+            cuarentena_rows = await conn.fetch(
+                """
+                UPDATE recursos
+                SET estado = 'cuarentena',
+                    quarantined_at = NOW(),
+                    quarantine_reason = 'caducidad',
+                    quarantine_grace_until = (NOW() + ($1::int * INTERVAL '1 day'))::DATE,
+                    updated_at = NOW()
+                WHERE estado = 'activo'
+                  AND fecha_caducidad IS NOT NULL
+                  AND fecha_caducidad <= NOW()::DATE
+                RETURNING id, url
+                """,
+                GRACE_PERIOD_DAYS,
+            )
+            cuarentenados = len(cuarentena_rows)
+            if cuarentena_rows:
+                logger.info(
+                    f"[{trace_id}] {cuarentenados} recursos movidos a cuarentena."
+                )
+                await _emit_outbox_per_tenant(
+                    conn, cuarentena_rows, "recurso.cuarentena", "caducidad", trace_id,
+                )
+
+            # ----------------------------------------------------------------
+            # Fase B — gracia agotada → expirado
+            # ----------------------------------------------------------------
+            expira_rows = await conn.fetch(
                 """
                 UPDATE recursos
                 SET estado = 'expirado',
                     updated_at = NOW()
-                WHERE fecha_caducidad <= NOW()
-                  AND estado != 'expirado'
+                WHERE estado = 'cuarentena'
+                  AND quarantine_grace_until IS NOT NULL
+                  AND quarantine_grace_until <= NOW()::DATE
                 RETURNING id, url
                 """
             )
+            expirados = len(expira_rows)
+            if expira_rows:
+                logger.info(
+                    f"[{trace_id}] {expirados} recursos expirados tras período de gracia."
+                )
+                await _emit_outbox_per_tenant(
+                    conn, expira_rows, "recurso.expirado", "gracia_agotada", trace_id,
+                )
 
-            if rows:
-                logger.info(f"[{trace_id}] {len(rows)} recursos marcados como expirados.")
+            if not cuarentena_rows and not expira_rows:
+                logger.info(
+                    f"[{trace_id}] Auditoría sin transiciones (BD al día)."
+                )
 
-                # 2. Para cada recurso, emitir un evento outbox por cada tenant que
-                # lo tiene linkeado, así el flujo de notificaciones llega a cada usuario.
-                for row in rows:
-                    tenants = await conn.fetch(
-                        "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
-                        row['id'],
-                    )
-                    for t in tenants:
-                        outbox_payload = {
-                            "event_origin": "audit_cron",
-                            "trace_id": trace_id,
-                            "recurso_id": str(row['id']),
-                            "url": row['url'],
-                            "motivo": "caducidad_superada",
-                        }
-                        await conn.execute(
-                            """
-                            INSERT INTO outbox_eventos (
-                                tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
-                            ) VALUES (
-                                $1, 'recurso', $2, 'recurso.expirado', $3::jsonb
-                            )
-                            """,
-                            t['tenant_id'], row['id'], json.dumps(outbox_payload),
-                        )
-            else:
-                logger.info(f"[{trace_id}] No se encontraron recursos caducados activos en esta ejecución.")
-                
     except Exception as e:
         logger.error(f"[{trace_id}] Error durante la auditoría cron: {e}")
+        raise
     finally:
         await db.close()
         logger.info("Finalizada la tarea de auditoría.")
+
+    return {
+        "trace_id": trace_id,
+        "cuarentenados": cuarentenados,
+        "expirados": expirados,
+    }
+
 
 if __name__ == "__main__":
     asyncio.run(run_audit_cron())

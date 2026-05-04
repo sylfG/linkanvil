@@ -287,14 +287,47 @@ class DatabaseManager:
                         tenant_id, c["recurso_destino"], recurso_origen, c["similitud"], tipo_inverso
                     )
 
-                    # Si es obsolescencia, marcamos el destino (antiguo) como expirado.
+                    # Si es obsolescencia, mandamos el destino (antiguo) a cuarentena
+                    # con período de gracia, no a 'expirado' directamente: el usuario
+                    # debe poder rescatar antes de la limpieza definitiva (F-05.2).
                     # `recursos` es global → no se filtra por tenant_id.
                     if tipo_relacion in ["VUELVE_OBSOLETO", "CONTRADICE"]:
-                        await conn.execute(
+                        grace_days = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))
+                        moved = await conn.fetchrow(
                             """
                             UPDATE recursos
-                            SET estado = 'expirado', updated_at = NOW()
-                            WHERE id = $1::uuid
+                            SET estado = 'cuarentena',
+                                quarantined_at = NOW(),
+                                quarantine_reason = 'colision_semantica',
+                                quarantine_grace_until = (NOW() + ($2::int * INTERVAL '1 day'))::DATE,
+                                updated_at = NOW()
+                            WHERE id = $1::uuid AND estado = 'activo'
+                            RETURNING id, url
                             """,
-                            c["recurso_destino"],
+                            c["recurso_destino"], grace_days,
                         )
+                        if moved:
+                            payload = {
+                                "event_origin": "semantic_collider",
+                                "recurso_id": str(moved["id"]),
+                                "url": moved["url"],
+                                "motivo": "colision_semantica",
+                                "tipo_relacion": tipo_relacion,
+                                "recurso_origen": recurso_origen,
+                            }
+                            tenants = await conn.fetch(
+                                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+                                moved["id"],
+                            )
+                            for t in tenants:
+                                await conn.execute(
+                                    """
+                                    INSERT INTO outbox_eventos (
+                                        tenant_id, agregado_tipo, agregado_id,
+                                        evento_tipo, payload
+                                    ) VALUES (
+                                        $1, 'recurso', $2, 'recurso.cuarentena', $3::jsonb
+                                    )
+                                    """,
+                                    t["tenant_id"], moved["id"], json.dumps(payload),
+                                )

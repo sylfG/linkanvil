@@ -291,6 +291,83 @@ async def get_resources(
 
 
 # ---------------------------------------------------------------------------
+# Bandeja de cuarentena (F-05.2)
+# ---------------------------------------------------------------------------
+
+@app.get("/resources/quarantine")
+async def list_quarantine(
+    count_only: bool = False,
+    limit: int = Query(100, gt=0, le=500),
+    user=Depends(get_current_user),
+):
+    if count_only:
+        return {"count": await db.count_quarantine(user["tenant_id"])}
+    items = await db.list_quarantine(user["tenant_id"], limit)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/resources/{recurso_id}/rescue")
+async def rescue_resource(
+    recurso_id: str,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    row = await db.rescue_recurso(user["tenant_id"], recurso_id)
+    if not row:
+        raise HTTPException(404, "Recurso no encontrado o no está en cuarentena")
+    return {"status": "rescued", **{k: (v.isoformat() if hasattr(v, "isoformat") else str(v))
+                                     for k, v in row.items()}}
+
+
+@app.post("/resources/{recurso_id}/expire")
+async def expire_resource(
+    recurso_id: str,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    row = await db.expire_recurso(user["tenant_id"], recurso_id)
+    if not row:
+        raise HTTPException(404, "Recurso no encontrado")
+    return {"status": "expired", "id": str(row["id"]), "url": row["url"]}
+
+
+@app.delete("/resources/{recurso_id}")
+async def delete_resource(
+    recurso_id: str,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    result = await db.delete_recurso_for_tenant(user["tenant_id"], recurso_id)
+    if not result:
+        raise HTTPException(404, "Recurso no encontrado")
+    # Si la fila global desapareció, limpiamos también el punto en Qdrant.
+    # Esto vive fuera de la transacción SQL para no acoplar el commit a un
+    # servicio externo: si Qdrant falla, el SQL ya está y un GC posterior
+    # limpiará el punto huérfano.
+    if result["deleted_globally"]:
+        try:
+            await _http.post(
+                f"{QDRANT_URL}/collections/{COLLECTION}/points/delete",
+                json={
+                    "filter": {
+                        "must": [
+                            {"key": "recurso_id", "match": {"value": str(result["id"])}}
+                        ]
+                    }
+                },
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.warning(f"Qdrant cleanup failed for {result['id']}: {e}")
+    return {
+        "status": "deleted",
+        "id": str(result["id"]),
+        "url": result["url"],
+        "deleted_globally": result["deleted_globally"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Ingest (proxy to ingestion-api)
 # ---------------------------------------------------------------------------
 

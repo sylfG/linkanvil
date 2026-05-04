@@ -124,6 +124,190 @@ async def get_active_resource_ids(tenant_id: str, ids: list[str]) -> list[str]:
     return [r["id"] for r in rows]
 
 
+# ── bandeja de cuarentena (F-05.2) ────────────────────────────────────────────
+
+GRACE_PERIOD_DAYS = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))
+
+# Mapa de volatilidad → días de vida útil que el scraper asume cuando un
+# recurso es rescatado de la cuarentena (no recalculamos via LLM aquí).
+_VOLATILITY_DAYS = {"baja": 365, "media": 180, "alta": 60, "dinamica": 30}
+
+
+async def list_quarantine(tenant_id: str, limit: int = 100) -> list[dict]:
+    """Recursos en `cuarentena` linkeados al tenant, con días restantes."""
+    p = await get_pool()
+    rows = await p.fetch(
+        """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria,
+                  r.volatilidad, r.fecha_caducidad,
+                  r.quarantined_at, r.quarantine_reason, r.quarantine_grace_until,
+                  GREATEST(0, (r.quarantine_grace_until - NOW()::DATE))::int AS dias_restantes,
+                  ur.created_at
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = $1 AND r.estado = 'cuarentena'
+           ORDER BY r.quarantine_grace_until ASC NULLS LAST
+           LIMIT $2""",
+        tenant_id, limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def count_quarantine(tenant_id: str) -> int:
+    p = await get_pool()
+    row = await p.fetchrow(
+        """SELECT COUNT(*) AS n
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = $1 AND r.estado = 'cuarentena'""",
+        tenant_id,
+    )
+    return int(row["n"])
+
+
+async def _tenant_owns_recurso(conn, tenant_id: str, recurso_id: str) -> bool:
+    row = await conn.fetchrow(
+        "SELECT 1 FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",
+        tenant_id, recurso_id,
+    )
+    return row is not None
+
+
+async def _emit_outbox(conn, tenant_id: str, recurso_id, evento_tipo: str, payload: dict) -> None:
+    await conn.execute(
+        """INSERT INTO outbox_eventos (
+               tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
+           ) VALUES ($1, 'recurso', $2, $3, $4::jsonb)""",
+        tenant_id, recurso_id, evento_tipo, json.dumps(payload),
+    )
+
+
+async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
+    """Devuelve un recurso a 'activo' y limpia los campos de cuarentena.
+    Recalcula `fecha_caducidad` a partir de la volatilidad para que el cron
+    no lo vuelva a meter inmediatamente. Devuelve None si el tenant no es
+    dueño o el recurso no está en cuarentena."""
+    p = await get_pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
+                return None
+            row = await conn.fetchrow(
+                """UPDATE recursos
+                   SET estado = 'activo',
+                       quarantined_at = NULL,
+                       quarantine_reason = NULL,
+                       quarantine_grace_until = NULL,
+                       fecha_caducidad = (NOW() + (
+                           COALESCE(
+                               CASE volatilidad
+                                   WHEN 'baja' THEN 365
+                                   WHEN 'media' THEN 180
+                                   WHEN 'alta' THEN 60
+                                   WHEN 'dinamica' THEN 30
+                                   ELSE 180
+                               END, 180
+                           ) * INTERVAL '1 day'
+                       ))::DATE,
+                       updated_at = NOW()
+                   WHERE id = $1::uuid AND estado = 'cuarentena'
+                   RETURNING id, url, fecha_caducidad""",
+                recurso_id,
+            )
+            if not row:
+                return None
+            await _emit_outbox(
+                conn, tenant_id, row["id"], "recurso.rescatado",
+                {
+                    "recurso_id": str(row["id"]),
+                    "url": row["url"],
+                    "rescued_by": tenant_id,
+                    "fecha_caducidad": row["fecha_caducidad"].isoformat(),
+                },
+            )
+            return dict(row)
+
+
+async def expire_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
+    """Fast-track: el usuario confirma la expiración antes del fin del período
+    de gracia. Marca como 'expirado' y emite outbox por cada tenant que tenga
+    el recurso linkeado."""
+    p = await get_pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
+                return None
+            row = await conn.fetchrow(
+                """UPDATE recursos
+                   SET estado = 'expirado', updated_at = NOW()
+                   WHERE id = $1::uuid AND estado != 'expirado'
+                   RETURNING id, url""",
+                recurso_id,
+            )
+            if not row:
+                return None
+            tenants = await conn.fetch(
+                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+                row["id"],
+            )
+            for t in tenants:
+                await _emit_outbox(
+                    conn, t["tenant_id"], row["id"], "recurso.expirado",
+                    {
+                        "recurso_id": str(row["id"]),
+                        "url": row["url"],
+                        "motivo": "manual",
+                        "expired_by": tenant_id,
+                    },
+                )
+            return dict(row)
+
+
+async def delete_recurso_for_tenant(tenant_id: str, recurso_id: str) -> Optional[dict]:
+    """Borra el link tenant↔recurso. Si no quedan más tenants linkeados,
+    borra la fila global de `recursos` (la limpieza del punto Qdrant la
+    hace el caller en el endpoint, ya que vive fuera de la transacción).
+
+    Devuelve {'deleted_globally': bool, 'recurso_id', 'url'} o None si el
+    tenant no es dueño."""
+    p = await get_pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
+                return None
+            result = await conn.fetchrow(
+                """SELECT r.id, r.url FROM recursos r WHERE r.id = $1::uuid""",
+                recurso_id,
+            )
+            if not result:
+                return None
+            await conn.execute(
+                "DELETE FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",
+                tenant_id, recurso_id,
+            )
+            remaining = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM usuario_recursos WHERE recurso_id = $1::uuid",
+                recurso_id,
+            )
+            deleted_globally = int(remaining["n"]) == 0
+            if deleted_globally:
+                await conn.execute(
+                    "DELETE FROM recursos WHERE id = $1::uuid", recurso_id,
+                )
+            await _emit_outbox(
+                conn, tenant_id, result["id"], "recurso.eliminado",
+                {
+                    "recurso_id": str(result["id"]),
+                    "url": result["url"],
+                    "deleted_globally": deleted_globally,
+                },
+            )
+            return {
+                "id": result["id"],
+                "url": result["url"],
+                "deleted_globally": deleted_globally,
+            }
+
+
 # ── sesiones_chat ─────────────────────────────────────────────────────────────
 
 async def create_chat_session(tenant_id: str) -> dict:

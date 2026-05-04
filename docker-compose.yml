@@ -154,6 +154,32 @@ services:
       litellm:
         condition: service_started
   # ---------------------------------------------------------------------------
+  # 🗃️  SCHEMA MIGRATIONS — one-shot
+  #    Se ejecuta antes de cerebro-api y aplica las migraciones SQL
+  #    pendientes de infra/postgres/migrations/. Idempotente vía
+  #    cerebro.schema_migrations(version).
+  # ---------------------------------------------------------------------------
+  cerebro-migrate:
+    image: postgres:16-alpine
+    container_name: cerebro-migrate
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts/migrate.sh:/migrate.sh:ro
+      - ./infra/postgres/migrations:/migrations:ro
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-cerebro}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-cerebro_db_pass}
+      PGDATABASE: ${POSTGRES_DB:-cerebro_brain}
+      MIGRATIONS_DIR: /migrations
+    command: ["bash", "/migrate.sh"]
+    networks:
+      - cerebro-net
+
+  # ---------------------------------------------------------------------------
   # 🔐 AUTH / CHAT / RAG API — FastAPI
   # ---------------------------------------------------------------------------
   cerebro-api:
@@ -178,6 +204,8 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       INGESTION_URL: "http://ingestion-api:8000"
       PUBLIC_INGESTION_URL: ${PUBLIC_INGESTION_URL:-}
+      AUDIT_CRON_TOKEN: ${AUDIT_CRON_TOKEN:-}
+      OBSOLESCENCE_GRACE_DAYS: ${OBSOLESCENCE_GRACE_DAYS:-30}
     networks:
       - cerebro-net
     depends_on:
@@ -185,6 +213,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      cerebro-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
       interval: 15s
@@ -496,6 +526,9 @@ services:
       EXECUTIONS_DATA_PRUNE: "true"
       EXECUTIONS_DATA_MAX_AGE: 168
       N8N_DIAGNOSTICS_ENABLED: "true"
+      # Permite que el workflow audit_cron_daily lea {{$env.AUDIT_CRON_TOKEN}}
+      # al hacer POST a cerebro-api /admin/audit-cron.
+      AUDIT_CRON_TOKEN: ${AUDIT_CRON_TOKEN:-}
     ports:
       - "5678:5678"
     volumes:

@@ -1,33 +1,38 @@
--- 0001_baseline.sql
---
--- Mirrors the current init.sql so that an existing deployment whose
--- volume was bootstrapped from init.sql is recorded as already at this
--- baseline. All statements use IF NOT EXISTS / IF EXISTS so re-running
--- on an already-initialised database is a no-op.
---
--- For NEW databases this migration is harmless duplication: init.sql
--- already created everything, so every CREATE here is skipped.
---
--- Subsequent migrations (0002, 0003, ...) carry actual deltas.
+-- =============================================================================
+-- LinkAnvil — PostgreSQL Schema Inicial
+-- Patrón Outbox · Multi-Tenancy (RLS) · Curador Nocturno
+-- =============================================================================
 
+-- Extensiones necesarias (deben ir en public)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE EXTENSION IF NOT EXISTS "unaccent";
 
+-- -----------------------------------------------------------------------------
+-- SCHEMAS
+-- cerebro: tablas propias (aisladas de las migraciones Prisma de LiteLLM)
+-- n8n:     tablas del workflow engine
+-- -----------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS cerebro;
+CREATE SCHEMA IF NOT EXISTS n8n;
 
+-- Mover todas las tablas propias al schema cerebro
 SET search_path TO cerebro, public;
 
+-- -----------------------------------------------------------------------------
+-- TABLA PRINCIPAL: recursos capturados
+-- -----------------------------------------------------------------------------
+-- `recursos` es **global**: una fila por URL única (deduplicada por url_hash).
+-- La relación per-tenant vive en `usuario_recursos` (más abajo).
 CREATE TABLE IF NOT EXISTS recursos (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id       VARCHAR(128) NOT NULL,
     url             TEXT NOT NULL,
-    url_hash        CHAR(64) NOT NULL,
+    url_hash        CHAR(64) NOT NULL,              -- SHA-256 para deduplicación
     titulo          TEXT,
     resumen         TEXT,
     categoria       VARCHAR(100),
     tags            JSONB DEFAULT '[]',
-    volatilidad     VARCHAR(20) DEFAULT 'media'
+    volatilidad     VARCHAR(20) DEFAULT 'media'     -- baja | media | alta | dinamica
                     CHECK (volatilidad IN ('baja', 'media', 'alta', 'dinamica')),
     fecha_caducidad DATE,
     estado          VARCHAR(20) DEFAULT 'activo'
@@ -36,19 +41,79 @@ CREATE TABLE IF NOT EXISTS recursos (
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_recursos_hash ON recursos (tenant_id, url_hash);
 
+-- Índices para rendimiento
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recursos_url_hash ON recursos (url_hash);
+CREATE INDEX IF NOT EXISTS idx_recursos_estado ON recursos (estado);
+CREATE INDEX IF NOT EXISTS idx_recursos_caducidad ON recursos (fecha_caducidad) WHERE estado = 'activo';
+CREATE INDEX IF NOT EXISTS idx_recursos_tags ON recursos USING GIN (tags);
+
+-- Pivote per-tenant: qué URLs ha guardado cada usuario.
+CREATE TABLE IF NOT EXISTS usuario_recursos (
+    tenant_id    VARCHAR(128) NOT NULL,
+    recurso_id   UUID NOT NULL REFERENCES recursos(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, recurso_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usuario_recursos_tenant
+    ON usuario_recursos (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usuario_recursos_recurso
+    ON usuario_recursos (recurso_id);
+
+-- -----------------------------------------------------------------------------
+-- OUTBOX PATTERN: tabla de eventos para consistencia eventual
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS outbox_eventos (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id       VARCHAR(128) NOT NULL,
+    agregado_tipo   VARCHAR(100) NOT NULL,           -- Tipo: 'recurso', 'sesion', etc.
+    agregado_id     UUID NOT NULL,
+    evento_tipo     VARCHAR(100) NOT NULL,           -- 'recurso.creado', 'embedding.requerido'
+    payload         JSONB NOT NULL,
+    procesado       BOOLEAN DEFAULT FALSE,
+    reintentos      INTEGER DEFAULT 0,
+    creado_en       TIMESTAMPTZ DEFAULT NOW(),
+    procesado_en    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_no_procesados ON outbox_eventos (creado_en)
+    WHERE procesado = FALSE;
+
+-- -----------------------------------------------------------------------------
+-- GRAFO SEMÁNTICO: aristas entre recursos relacionados
+-- (Colisionadores Semánticos - similitud coseno > 0.92)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS grafo_relaciones (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id       VARCHAR(128) NOT NULL,
+    recurso_origen  UUID NOT NULL REFERENCES recursos(id) ON DELETE CASCADE,
+    recurso_destino UUID NOT NULL REFERENCES recursos(id) ON DELETE CASCADE,
+    similitud       FLOAT NOT NULL CHECK (similitud BETWEEN 0 AND 1),
+    tipo_relacion   VARCHAR(50) DEFAULT 'semantica',
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_relacion UNIQUE (recurso_origen, recurso_destino)
+);
+
+CREATE INDEX IF NOT EXISTS idx_grafo_origen ON grafo_relaciones (recurso_origen);
+CREATE INDEX IF NOT EXISTS idx_grafo_similitud ON grafo_relaciones (similitud DESC)
+    WHERE similitud > 0.92;
+
+-- -----------------------------------------------------------------------------
+-- SESIONES DE CHAT con soporte de Sliding Window
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sesiones_chat (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id       VARCHAR(128) NOT NULL,
     plataforma      VARCHAR(30) NOT NULL DEFAULT 'web'
                     CHECK (plataforma IN ('web', 'telegram', 'api')),
     titulo          TEXT,
-    contexto_comprimido TEXT,
+    contexto_comprimido TEXT,                        -- Sliding Window resume
     tokens_usados   INTEGER DEFAULT 0,
     ultimo_acceso   TIMESTAMPTZ DEFAULT NOW(),
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_sesiones_tenant ON sesiones_chat (tenant_id, ultimo_acceso DESC);
 
 CREATE TABLE IF NOT EXISTS mensajes_chat (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -64,6 +129,98 @@ CREATE TABLE IF NOT EXISTS mensajes_chat (
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_mensajes_sesion ON mensajes_chat (sesion_id, seq ASC);
+
+-- -----------------------------------------------------------------------------
+-- ROW-LEVEL SECURITY (Multi-Tenancy) 
+-- Bloquea acceso cruzado entre tenants por defecto
+-- -----------------------------------------------------------------------------
+-- `recursos` es global: NO lleva RLS (no tiene tenant_id). El aislamiento
+-- multi-tenant se aplica en `usuario_recursos` (pivote).
+ALTER TABLE usuario_recursos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sesiones_chat ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mensajes_chat ENABLE ROW LEVEL SECURITY;
+ALTER TABLE grafo_relaciones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE outbox_eventos ENABLE ROW LEVEL SECURITY;
+
+-- Política: cada usuario solo ve sus datos
+DROP POLICY IF EXISTS tenant_isolation ON usuario_recursos;
+CREATE POLICY tenant_isolation ON usuario_recursos
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON sesiones_chat;
+CREATE POLICY tenant_isolation ON sesiones_chat
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON mensajes_chat;
+CREATE POLICY tenant_isolation ON mensajes_chat
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON grafo_relaciones;
+CREATE POLICY tenant_isolation ON grafo_relaciones
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON outbox_eventos;
+CREATE POLICY tenant_isolation ON outbox_eventos
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- Cuenta de servicio (bypass RLS para workers internos)
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cerebro_service') THEN 
+        CREATE ROLE cerebro_service NOLOGIN BYPASSRLS; 
+    END IF; 
+END $$;
+ALTER TABLE usuario_recursos FORCE ROW LEVEL SECURITY;
+ALTER TABLE sesiones_chat FORCE ROW LEVEL SECURITY;
+ALTER TABLE mensajes_chat FORCE ROW LEVEL SECURITY;
+ALTER TABLE grafo_relaciones FORCE ROW LEVEL SECURITY;
+ALTER TABLE outbox_eventos FORCE ROW LEVEL SECURITY;
+
+-- -----------------------------------------------------------------------------
+-- FUNCIÓN: actualizar updated_at automáticamente
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trigger_set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS set_updated_at_recursos ON recursos;
+CREATE TRIGGER set_updated_at_recursos
+    BEFORE UPDATE ON recursos
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- FUNCIÓN: Curador Nocturno — marcar expirados
+-- Llamada por n8n cron job diariamente
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION curador_marcar_expirados()
+RETURNS INTEGER AS $$
+DECLARE
+    cnt INTEGER;
+BEGIN
+    UPDATE recursos
+    SET estado = 'cuarentena'
+    WHERE estado = 'activo'
+      AND fecha_caducidad IS NOT NULL
+      AND fecha_caducidad < NOW()::DATE;
+    GET DIAGNOSTICS cnt = ROW_COUNT;
+    RETURN cnt;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------------------------
+-- TABLA: usuarios del sistema (auth multi-tenant)
+-- Auth controlado en API layer (JWT). Sin RLS — cerebro es superuser.
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS usuarios (
     id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     email                   TEXT        UNIQUE NOT NULL,
@@ -76,3 +233,19 @@ CREATE TABLE IF NOT EXISTS usuarios (
     created_at              TIMESTAMPTZ DEFAULT NOW(),
     updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios (email);
+CREATE INDEX IF NOT EXISTS idx_usuarios_token_hash ON usuarios (telegram_bot_token_hash)
+    WHERE telegram_bot_token_hash IS NOT NULL;
+
+DROP TRIGGER IF EXISTS set_updated_at_usuarios ON usuarios;
+CREATE TRIGGER set_updated_at_usuarios
+    BEFORE UPDATE ON usuarios
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
+-- Datos de ejemplo para verificación
+INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado) VALUES
+    ('https://ejemplo.com/web3-intro', 
+     md5('https://ejemplo.com/web3-intro'), 
+     'Introducción a Web 3.0', 'dinamica', 'activo')
+ON CONFLICT DO NOTHING;

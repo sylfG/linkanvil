@@ -244,8 +244,8 @@ CREATE TRIGGER set_updated_at_usuarios
     FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
 -- Datos de ejemplo para verificación
-INSERT INTO recursos (tenant_id, url, url_hash, titulo, volatilidad, estado) VALUES
-    ('tenant_demo', 'https://ejemplo.com/web3-intro', 
+INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado) VALUES
+    ('https://ejemplo.com/web3-intro', 
      md5('https://ejemplo.com/web3-intro'), 
      'Introducción a Web 3.0', 'dinamica', 'activo')
 ON CONFLICT DO NOTHING;

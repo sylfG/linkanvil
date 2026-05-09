@@ -514,6 +514,7 @@ services:
       N8N_HOST: n8n.localhost
       N8N_PORT: 5678
       N8N_PROTOCOL: http
+      N8N_SECURE_COOKIE: "false"
       WEBHOOK_URL: http://n8n.localhost/
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
@@ -565,9 +566,11 @@ services:
       N8N_USER: ${N8N_USER:-admin}
       N8N_PASSWORD: ${N8N_PASSWORD:-cerebro_n8n_pass}
       ENV_FILE: /app/.env
+      WORKFLOWS_DIR: /app/infra/n8n/workflows
     volumes:
       - ./.env:/app/.env
       - ./infra/n8n/bootstrap-apikey.py:/app/bootstrap-apikey.py:ro
+      - ./infra/n8n/workflows:/app/infra/n8n/workflows:ro
     depends_on:
       n8n:
         condition: service_healthy

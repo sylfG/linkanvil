@@ -4,16 +4,61 @@ Workflows reproducibles del proyecto linkanvil. Se versiona el JSON
 exportado de n8n para que un `docker compose up` limpio pueda
 reconstruir los crons sin clicks manuales.
 
-## Importar tras `docker compose up`
+## ⚙️ Setup inicial de n8n
 
-1. Asegurarse de que la env `AUDIT_CRON_TOKEN` esté en `.env` y que la
-   API esté arriba con el mismo token (`docker compose config` para
-   verificar).
-2. Abrir n8n: `http://n8n.localhost` (o `:5678` según overlay).
-3. Workflow → Import from File → seleccionar el JSON correspondiente.
-4. Activar el workflow (toggle Active).
-5. (Opcional) Ejecutar manualmente para probar — debe responder 200 y
-   loguear `{cuarentenados, expirados}`.
+Tras `docker compose up`, espera a que n8n esté listo (~2 minutos). Luego:
+
+### 1️⃣ Crear API key en n8n
+
+1. Accede a: `http://localhost:5678` 
+   - User: `admin`
+   - Password: valor de `N8N_PASSWORD` en `.env`
+2. Navega a: **Settings** → **API Tokens**
+3. Click **"Create API Token"**
+4. Copia el token generado (verás algo como `n8n_api_...`)
+
+### 2️⃣ Guardar API key en `.env`
+
+Edita tu `.env` y reemplaza el valor de `N8N_API_KEY`:
+
+```bash
+N8N_API_KEY=<token_que_copiaste>
+```
+
+### 3️⃣ Ejecutar bootstrap automático
+
+El bootstrap importará y activará todos los workflows automáticamente:
+
+```bash
+docker compose restart n8n-bootstrap
+docker logs -f cerebro-n8n-bootstrap
+```
+
+Verás algo como:
+```
+Importando 1 workflow(s)…
+  ✓ Workflow 'linkanvil — audit cron diario' importado (id: 123)
+    → Workflow activado
+✓ Bootstrap completado
+```
+
+## 🤖 Agregar nuevos workflows
+
+1. En n8n UI: **Workflow → Export as JSON**
+2. Guardar en: `infra/n8n/workflows/<nombre>.json`
+3. Editar JSON: asegurar que `"active": true` si deseas auto-activar
+4. Re-ejecutar bootstrap:
+   ```bash
+   docker compose restart n8n-bootstrap
+   ```
+
+## 🧪 Probar workflow manualmente
+
+Tras activarlo, puedes ejecutarlo manualmente desde la UI:
+
+1. Abrir workflow en n8n
+2. Click **"Execute Workflow"**
+3. Debe responder con status 200 y loguear en la API
 
 Alternativa programática: usar `bootstrap-apikey.py` para obtener una
 API key y `POST /api/v1/workflows` con el JSON.

@@ -140,29 +140,27 @@ async def ingest_url(request: IngestionRequest):
 
         # Happy Path / Aislamiento (F-01.1)
         is_new = await deduplicator.is_new_item(request.url, request.tenant_id, request.trace_id)
-        
-        if is_new:
-            # Requisito Técnico F-01.2: Enviar a RabbitMQ
-            payload = request.model_dump()
-            await rabbit_publisher.publish_ingestion_message(
-                queue_name=RABBIT_QUEUE,
-                payload=payload,
-                trace_id=request.trace_id
-            )
-            
-            return IngestionResponse(
-                status="Accepted & Published",
-                trace_id=request.trace_id,
-                is_duplicate=False,
-                is_valid=True
-            )
-        else:
-            return IngestionResponse(
-                status="Ignored",
-                trace_id=request.trace_id,
-                is_duplicate=True,
-                is_valid=True
-            )
+
+        # Publicamos siempre. El bloom filter es un hint best-effort y puede
+        # divergir del estado real de Postgres (p. ej. tras un reset de DB);
+        # confiar solo en él provoca que la URL nunca llegue al worker y que
+        # `usuario_recursos` no se cree para el tenant. El scraper resuelve la
+        # idempotencia mediante su ruta rápida (find_existing_recurso_by_url
+        # → link_user_to_recurso) sin re-scrapear cuando el recurso global
+        # ya existe y está fresco.
+        payload = request.model_dump()
+        await rabbit_publisher.publish_ingestion_message(
+            queue_name=RABBIT_QUEUE,
+            payload=payload,
+            trace_id=request.trace_id,
+        )
+
+        return IngestionResponse(
+            status="Accepted & Published" if is_new else "Accepted (relink)",
+            trace_id=request.trace_id,
+            is_duplicate=not is_new,
+            is_valid=True,
+        )
             
     except HTTPException as httpe:
         # Re-raise HTTP exceptions (like 429 Too Many Requests) without wrapping them in 500

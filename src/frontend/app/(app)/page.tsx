@@ -153,12 +153,8 @@ export default function ChatPage() {
 
   const messages: ChatMessage[] = activeId ? getMessages(activeId) : [];
 
-  // Create first session if none exists
-  useEffect(() => {
-    if (!activeId && token) {
-      createSession(token).catch(() => {});
-    }
-  }, [activeId, token]);
+  // La sesión se crea en lazy desde send() al primer mensaje, así
+  // recargar la página sin escribir no genera conversaciones huérfanas.
 
   // Load messages when active session changes (lazy)
   useEffect(() => {
@@ -223,7 +219,7 @@ export default function ChatPage() {
 
     try {
       const csrf = (typeof document !== "undefined")
-        ? (document.cookie.match(/(?:^|; )cerebro_csrf=([^;]*)/)?.[1] ?? "")
+        ? ([...document.cookie.matchAll(/(?:^|; )cerebro_csrf=([^;]*)/g)].pop()?.[1] ?? "")
         : "";
       const headers: Record<string, string> = {
         "Content-Type": "application/json",

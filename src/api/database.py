@@ -124,6 +124,26 @@ async def get_active_resource_ids(tenant_id: str, ids: list[str]) -> list[str]:
     return [r["id"] for r in rows]
 
 
+async def get_resources_for_rag(tenant_id: str, ids: list[str]) -> list[dict]:
+    """Devuelve recursos activos del tenant con campos enriquecidos para inyectar
+    como contexto del LLM (titulo, resumen, url, tags, categoria)."""
+    if not ids:
+        return []
+    p = await get_pool()
+    rows = await p.fetch(
+        """
+        SELECT r.id::text, r.titulo, r.resumen, r.url, r.tags, r.categoria
+        FROM recursos r
+        JOIN usuario_recursos ur ON ur.recurso_id = r.id
+        WHERE ur.tenant_id = $1
+          AND r.estado = 'activo'
+          AND r.id = ANY($2::uuid[])
+        """,
+        tenant_id, ids,
+    )
+    return [dict(r) for r in rows]
+
+
 # ── bandeja de cuarentena (F-05.2) ────────────────────────────────────────────
 
 GRACE_PERIOD_DAYS = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))

@@ -152,7 +152,7 @@ async def verify_csrf(
     if not cerebro_session:
         return
     if not cerebro_csrf or not x_csrf_token or cerebro_csrf != x_csrf_token:
-        raise HTTPException(403, "CSRF token mismatch")
+        print(f"CSRF fail: cookie={cerebro_csrf}, header={x_csrf_token}"); raise HTTPException(403, "CSRF token mismatch")
 
 
 # ---------------------------------------------------------------------------
@@ -476,26 +476,82 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                                 if str(h.get("payload", {}).get("recurso_id")) in active_set
                             ]
                         if hits:
-                            frags = [
-                                f"- **{h['payload'].get('title','')}** — "
-                                f"{h['payload'].get('url','')} "
-                                f"[score: {h['score']:.2f}]"
+                            # Enriquecemos con titulo+resumen+tags desde Postgres:
+                            # el payload de Qdrant solo trae metadatos cortos
+                            # (title/category/volatility) y el LLM necesita el
+                            # resumen para responder preguntas de contenido.
+                            enriched = await db.get_resources_for_rag(
+                                user["tenant_id"], list(active_set)
+                            )
+                            by_id = {r["id"]: r for r in enriched}
+                            score_by_id = {
+                                str(h["payload"].get("recurso_id")): h["score"]
                                 for h in hits
-                            ]
-                            context_block = "### Contexto:\n" + "\n".join(frags)
+                            }
+                            ordered = sorted(
+                                (by_id[i] for i in score_by_id if i in by_id),
+                                key=lambda r: score_by_id.get(r["id"], 0.0),
+                                reverse=True,
+                            )
+                            frags = []
+                            for r in ordered:
+                                raw_tags = r.get("tags")
+                                if isinstance(raw_tags, str):
+                                    try:
+                                        tags_list = json.loads(raw_tags) or []
+                                    except Exception:
+                                        tags_list = []
+                                elif isinstance(raw_tags, list):
+                                    tags_list = raw_tags
+                                else:
+                                    tags_list = []
+                                tags_str = ", ".join(tags_list) if tags_list else "—"
+                                frags.append(
+                                    f"### {r.get('titulo') or r.get('url')}\n"
+                                    f"URL: {r.get('url','')}\n"
+                                    f"Categoría: {r.get('categoria') or '—'}\n"
+                                    f"Tags: {tags_str}\n"
+                                    f"Resumen: {r.get('resumen') or '(sin resumen)'}"
+                                )
+                            context_block = (
+                                "## Contexto recuperado de tu base de conocimiento:\n\n"
+                                + "\n\n---\n\n".join(frags)
+                            )
             except Exception as e:
                 logger.warning(f"RAG error: {e}")
 
-    system_prompt = (
-        "Eres un asistente experto. Responde usando el contexto de la base de conocimiento "
-        "del usuario. Si no hay contexto relevante, responde con tu conocimiento general e indícalo."
-    )
     if context_block:
-        system_prompt += f"\n\n{context_block}"
+        system_prompt = (
+            "Eres un asistente experto. Tienes acceso al contexto extraído de la base "
+            "de conocimiento del usuario, delimitado más abajo.\n\n"
+            "REGLAS ESTRICTAS:\n"
+            "1. Si la respuesta a la pregunta del usuario está total o parcialmente en "
+            "el contexto, úsala como fuente principal y cita los datos textualmente "
+            "(fechas, nombres, cifras) tal y como aparecen.\n"
+            "2. NO digas que 'no hay información específica' si el dato aparece en el "
+            "contexto, aunque esté de forma resumida o implícita.\n"
+            "3. NO mezcles tu conocimiento general con el contexto a menos que el "
+            "usuario lo pida explícitamente; si lo haces, distingue claramente qué "
+            "viene del contexto y qué de tu conocimiento previo.\n"
+            "4. Si tras leer el contexto sigues sin tener la respuesta, dilo de forma "
+            "directa y ofrece tu conocimiento general indicándolo.\n\n"
+            f"{context_block}"
+        )
+    else:
+        system_prompt = (
+            "Eres un asistente experto. La base de conocimiento del usuario no ha "
+            "devuelto resultados relevantes para esta pregunta. Responde con tu "
+            "conocimiento general e indícalo explícitamente."
+        )
 
     llm_msgs = [{"role": "system", "content": system_prompt}]
     for m in req.messages[-10:]:
         llm_msgs.append({"role": m.role, "content": m.content})
+
+    logger.info(
+        "CHAT model=%s use_rag=%s hits=%d ctx_len=%d msgs=%d",
+        req.model, req.use_rag, len(hits), len(context_block), len(llm_msgs),
+    )
 
     h = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
 

@@ -29,6 +29,26 @@ STEALTH_ARGS = [
 ]
 
 
+class BlockedContentError(Exception):
+    """El scraper recibió una página de bloqueo anti-bot (CF/Datadome/etc.)
+    que no contiene el contenido real. El worker la captura para mover el
+    recurso a cuarentena en lugar de embeder texto basura."""
+
+
+def _rewrite_for_scrape(url: str) -> str:
+    """Reescribe dominios con anti-bot agresivo a un espejo legible. La URL
+    original se conserva en la BD; solo la descarga usa el espejo. Hoy:
+    medium.com → readmedium.com (Medium usa Datadome y nuestro Stealth no lo
+    bypassa)."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return url
+    if host == "medium.com" or host.endswith(".medium.com"):
+        return f"https://readmedium.com/{url}"
+    return url
+
+
 class ScraperStrategy(ABC):
     @abstractmethod
     async def scrape(self, url: str) -> str: ...
@@ -98,25 +118,70 @@ class ScraperContext:
     def _looks_blocked(self, html: str) -> bool:
         if len(html) < 500:
             return True
-        lowered = html[:2000].lower()
-        return any(s in lowered for s in [
-            "checking your browser", "cf-challenge", "cloudflare",
-            "just a moment", "captcha", "ddos protection",
-        ])
+        lowered = html[:4000].lower()
+        # Inglés (Cloudflare/genérico) + español (Datadome muestra el aviso
+        # localizado, p.ej. Medium con visitantes desde España).
+        # Marcadores específicos de páginas de bloqueo / challenge.
+        # IMPORTANTE: NO usar "cloudflare" o "captcha" en plano — cualquier
+        # web que cargue assets de cdnjs.cloudflare.com o que mencione
+        # "captcha" en su contenido editorial caería por falso positivo.
+        markers = [
+            "checking your browser",
+            "cf-challenge",
+            "cf-mitigated",
+            "attention required! | cloudflare",
+            "performance & security by cloudflare",
+            "just a moment...",
+            "ddos protection by",
+            "verifying you are human",
+            "verify you are human",
+            "press and hold to confirm",
+            "datadome",
+            "are you a robot",
+            "verifica que usted no es un bot",
+            "verifica que no eres un bot",
+            "verificación de seguridad para protegerse",
+            "comprobando su navegador antes de acceder",
+            "servicio de seguridad para protegerse",
+            # Espejos rotos / dominios parked (readmedium fallback,
+            # medium.rip aparcado, etc.). Si el espejo no consigue renderizar
+            # el artículo nos devuelve un shell sin contenido útil.
+            "failed to render this page",
+            "this domain is for sale",
+        ]
+        return any(s in lowered for s in markers)
 
     async def execute(self, url: str, source: str | None = None) -> str:
-        if (source or "").lower() in DYNAMIC_SOURCES or _is_js_heavy(url):
-            logger.info(f"[{self.trace_id}] [StealthPlaywrightStrategy] Extrayendo: {url}")
-            return await StealthPlaywrightStrategy(self.redis).scrape(url)
+        # Reescritura anti-bot: si el dominio es notoriamente complicado
+        # (Medium/Datadome), pedimos contenido al espejo legible. La URL
+        # original sigue siendo la que ve el usuario en su KB.
+        fetch_url = _rewrite_for_scrape(url)
+        if fetch_url != url:
+            logger.info(f"[{self.trace_id}] URL reescrita para fetch: {fetch_url}")
+
+        if (source or "").lower() in DYNAMIC_SOURCES or _is_js_heavy(fetch_url):
+            logger.info(f"[{self.trace_id}] [StealthPlaywrightStrategy] Extrayendo: {fetch_url}")
+            html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
+            if self._looks_blocked(html):
+                logger.warning(f"[{self.trace_id}] Stealth bloqueado, marcando para cuarentena: {url}")
+                raise BlockedContentError(url)
+            return html
         try:
-            logger.info(f"[{self.trace_id}] [BasicHttpStrategy] Extrayendo: {url}")
-            html = await BasicHttpStrategy().scrape(url)
+            logger.info(f"[{self.trace_id}] [BasicHttpStrategy] Extrayendo: {fetch_url}")
+            html = await BasicHttpStrategy().scrape(fetch_url)
             if self._looks_blocked(html):
                 logger.info(f"[{self.trace_id}] Basic devolvió bloqueo, escalando a Stealth")
-                return await StealthPlaywrightStrategy(self.redis).scrape(url)
+                html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
+                if self._looks_blocked(html):
+                    logger.warning(f"[{self.trace_id}] Stealth tampoco superó el muro, cuarentena: {url}")
+                    raise BlockedContentError(url)
             return html
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (403, 429, 503):
                 logger.info(f"[{self.trace_id}] HTTP {e.response.status_code}, escalando a Stealth")
-                return await StealthPlaywrightStrategy(self.redis).scrape(url)
+                html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
+                if self._looks_blocked(html):
+                    logger.warning(f"[{self.trace_id}] Stealth bloqueado tras {e.response.status_code}, cuarentena: {url}")
+                    raise BlockedContentError(url)
+                return html
             raise

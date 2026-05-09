@@ -12,7 +12,7 @@ from typing import Optional
 import redis.asyncio as aioredis
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from src.scraper.strategy import ScraperContext
+from src.scraper.strategy import ScraperContext, BlockedContentError
 from src.scraper._retry import with_retries
 from src.data.db import DatabaseManager
 from src.data.heartbeat import start_heartbeat
@@ -174,19 +174,51 @@ class ScraperWorker:
 
                 # 0.5 Pre-insert placeholder para feedback visual inmediato en KB.
                 # save_with_outbox lo enriquecerá vía ON CONFLICT DO UPDATE.
+                placeholder_id = None
                 try:
-                    await self.db.insert_placeholder_recurso(tenant_id=tenant_id, url=url)
+                    placeholder_id = await self.db.insert_placeholder_recurso(
+                        tenant_id=tenant_id, url=url
+                    )
                 except Exception as e:
                     logger.warning(f"[{trace_id}] No se pudo pre-insertar placeholder: {e}")
 
                 # 1. Scrape
                 logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Extrayendo: {url}")
                 scraper_ctx = ScraperContext(tenant_id=tenant_id, trace_id=trace_id, redis=self.redis)
-                raw_html = await scraper_ctx.execute(url=url, source=source)
+                try:
+                    raw_html = await scraper_ctx.execute(url=url, source=source)
+                except BlockedContentError:
+                    # El sitio devolvió un muro anti-bot que no pudimos
+                    # superar. En vez de embeder texto basura, marcamos el
+                    # recurso como cuarentena y ack-eamos el mensaje (no DLQ:
+                    # no es un fallo técnico recuperable).
+                    if placeholder_id:
+                        try:
+                            await self.db.quarantine_recurso_blocked(placeholder_id)
+                        except Exception as qe:
+                            logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
+                    logger.info(f"[{trace_id}] Recurso bloqueado por anti-bot, en cuarentena: {url}")
+                    await message.ack()
+                    return
 
                 # 2. Clean HTML → plain text
                 html_title, clean_text = _html_to_clean_text(raw_html)
                 logger.info(f"[{trace_id}] Texto limpio: {len(clean_text)} chars")
+
+                # Guard de calidad: si el contenido extraído es trivialmente
+                # corto, el LLM solo podría inventar un resumen sin sustancia.
+                # Mejor cuarentena que basura indexada en RAG.
+                if len(clean_text.strip()) < 300:
+                    if placeholder_id:
+                        try:
+                            await self.db.quarantine_recurso_blocked(placeholder_id)
+                        except Exception as qe:
+                            logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
+                    logger.info(
+                        f"[{trace_id}] Contenido demasiado corto ({len(clean_text)} chars), cuarentena: {url}"
+                    )
+                    await message.ack()
+                    return
 
                 # 3. LLM metadata extraction
                 extracted_data = await _extract_metadata_with_llm(self.http, clean_text, html_title, url)

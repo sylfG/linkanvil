@@ -245,6 +245,28 @@ class DatabaseManager:
                 estado, recurso_id,
             )
 
+    async def quarantine_recurso_blocked(self, recurso_id: str):
+        """Mueve un recurso a cuarentena porque el scraper recibió una página
+        de bloqueo anti-bot y no podemos extraer el contenido. Usa el motivo
+        'manual' (no hay valor 'scrape_bloqueado' en el CHECK constraint
+        actual; añadirlo requiere migración aparte). El periodo de gracia es
+        el mismo que para caducidad."""
+        if not self.pool:
+            await self.connect()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE recursos
+                SET estado = 'cuarentena',
+                    quarantined_at = NOW(),
+                    quarantine_reason = 'manual',
+                    quarantine_grace_until = (NOW() + INTERVAL '30 days')::DATE,
+                    updated_at = NOW()
+                WHERE id = $1::uuid
+                """,
+                recurso_id,
+            )
+
     async def save_semantic_collisions(self, tenant_id: str, recurso_origen: str, collisions: list[dict]):
         if not self.pool:
             await self.connect()

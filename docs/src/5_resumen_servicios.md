@@ -8,7 +8,7 @@
 </div>
 
 
-El clúster del **LinkAnvil** está compuesto por **21 contenedores** que operan dentro de la red privada `cerebro-net`. Se dividen en seis capas funcionales: entrada y API, interfaz web, workers asíncronos, almacenamiento, orquestación/IA y observabilidad.
+El clúster del **LinkAnvil** está compuesto por **21 contenedores** que operan dentro de la red privada `cerebro-net`, más un sidecar opcional (`tailscale-funnel`, profile `telegram`) que expone públicamente el endpoint de webhooks de Telegram cuando se necesita. Se dividen en seis capas funcionales: entrada y API, interfaz web, workers asíncronos, almacenamiento, orquestación/IA y observabilidad.
 
 ---
 
@@ -106,6 +106,20 @@ graph TD
 
 ### 1. 🔀 API Gateway
 
+#### `cerebro-tailscale` (sidecar opcional, profile `telegram`)
+**Imagen:** `tailscale/tailscale:stable` | **Volumen:** `cerebro-tailscale-state` (estado del nodo)
+
+**Qué hace:** Expone públicamente `ingestion-api:8000` mediante Tailscale Funnel sobre HTTPS, con la URL persistente `https://linkanvil-ingest.<tailnet>.ts.net`. Es el canal por el que Telegram entrega los webhooks del bot al endpoint `/webhook/telegram/{token_hash}`. Solo arranca cuando se hace `docker compose --profile telegram up -d`. Con `TS_USERSPACE=true` no requiere capacidades de kernel ni `/dev/net/tun`. La configuración del proxy interno vive en `infra/tailscale/serve.json` (mapea `/` → `http://ingestion-api:8000`).
+
+**Por qué esta decisión:** Telegram exige una URL HTTPS pública para entregar mensajes; los entornos detrás de NAT doméstica no la tienen. Tailscale Funnel da una URL fija y gratuita que sobrevive a `docker compose down/up` mientras se conserve el volumen del estado del nodo (mismo nombre DNS = misma URL pública), sin abrir puertos en el router ni gestionar TLS manualmente. Tradeoff: solo está disponible mientras el contenedor esté activo, y solo expone los puertos públicos 443/8443/10000 (usamos 443).
+
+**Configuración clave:**
+- `TS_AUTHKEY` — auth-key reusable generada en https://login.tailscale.com/admin/settings/keys; solo necesaria al primer arranque (luego el volumen `tailscale-state` mantiene el registro).
+- `TS_HOSTNAME=linkanvil-ingest` — define el subdominio público (cambiarlo después requiere borrar el nodo viejo en el dashboard).
+- `TS_SERVE_CONFIG=/config/serve.json` — declara el proxy a `ingestion-api:8000` y `AllowFunnel: true` para publicar al exterior.
+
+---
+
 #### `cerebro-traefik`
 **Imagen:** `traefik:v3.6.14` | **Puertos expuestos:** 80 (HTTP), 443 (HTTPS), 8080 (dashboard)
 
@@ -182,7 +196,9 @@ graph TD
 #### `cerebro-scraper`
 **Código:** `src/scraper/worker.py` | **Límites:** 1.5 GB RAM, 2 CPUs | `shm_size: 1gb` (Chromium)
 
-**Qué hace:** Consume mensajes de la cola `q.url.ingesta` en RabbitMQ. Para cada URL, decide la estrategia de scraping: extracción básica (HTML estático), Scrapling avanzado, o Playwright/Chromium headless para SPAs y sitios que bloquean bots. Extrae el texto limpio, lo envía a LiteLLM para análisis estructurado (tags, resumen, volatilidad), y persiste el recurso en Postgres junto con un evento `outbox_eventos`.
+**Qué hace:** Consume mensajes de la cola `q.url.ingesta` en RabbitMQ. Para cada URL aplica primero un reescritor de dominios anti-bot agresivos (p.ej. `medium.com` → `readmedium.com`) y luego decide la estrategia: extracción básica (HTML estático), o Playwright/Chromium headless con stealth para SPAs y sitios JS-heavy o cuando el origen es `telegram`/`extension`. Extrae el texto limpio, lo envía a LiteLLM para análisis estructurado (tags, resumen, volatilidad), y persiste el recurso en Postgres junto con un evento `outbox_eventos`.
+
+**Detección anti-bot y cuarentena automática:** Tras cada estrategia se ejecuta `_looks_blocked()` con marcadores específicos de páginas de bloqueo (`cf-mitigated`, `attention required! | cloudflare`, `verifica que usted no es un bot`, `failed to render this page`, etc. — evitando explícitamente keywords genéricos como `cloudflare` solo, que matchearían `cdnjs.cloudflare.com`). Si tras Stealth sigue bloqueado, o si el texto extraído es < 300 chars, el worker llama a `db.quarantine_recurso_blocked()`: el recurso pasa a `estado='cuarentena'` con `quarantine_reason='manual'` y 30 días de gracia, en vez de embeder texto basura en Qdrant. El mensaje se ack-ea (no DLQ — el bloqueo no es un fallo técnico recuperable).
 
 **Por qué esta decisión:** Separar el scraping en un worker independiente permite escalar horizontalmente el procesamiento sin afectar la latencia de la API. El `shm_size: 1gb` es necesario para que Chromium (Playwright) no crashee en entornos Docker con poca memoria compartida. El worker corre como usuario `cerebro` (uid 1000) — Chromium necesita que `PLAYWRIGHT_BROWSERS_PATH` apunte a un directorio en el home del usuario no-root.
 

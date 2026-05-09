@@ -51,7 +51,8 @@ C4Container
 
     Container_Boundary(cerebro_net, "Red Virtual Segura (cerebro-net)") {
 
-        Container(traefik, "API Gateway", "Traefik v3.6", "Único punto de entrada. Rate limiting, enrutamiento dinámico, Trace-ID OTel, TLS en producción.")
+        Container(traefik, "API Gateway", "Traefik v3.6", "Punto de entrada principal. Rate limiting, enrutamiento dinámico, Trace-ID OTel, TLS en producción.")
+        Container(tailscale, "Tailscale Funnel (sidecar opcional)", "tailscale/tailscale", "Profile 'telegram'. Expone /webhook/telegram/* en HTTPS público vía URL persistente linkanvil-ingest.<tailnet>.ts.net.")
 
         Container(ingestion, "Ingestion API", "FastAPI · redis.asyncio", "Recibe URLs, Bloom Filter deduplicación, rate limiter INCR atómico, publica a RabbitMQ.")
         Container(api, "cerebro-api", "FastAPI · asyncpg", "Auth JWT httpOnly cookie + CSRF, chat RAG SSE, CRUD sesiones/mensajes, paginación.")
@@ -71,7 +72,8 @@ C4Container
     }
 
     Rel(usuario, traefik, "HTTPS", "80/443")
-    Rel(telegram, traefik, "Webhooks", "HTTPS")
+    Rel(telegram, tailscale, "Webhooks setWebhook", "HTTPS público")
+    Rel(tailscale, ingestion, "proxy /webhook/telegram/*", "HTTP interno")
 
     Rel(traefik, ingestion, "ingest.*")
     Rel(traefik, api, "api.*")
@@ -124,31 +126,32 @@ sequenceDiagram
     participant QD as Qdrant
 
     U->>IG: POST /ingest {url, tenant_id}
-    IG->>RD: BF.EXISTS url_hash (< 1ms)
+    IG->>RD: BF.ADD url_hash (atómico, devuelve is_new)
+    IG->>RD: INCR rate_limit:{ip} (atómico)
+    IG->>MQ: publish q.url.ingesta (siempre — bloom es hint, no veto)
+    IG-->>U: 202 Accepted (status="Accepted & Published" o "Accepted (relink)")
 
-    alt URL duplicada
-        RD-->>IG: true
-        IG-->>U: 409 Conflict
-    else URL nueva
-        RD-->>IG: false
-        IG->>RD: INCR rate_limit:{ip} (atómico)
-        IG->>RD: BF.ADD url_hash
-        IG->>MQ: publish q.url.ingesta
-        IG-->>U: 202 Accepted
+    Note over MQ, SC: Procesamiento asíncrono
+    SC->>MQ: consume mensaje
+    SC->>SC: rewrite anti-bot (medium.com → readmedium.com) si aplica
+    SC->>SC: estrategia (Basic / Stealth Playwright)
+    SC->>SC: _looks_blocked() + guard 300 chars
 
-        Note over MQ, SC: Procesamiento asíncrono
-        SC->>MQ: consume mensaje
-        SC->>SC: Scraping (static/Playwright según origen)
+    alt Bloqueado o texto demasiado corto
+        SC->>PG: UPDATE recursos SET estado='cuarentena',\n  quarantine_reason='manual'
+        Note over SC: ACK al mensaje (no DLQ).<br/>Sin embedding, sin gasto LLM.
+    else Contenido válido
         SC->>LLM: POST /chat (extrae JSON: titulo, resumen, tags, volatilidad)
         LLM-->>SC: JSON estructurado (Pydantic validado)
         SC->>PG: BEGIN TRANSACTION
-        SC->>PG: INSERT cerebro.recursos (estado='procesando')
-        SC->>PG: INSERT cerebro.outbox_eventos (evento='embedding.requerido')
+        SC->>PG: UPSERT cerebro.recursos (estado='procesando')
+        SC->>PG: INSERT cerebro.usuario_recursos (tenant_id, recurso_id)
+        SC->>PG: INSERT cerebro.outbox_eventos (evento='recurso.procesado')
         SC->>PG: COMMIT
 
         Note over OB, MQ: Outbox Publisher (polling)
         OB->>PG: SELECT outbox_eventos WHERE estado='pendiente'
-        PG-->>OB: evento embedding.requerido
+        PG-->>OB: evento recurso.procesado
         OB->>MQ: publish q.embeddings
         OB->>PG: UPDATE outbox_eventos SET estado='procesado'
 
@@ -156,8 +159,8 @@ sequenceDiagram
         EM->>MQ: consume q.embeddings
         EM->>LLM: POST /v1/embeddings (texto del recurso)
         LLM-->>EM: vector [0.12, -0.45, ...]
-        EM->>QD: upsert {id, vector, payload: {tenant_id}}
-        EM->>PG: UPDATE recursos SET estado='activo', embedding_version=1
+        EM->>QD: upsert {id: uuid5(rid:tid), vector, payload: {tenant_id, ...}}
+        EM->>PG: UPDATE recursos SET estado='activo'
     end
 ```
 
@@ -188,9 +191,13 @@ sequenceDiagram
     LLM-->>AP: vector semántico
 
     AP->>QD: búsqueda coseno\nfilter: {tenant_id: "..."}\ntop_k: 5, score_threshold: 0.85
-    QD-->>AP: documentos relevantes con scores
+    QD-->>AP: hits con recurso_id (payload mínimo: title, url, category)
 
-    AP->>LLM: stream(\n  system: "Eres un asistente...",\n  context: [documentos RAG],\n  messages: [...historial]\n)
+    AP->>PG: get_resources_for_rag(tenant, recurso_ids)
+    PG-->>AP: titulo, resumen, url, tags, categoría (solo activos del tenant)
+    Note over AP: Contexto enriquecido construido con el resumen real de Postgres,<br/>no solo con el payload reducido de Qdrant.
+
+    AP->>LLM: stream(\n  system: prompt estricto (cita textual del contexto),\n  context: [documentos RAG enriquecidos],\n  messages: [...historial]\n)
 
     loop SSE chunks
         LLM-->>AP: chunk de texto

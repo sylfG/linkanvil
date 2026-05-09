@@ -66,6 +66,27 @@
   - `docs/src/backlog/F-00.4...md`
   - `docs/src/backlog/F-00.6...md`
 
+## 2026-05-09 — Hardening del pipeline de ingesta + RAG enriquecido + Telegram público
+
+- **Skill usada**: System Architect + Asistente IA
+- **Acción**: Sesión de hardening end-to-end disparada por incidencias reales (URLs ingeridas que no aparecían en KB, RAG respondiendo sin usar el resumen guardado, modelo `cerebro-pro` colgándose, URL de Medium devolviendo basura, webhooks de Telegram sin URL pública).
+- **Cambios funcionales**:
+  - **Ingestion API ([src/ingestion/main.py](../../src/ingestion/main.py))**: ahora publica al queue `q.url.ingesta` aunque el bloom filter marque como duplicada. El bloom es un hint best-effort y divergía del estado de Postgres tras un reset, dejando `usuario_recursos` sin link para el tenant. Idempotencia movida al scraper (ruta de reuso).
+  - **Chat RAG ([src/api/main.py](../../src/api/main.py), [src/api/database.py](../../src/api/database.py))**: tras el match de Qdrant se llama a `get_resources_for_rag(tenant, ids)` para traer `titulo+resumen+tags+categoría` desde Postgres y construir el contexto rico que se pasa al LLM. Antes solo se inyectaba `title+url+score` y el modelo respondía a ciegas. System prompt endurecido para forzar citas textuales del contexto.
+  - **LiteLLM ([infra/litellm/config.yaml](../../infra/litellm/config.yaml))**: `nvidia/llama-3.1-nemotron-70b-instruct` retirado por NVIDIA NIM (404). Sustituido por `meta/llama-3.3-70b-instruct` (primario) + `nvidia/llama-3.3-nemotron-super-49b-v1.5` (fallback).
+  - **Frontend ([src/frontend/app/(app)/page.tsx](../../src/frontend/app/(app)/page.tsx))**: eliminado el `useEffect` que creaba sesiones huérfanas al recargar la página sin escribir nada. La sesión se crea en lazy desde `send()`.
+  - **Scraper ([src/scraper/strategy.py](../../src/scraper/strategy.py), [src/scraper/worker.py](../../src/scraper/worker.py), [src/data/db.py](../../src/data/db.py))**: nueva excepción `BlockedContentError`, función `_rewrite_for_scrape()` (medium.com → readmedium.com), `_looks_blocked()` con marcadores específicos (sin `cloudflare`/`captcha` planos que daban falsos positivos en `cdnjs.cloudflare.com`) y ejecutado tras *cada* estrategia. Guard de calidad post-clean: < 300 chars → cuarentena. Nueva función `db.quarantine_recurso_blocked()` que marca el recurso con `quarantine_reason='manual'` y 30 días de gracia.
+  - **Telegram público ([docker-compose.yml](../../docker-compose.yml), [infra/tailscale/serve.json](../../infra/tailscale/serve.json), [.env.example](../../.env.example))**: nuevo sidecar `tailscale-funnel` (profile `telegram`) con imagen `tailscale/tailscale:stable`. Expone `ingestion-api:8000` en `https://linkanvil-ingest.<tailnet>.ts.net` con HTTPS automático. Volumen `cerebro-tailscale-state` mantiene la URL persistente entre reconstrucciones. Validado end-to-end con un bot real entregando URLs al webhook.
+- **Docs actualizadas en esta sesión**:
+  - `3_c4_diagrams.md` — añadido `tailscale` al diagrama de contenedores; flujo de ingesta refleja publish-on-duplicate y rama de cuarentena automática; flujo RAG muestra el enriquecimiento desde Postgres.
+  - `5_resumen_servicios.md` — entrada nueva para `cerebro-tailscale`; descripción del scraper actualizada con detección anti-bot y cuarentena.
+  - `6_arquitectura.md` — flujo de ingesta y de Chat RAG actualizados; nueva subsección "Túnel Telegram — Tailscale Funnel"; descripción del scraper actualizada.
+  - `7_ejemplo_flujo.md` — Fase 1 actualizada con publish-on-duplicate, rewrite anti-bot y cuarentena automática.
+  - `8_instalacion_y_configuracion.md` — sección 6.4 nueva con los pasos completos para configurar Tailscale Funnel + bot.
+  - `AUDIT_LOG.md` — esta entrada.
+
+---
+
 ## 2026-04-28 — Fase auditoría completada (commits 5dc5739..64eae38)
 
 - **Skill usada**: Change Manager + Business Analyst

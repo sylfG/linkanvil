@@ -362,7 +362,71 @@ ACME_EMAIL=admin@tu-dominio.com     # Let's Encrypt notifications
 
 Consulta `docs/PRODUCTION.md` para la guía completa incluyendo Docker secrets, configuración de firewall y backups programados.
 
-### 6.4 Backup automático
+### 6.4 Webhooks de Telegram (Tailscale Funnel)
+
+El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entregar los mensajes. Si trabajas en local detrás de un router doméstico, no la tienes por defecto. Solución gratis y persistente: **Tailscale Funnel** como sidecar de Docker. Sobrevive a `docker compose down/up` y a reconstrucciones del entorno.
+
+#### Pasos one-time en Tailscale
+
+1. **Cuenta**: regístrate gratis en https://login.tailscale.com (plan Personal).
+2. **Activar HTTPS**: Admin Console → DNS → `Enable HTTPS`. Imprescindible para que Funnel pueda emitir certificados.
+3. **Permitir Funnel**: Admin Console → Access Controls. La política por defecto en cuentas personales lo permite. Si no, añade:
+   ```jsonc
+   "nodeAttrs": [
+     { "target": ["*"], "attr": ["funnel"] }
+   ]
+   ```
+4. **Auth-key reusable**: Admin Console → Settings → Keys → `Generate auth key`. Marca:
+   - Reusable ✓
+   - Ephemeral ✗
+   - Pre-approved ✓ (si usas device approval)
+
+   Copia el valor `tskey-auth-...` — solo se muestra una vez.
+
+#### Configurar el túnel
+
+1. **Edita `.env`**:
+   ```env
+   TS_AUTHKEY=tskey-auth-XXXXXXXXXXXXXXXXXX
+   PUBLIC_INGESTION_URL=                # se rellena tras el primer arranque
+   ```
+
+2. **Levanta el túnel** (sin tocar el resto de servicios):
+   ```bash
+   docker compose --profile telegram up -d tailscale-funnel
+   ```
+
+3. **Descubre la URL pública**:
+   ```bash
+   docker logs cerebro-tailscale 2>&1 | grep -i "https://"
+   ```
+   Formato: `https://linkanvil-ingest.<tu-tailnet>.ts.net`.
+
+4. **Rellena `PUBLIC_INGESTION_URL`** en `.env` con esa URL y reinicia la API:
+   ```bash
+   docker compose up -d cerebro-api
+   ```
+
+5. **Smoke test desde fuera de la LAN** (móvil con datos, otra máquina):
+   ```bash
+   curl https://linkanvil-ingest.<tu-tailnet>.ts.net/health
+   # → {"status":"healthy"}
+   ```
+
+#### Registrar el bot en la app
+
+1. Crea un bot con `@BotFather` en Telegram → guarda el token.
+2. En la UI, ve a `/profile`, pega el token y guarda.
+3. La respuesta del PUT `/profile/telegram` debe incluir `webhook_url` apuntando al subdominio público.
+4. Manda una URL al bot — debería aparecer en tu KB tras unos segundos.
+
+#### Persistencia entre rebuilds
+
+El estado del nodo Tailscale vive en el volumen `cerebro-tailscale-state`. Mientras no lo borres con `docker volume rm`, la URL pública es la misma siempre. Tras un `docker compose down && up`, todo arranca y Telegram sigue entregando mensajes a la misma dirección sin reconfigurar nada.
+
+> **Aviso**: Tailscale Funnel solo expone los puertos públicos 443/8443/10000 (usamos 443) y solo responde mientras `cerebro-tailscale` esté corriendo.
+
+### 6.5 Backup automático
 
 ```bash
 bash scripts/backup.sh

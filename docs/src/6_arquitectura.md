@@ -103,6 +103,12 @@ graph TD
 
 **Decisión:** Traefik se autodescubre en Docker sin archivos de configuración adicionales — basta con añadir labels al servicio nuevo. Simplifica operaciones y garantiza que toda política de seguridad perimetral está en un solo lugar.
 
+### 🔌 Túnel Telegram — Tailscale Funnel (sidecar opcional)
+
+El bot de Telegram exige que LinkAnvil exponga `POST /webhook/telegram/{token_hash}` en una URL HTTPS pública. En entornos de desarrollo detrás de NAT no la hay, y el endpoint `INGESTION_URL=http://ingestion-api:8000` solo es resoluble dentro de `cerebro-net`. La solución es un sidecar `tailscale/tailscale:stable` (profile `telegram`) que se conecta a la tailnet del usuario, declara un proxy `serve.json` hacia `ingestion-api:8000` y publica al exterior con `AllowFunnel: true`. La URL pública resultante (`https://linkanvil-ingest.<tailnet>.ts.net`) se mete en `PUBLIC_INGESTION_URL` del `.env` para que `cerebro-api` la use al llamar a `setWebhook` en la API de Telegram.
+
+**Decisión:** Tailscale Funnel sobre Cloudflare Tunnel/ngrok porque (a) es gratuito sin necesidad de dominio propio, (b) el subdominio se mantiene fijo entre `docker compose down/up` mientras viva el volumen `tailscale-state`, (c) HTTPS con cert Let's Encrypt es automático, (d) no requiere abrir puertos en el router. Tradeoff: sólo expone los puertos públicos 443/8443/10000 y solo está disponible mientras el contenedor esté activo — suficiente para webhooks, no para alta disponibilidad. Los pasos de configuración están en `docs/src/8_instalacion_y_configuracion.md` sección 6.4.
+
 ### 📥 Ingestion API — cerebro-ingestion
 
 FastAPI que recibe URLs, aplica Bloom Filter en Redis para deduplicación sub-milisegundo y rate limiting atómico (INCR+EXPIRE), y publica en RabbitMQ. Responde `202 Accepted` inmediatamente.
@@ -117,7 +123,7 @@ Next.js 15 con store Zustand API-backed (sin localStorage), error boundaries y S
 
 ### 🕷️ Scraper Worker — cerebro-scraper
 
-Consume cola `q.url.ingesta`. Extrae contenido con Scrapling/Playwright, analiza con LiteLLM, persiste en Postgres con evento Outbox.
+Consume cola `q.url.ingesta`. Aplica reescritura anti-bot por dominio (`medium.com` → `readmedium.com`), elige estrategia (Basic / Stealth Playwright), valida el contenido con `_looks_blocked()` (marcadores específicos para evitar falsos positivos como `cdnjs.cloudflare.com`) y un guard de longitud mínima 300 chars. Si todo pasa, analiza con LiteLLM y persiste en Postgres con evento Outbox. Si está bloqueado o el texto es demasiado corto, mueve el recurso a `cuarentena` (sin DLQ) en lugar de embeder texto basura.
 
 ### 🧮 Embedder Worker — cerebro-embedder
 
@@ -154,19 +160,23 @@ sequenceDiagram
     participant EM as cerebro-embedder
     participant QD as Qdrant
 
-    U->>IG: POST /ingest {url}
-    IG->>RD: BF.EXISTS url_hash
-    alt URL duplicada
-        RD-->>IG: true
-        IG-->>U: 409 Conflict (ya existe)
-    else URL nueva
-        RD-->>IG: false
-        IG->>RD: INCR rate_limit_key (atómico)
-        IG->>MQ: publish q.url.ingesta
-        IG-->>U: 202 Accepted
-        MQ->>SC: consume mensaje
-        SC->>PG: SELECT recursos WHERE url_hash=? (¿existe globalmente?)
-        alt URL nueva o caducada
+    U->>IG: POST /ingest {url, tenant_id}
+    IG->>RD: BF.ADD url_hash (devuelve is_new)
+    IG->>RD: INCR rate_limit_key (atómico)
+    IG->>MQ: publish q.url.ingesta (siempre — el bloom es un hint, no veto)
+    IG-->>U: 202 Accepted (status="Accepted & Published" o "Accepted (relink)")
+
+    Note over MQ, SC: Procesamiento asíncrono
+    MQ->>SC: consume mensaje
+    SC->>PG: SELECT recursos WHERE url_hash=? (¿existe globalmente?)
+    alt URL nueva o caducada
+        SC->>SC: rewrite anti-bot (medium.com → readmedium.com) si aplica
+        SC->>SC: estrategia (Basic / Stealth Playwright)
+        SC->>SC: _looks_blocked() tras cada estrategia
+        alt Bloqueado o texto < 300 chars
+            SC->>PG: UPDATE recursos SET estado='cuarentena', quarantine_reason='manual'
+            Note over SC: ACK al mensaje (no DLQ)
+        else Contenido válido
             SC->>LLM: analiza texto → JSON estructurado
             LLM-->>SC: {titulo, resumen, tags, volatilidad}
             SC->>PG: UPSERT recursos + INSERT usuario_recursos + outbox 'recurso.procesado'
@@ -175,15 +185,17 @@ sequenceDiagram
             EM->>LLM: POST /v1/embeddings
             LLM-->>EM: vector [0.12, -0.45, ...]
             EM->>QD: upsert point uuid5(recurso_id:tenant_id) + payload
-        else URL ya conocida y fresca (otro tenant la procesó)
-            SC->>PG: INSERT usuario_recursos + outbox 'recurso.reusado'
-            Note over SC: salta scrape + LLM
-            MQ->>EM: consume 'recurso.reusado'
-            EM->>QD: scroll filter recurso_id → vector existente
-            EM->>QD: PUT point con vector copiado (sin embedder)
         end
+    else URL ya conocida y fresca (otro tenant la procesó)
+        SC->>PG: INSERT usuario_recursos + outbox 'recurso.reusado'
+        Note over SC: salta scrape + LLM (idempotente)
+        MQ->>EM: consume 'recurso.reusado'
+        EM->>QD: scroll filter recurso_id → vector existente
+        EM->>QD: PUT point con vector copiado (sin embedder)
     end
 ```
+
+> **Nota sobre la deduplicación**: la Ingestion API publica al queue **incluso cuando el bloom filter dice "duplicado"**. El bloom es un hint de Redis que puede divergir del estado real de Postgres (p.ej. tras un reset de DB) — confiar solo en él provocaría que la URL nunca llegue al worker y `usuario_recursos` no se cree para el tenant. La idempotencia se resuelve en el scraper: si el recurso global existe y está fresco, solo se inserta el link en `usuario_recursos` y el embedder copia el vector.
 
 ### 3.2 Chat RAG con SSE Streaming
 
@@ -205,8 +217,11 @@ sequenceDiagram
     AP->>LLM: genera embedding de la pregunta
     LLM-->>AP: vector semántico
     AP->>QD: búsqueda coseno > 0.85 (filtrado por tenant_id)
-    QD-->>AP: top-K documentos relevantes
-    AP->>LLM: stream(prompt RAG + contexto + pregunta)
+    QD-->>AP: top-K hits con recurso_id
+    AP->>PG: get_resources_for_rag(tenant, ids) — JOIN recursos+usuario_recursos
+    PG-->>AP: titulo, resumen, url, tags, categoría (solo activos del tenant)
+    Note over AP: Contexto rico construido aquí — el payload de Qdrant solo trae<br/>title/url/category, el resumen completo vive en Postgres.
+    AP->>LLM: stream(prompt estricto + contexto enriquecido + pregunta)
     LLM-->>AP: SSE chunks de respuesta
     AP-->>WB: SSE stream con chunks + fuentes
     AP->>PG: INSERT mensajes_chat (tras completar stream)

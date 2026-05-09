@@ -27,16 +27,16 @@ A lo largo de este viaje, veremos el flujo síncrono (respuesta inmediata al usu
 
 ### 1. Recepción y Encolado (Milisegundos)
 
-1. **`cerebro-traefik`**: Recibe la petición en el puerto 80/443 y la enruta a `cerebro-ingestion`.
-2. **`cerebro-ingestion`**: Consulta el Bloom Filter en Redis. Verifica si la URL ya fue procesada. Al ser nueva, la añade al filtro y aplica rate limiting atómico.
+1. **`cerebro-traefik`** (o **`cerebro-tailscale`** si entra por webhook de Telegram): Recibe la petición y la enruta a `cerebro-ingestion`.
+2. **`cerebro-ingestion`**: Aplica rate limiting atómico, consulta el Bloom Filter en Redis (con `BF.ADD`, que devuelve si era nueva o no) y **publica siempre al queue** — el bloom filter es un hint best-effort, no un veto. Si era duplicada, se publica con marca de "relink" para que el scraper resuelva la idempotencia más abajo.
 3. **`cerebro-rabbitmq`**: La URL se inyecta en la cola `q.url.ingesta`.
-4. **Retorno Inmediato**: Se devuelve un estado `202 Accepted` al usuario ("Enlace capturado"). El usuario ya puede cerrar la pestaña.
+4. **Retorno Inmediato**: `202 Accepted` con `status="Accepted & Published"` (URL nueva) o `"Accepted (relink)"` (vista antes en el bloom filter).
 
 ### 2. Procesamiento Asíncrono (Segundos)
 
-1. **`cerebro-scraper`**: Consume el mensaje de RabbitMQ. Decide la estrategia de scraping (estático o Playwright headless) según el dominio.
-2. **Scraping**: Descarga el HTML y limpia el ruido (menús, pies de página). Para SPAs y sitios con protección usa Chromium headless.
-3. **`cerebro-litellm`**: El scraper envía el texto a LiteLLM solicitando un resumen, extracción de entidades y *tags*. LiteLLM se comunica con el proveedor (ej. OpenAI) y devuelve el JSON estructurado (validado con Pydantic).
+1. **`cerebro-scraper`**: Consume el mensaje de RabbitMQ. Aplica primero un reescritor de dominios anti-bot agresivos (`medium.com` → `readmedium.com`) si el host coincide; luego decide la estrategia: Basic HTTP para HTML estático, Stealth Playwright/Chromium para SPAs, sitios JS-heavy o cuando el origen es `telegram`/`extension`.
+2. **Scraping y validación**: Tras cada estrategia ejecuta `_looks_blocked()` con marcadores específicos (`cf-mitigated`, `verifica que usted no es un bot`, `failed to render this page`…) — evitando keywords genéricos como `cloudflare` solo, que matchearían `cdnjs.cloudflare.com` en sitios legítimos. Si tras Stealth sigue bloqueado, o si el texto extraído tras `_html_to_clean_text` es < 300 chars, **el recurso se mueve a `cuarentena` automáticamente** (con `quarantine_reason='manual'` y 30 días de gracia) en vez de embeder texto basura. El mensaje se ack-ea (no DLQ — el bloqueo no es un fallo recuperable).
+3. **`cerebro-litellm`**: Si el contenido pasó la validación, el scraper envía el texto a LiteLLM solicitando un resumen, extracción de entidades y *tags*. LiteLLM se comunica con el proveedor (ej. NVIDIA NIM) y devuelve el JSON estructurado (validado con Pydantic).
 
 ### 3. Almacenamiento (Estado y Vectores — Patrón Outbox)
 

@@ -9,8 +9,8 @@ const CSRF_HEADER = "X-CSRF-Token";
 
 function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
-  return match ? decodeURIComponent(match[1]) : null;
+  const matches = [...document.cookie.matchAll(new RegExp("(?:^|; )" + name + "=([^;]*)", "g"))];
+  return matches.length > 0 ? decodeURIComponent(matches[matches.length - 1][1]) : null;
 }
 
 export async function apiCall<T>(

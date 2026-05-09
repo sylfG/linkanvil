@@ -18,15 +18,18 @@ model_list:
       api_key: os.environ/NVIDIA_API_KEY
 
   # ---- GRUPO cerebro-pro: Modelos grandes para razonamiento complejo ----
+  # nvidia/llama-3.1-nemotron-70b-instruct fue retirado de la cuenta NIM
+  # (devolvía 404 "Function not found"); se sustituye por la nueva versión
+  # nemotron-super-49b-v1.5 y se mantiene llama-3.3-70b como fallback.
   - model_name: cerebro-pro
     litellm_params:
-      model: openai/nvidia/llama-3.1-nemotron-70b-instruct
+      model: openai/meta/llama-3.3-70b-instruct
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
 
   - model_name: cerebro-pro
     litellm_params:
-      model: openai/meta/llama-3.3-70b-instruct
+      model: openai/nvidia/llama-3.3-nemotron-super-49b-v1.5
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
 

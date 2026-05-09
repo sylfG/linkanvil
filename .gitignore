@@ -19,6 +19,11 @@ cache/
 # Next.js build artifacts
 .next/
 out/
+*.tsbuildinfo
+
+# Scripts de prueba ad-hoc (no formar parte del repo)
+/test_*.py
+/test_*.js
 
 # Claude Code (configuración local, no compartir)
 .claude/settings.local.json

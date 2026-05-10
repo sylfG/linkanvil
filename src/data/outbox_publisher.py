@@ -50,32 +50,36 @@ class OutboxPublisher:
                     async with conn.transaction():
                         rows = await conn.fetch(
                             """
-                            SELECT id, tenant_id, payload 
-                            FROM outbox_eventos 
-                            WHERE procesado = FALSE 
-                            ORDER BY creado_en ASC 
-                            LIMIT 50 
+                            SELECT id, tenant_id, evento_tipo, payload
+                            FROM outbox_eventos
+                            WHERE procesado = FALSE
+                            ORDER BY creado_en ASC
+                            LIMIT 50
                             FOR UPDATE SKIP LOCKED
                             """
                         )
-                        
+
                         if not rows:
                             await asyncio.sleep(2)
                             continue
-                            
+
                         exchange = await self.channel.get_exchange(self.exchange_name)
-                        
+
                         for row in rows:
                             event_id = row['id']
                             payload_dict = json.loads(row['payload'])
                             payload_dict['tenant_id'] = row['tenant_id']
+                            payload_dict['evento_tipo'] = row['evento_tipo']
                             trace_id = payload_dict.get('trace_id', 'unknown-trace')
-                            
+
                             # Publicar
                             msg = aio_pika.Message(
                                 body=json.dumps(payload_dict).encode(),
                                 content_type="application/json",
-                                headers={"trace_id": trace_id}
+                                headers={
+                                    "trace_id": trace_id,
+                                    "evento_tipo": row['evento_tipo'],
+                                },
                             )
                             await exchange.publish(msg, routing_key="")
                             

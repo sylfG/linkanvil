@@ -184,6 +184,12 @@ async def telegram_webhook_user(token_hash: str, request: Request):
     """
     Webhook por usuario: el hash del bot token se registra vía PUT /profile/telegram en cerebro-api.
     Redis mapea telegram:{token_hash} → tenant_id del usuario.
+
+    Side-effect: capturamos el chat_id del mensaje y lo guardamos en Redis
+    bajo `telegram_chat:{tenant_id}` para que el notifier pueda enviar
+    avisos (cuarentena/expiración) al chat correcto. Persistente en Redis;
+    el notifier-worker lo sincroniza a `usuarios.telegram_chat_id` por si
+    Redis se purga.
     """
     try:
         tenant_id = await redis_client.get(f"telegram:{token_hash}") if redis_client else None
@@ -195,6 +201,14 @@ async def telegram_webhook_user(token_hash: str, request: Request):
             return {"status": "ignored", "reason": "not a message"}
 
         message = data["message"]
+
+        chat_id = message.get("chat", {}).get("id")
+        if chat_id is not None and redis_client is not None:
+            try:
+                await redis_client.set(f"telegram_chat:{tenant_id}", str(chat_id))
+            except Exception as cache_err:
+                logger.warning(f"No pudimos cachear chat_id en Redis: {cache_err}")
+
         text = message.get("text", "")
         if not text:
             return {"status": "ignored", "reason": "no text in message"}

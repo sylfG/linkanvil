@@ -184,6 +184,41 @@ async def count_quarantine(tenant_id: str) -> int:
     return int(row["n"])
 
 
+async def list_expired(tenant_id: str, limit: int = 100) -> list[dict]:
+    """Recursos en `expirado` linkeados al tenant. `dias_desde_expiracion`
+    se calcula contra `fecha_caducidad` (puede ser NULL en recursos antiguos
+    que se expiraron sin tener fecha registrada — devolvemos NULL en ese caso)."""
+    p = await get_pool()
+    rows = await p.fetch(
+        """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria,
+                  r.volatilidad, r.fecha_caducidad,
+                  r.quarantined_at, r.quarantine_reason,
+                  CASE WHEN r.fecha_caducidad IS NULL THEN NULL
+                       ELSE GREATEST(0, (NOW()::DATE - r.fecha_caducidad))::int
+                  END AS dias_desde_expiracion,
+                  ur.created_at, r.updated_at
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = $1 AND r.estado = 'expirado'
+           ORDER BY r.fecha_caducidad DESC NULLS LAST
+           LIMIT $2""",
+        tenant_id, limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def count_expired(tenant_id: str) -> int:
+    p = await get_pool()
+    row = await p.fetchrow(
+        """SELECT COUNT(*) AS n
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = $1 AND r.estado = 'expirado'""",
+        tenant_id,
+    )
+    return int(row["n"])
+
+
 async def _tenant_owns_recurso(conn, tenant_id: str, recurso_id: str) -> bool:
     row = await conn.fetchrow(
         "SELECT 1 FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",

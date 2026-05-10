@@ -306,6 +306,18 @@ async def list_quarantine(
     return {"items": items, "count": len(items)}
 
 
+@app.get("/resources/expired")
+async def list_expired_endpoint(
+    count_only: bool = False,
+    limit: int = Query(100, gt=0, le=500),
+    user=Depends(get_current_user),
+):
+    if count_only:
+        return {"count": await db.count_expired(user["tenant_id"])}
+    items = await db.list_expired(user["tenant_id"], limit)
+    return {"items": items, "count": len(items)}
+
+
 @app.post("/resources/{recurso_id}/rescue")
 async def rescue_resource(
     recurso_id: str,

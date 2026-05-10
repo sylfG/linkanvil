@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import { useResourceStream } from "@/lib/resource_stream";
 
 interface Resource {
   id: string;
@@ -78,6 +79,9 @@ export default function KBPage() {
   }, [estado, token]);
 
   useEffect(() => { load(); }, [load]);
+
+  // SSE: cualquier transición de recurso refresca la lista en vivo.
+  useResourceStream(token, () => { load(); });
 
   useEffect(() => {
     const q = search.toLowerCase();

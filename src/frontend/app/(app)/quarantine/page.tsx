@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import { useResourceStream } from "@/lib/resource_stream";
 
 interface QuarantineItem {
   id: string;
@@ -85,7 +86,7 @@ export default function QuarantinePage() {
     load();
   }, [load]);
 
-  // Refresca al volver a la pestaña visible (no SSE, polling barato).
+  // Refresca al volver a la pestaña visible (red de seguridad).
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") load();
@@ -93,6 +94,10 @@ export default function QuarantinePage() {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [load]);
+
+  // SSE: cualquier transición de recurso (otra pestaña, cron, otro device)
+  // dispara un re-fetch inmediato.
+  useResourceStream(token, () => { load(); });
 
   async function rescue(id: string) {
     setBusyId(id);

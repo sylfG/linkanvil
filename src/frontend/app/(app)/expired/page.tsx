@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import { useResourceStream } from "@/lib/resource_stream";
 
 interface ExpiredItem {
   id: string;
@@ -61,6 +62,9 @@ export default function ExpiredPage() {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [load]);
+
+  // SSE: nuevos expirados aparecen sin refresh manual.
+  useResourceStream(token, () => { load(); });
 
   async function remove(id: string) {
     setBusyId(id);

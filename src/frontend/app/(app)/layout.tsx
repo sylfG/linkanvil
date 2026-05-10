@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,6 +11,7 @@ import {
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
+import { useResourceStream } from "@/lib/resource_stream";
 import { NotificationsBell } from "./_NotificationsBell";
 
 type NavItem = {
@@ -161,35 +162,37 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   const [quarantineCount, setQuarantineCount] = useState(0);
   const [expiredCount, setExpiredCount] = useState(0);
 
+  const refreshCounts = useCallback(async () => {
+    if (!token) return;
+    try {
+      const [q, e] = await Promise.all([
+        apiCall<{ count: number }>("/resources/quarantine?count_only=true", {}, token),
+        apiCall<{ count: number }>("/resources/expired?count_only=true", {}, token),
+      ]);
+      setQuarantineCount(q.count);
+      setExpiredCount(e.count);
+    } catch {
+      /* el badge es opcional, no rompemos el sidebar si la API falla */
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!token) return;
-    let cancelled = false;
-    async function refresh() {
-      try {
-        const [q, e] = await Promise.all([
-          apiCall<{ count: number }>("/resources/quarantine?count_only=true", {}, token),
-          apiCall<{ count: number }>("/resources/expired?count_only=true", {}, token),
-        ]);
-        if (!cancelled) {
-          setQuarantineCount(q.count);
-          setExpiredCount(e.count);
-        }
-      } catch {
-        /* el badge es opcional, no rompemos el sidebar si la API falla */
-      }
-    }
-    refresh();
+    refreshCounts();
     const onVis = () => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState === "visible") refreshCounts();
     };
     document.addEventListener("visibilitychange", onVis);
-    const interval = setInterval(refresh, 60_000);
+    // Red de seguridad (5 min) ahora que SSE está activo.
+    const interval = setInterval(refreshCounts, 5 * 60_000);
     return () => {
-      cancelled = true;
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [token, pathname]);
+  }, [token, pathname, refreshCounts]);
+
+  // SSE: cualquier transición recalcula los badges al instante.
+  useResourceStream(token, () => { refreshCounts(); });
 
   async function newChat() {
     if (!token) return;

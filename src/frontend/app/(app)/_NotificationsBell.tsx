@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, AlertTriangle, CalendarX, RotateCcw, CheckCheck } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { useResourceStream } from "@/lib/resource_stream";
 
 interface NotificationItem {
   id: string;
@@ -69,12 +70,16 @@ export function NotificationsBell({ token }: { token: string | null }) {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVis);
-    const interval = setInterval(refresh, 60_000);
+    // Polling como red de seguridad (5 min) ahora que SSE está activo.
+    const interval = setInterval(refresh, 5 * 60_000);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       clearInterval(interval);
     };
   }, [refresh]);
+
+  // SSE: nueva notificación → refresh inmediato del feed.
+  useResourceStream(token, () => { refresh(); });
 
   // close on outside click
   useEffect(() => {

@@ -9,8 +9,11 @@ export interface IngestEvent {
   type?: string;
 }
 
-export function useSSE(url: string | null, onEvent?: (ev: IngestEvent) => void) {
-  const [events, setEvents] = useState<IngestEvent[]>([]);
+export function useSSE<T = IngestEvent>(
+  url: string | null,
+  onEvent?: (ev: T) => void,
+) {
+  const [events, setEvents] = useState<T[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
@@ -22,10 +25,10 @@ export function useSSE(url: string | null, onEvent?: (ev: IngestEvent) => void) 
 
     es.onmessage = (e) => {
       try {
-        const data: IngestEvent = JSON.parse(e.data);
+        const data = JSON.parse(e.data) as T & { type?: string };
         if (data.type === "connected") return;
-        setEvents((prev) => [data, ...prev]);
-        onEventRef.current?.(data);
+        setEvents((prev) => [data as T, ...prev]);
+        onEventRef.current?.(data as T);
       } catch {}
     };
 

@@ -67,32 +67,57 @@ class OutboxPublisher:
 
                         for row in rows:
                             event_id = row['id']
-                            payload_dict = json.loads(row['payload'])
-                            payload_dict['tenant_id'] = row['tenant_id']
-                            payload_dict['evento_tipo'] = row['evento_tipo']
-                            trace_id = payload_dict.get('trace_id', 'unknown-trace')
+                            try:
+                                # `payload` viene como str (asyncpg sin codec jsonb en
+                                # este pool). Hubo un periodo en que se grabó doblemente
+                                # codificado: json.loads devolvía str. Lo detectamos y
+                                # re-decodificamos para no atascar el bucle.
+                                raw = json.loads(row['payload'])
+                                if isinstance(raw, str):
+                                    raw = json.loads(raw)
+                                if not isinstance(raw, dict):
+                                    raise ValueError(f"payload no es dict: {type(raw).__name__}")
+                                payload_dict = raw
+                                payload_dict['tenant_id'] = row['tenant_id']
+                                payload_dict['evento_tipo'] = row['evento_tipo']
+                                trace_id = payload_dict.get('trace_id', 'unknown-trace')
 
-                            # Publicar
-                            msg = aio_pika.Message(
-                                body=json.dumps(payload_dict).encode(),
-                                content_type="application/json",
-                                headers={
-                                    "trace_id": trace_id,
-                                    "evento_tipo": row['evento_tipo'],
-                                },
-                            )
-                            await exchange.publish(msg, routing_key="")
-                            
-                            # Marcar completado
-                            await conn.execute(
-                                """
-                                UPDATE outbox_eventos 
-                                SET procesado = TRUE, procesado_en = NOW() 
-                                WHERE id = $1
-                                """, 
-                                event_id
-                            )
-                            logger.info(f"[{trace_id}] Evento Outbox '{event_id}' publicado via RabbitMQ.")
+                                msg = aio_pika.Message(
+                                    body=json.dumps(payload_dict).encode(),
+                                    content_type="application/json",
+                                    headers={
+                                        "trace_id": trace_id,
+                                        "evento_tipo": row['evento_tipo'],
+                                    },
+                                )
+                                await exchange.publish(msg, routing_key="")
+
+                                await conn.execute(
+                                    """
+                                    UPDATE outbox_eventos
+                                    SET procesado = TRUE, procesado_en = NOW()
+                                    WHERE id = $1
+                                    """,
+                                    event_id,
+                                )
+                                logger.info(f"[{trace_id}] Evento Outbox '{event_id}' publicado via RabbitMQ.")
+                            except Exception as ev_err:
+                                # Aislamos el error de UNA fila: la marcamos procesado
+                                # con reintentos++ para que no bloquee el resto del lote.
+                                # En el futuro se podría rutear a una DLQ de outbox.
+                                logger.error(
+                                    f"Evento outbox {event_id} ({row['evento_tipo']}) "
+                                    f"corrupto, descartando: {ev_err}"
+                                )
+                                await conn.execute(
+                                    """
+                                    UPDATE outbox_eventos
+                                    SET procesado = TRUE, procesado_en = NOW(),
+                                        reintentos = reintentos + 1
+                                    WHERE id = $1
+                                    """,
+                                    event_id,
+                                )
 
             except Exception as e:
                 logger.error(f"Falla crítica en el bucle Outbox: {e}")

@@ -306,11 +306,16 @@ async def _tenant_owns_recurso(conn, tenant_id: str, recurso_id: str) -> bool:
 
 
 async def _emit_outbox(conn, tenant_id: str, recurso_id, evento_tipo: str, payload: dict) -> None:
+    # OJO: este pool tiene un codec jsonb (encoder=json.dumps) instalado
+    # en `_init_conn`. Pasar el dict directamente: si lo serializamos aquí
+    # con json.dumps() el codec lo vuelve a serializar y queda
+    # doblemente codificado (string JSON dentro de jsonb), rompiendo al
+    # outbox-publisher al hacer json.loads().
     await conn.execute(
         """INSERT INTO outbox_eventos (
                tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
-           ) VALUES ($1, 'recurso', $2, $3, $4::jsonb)""",
-        tenant_id, recurso_id, evento_tipo, json.dumps(payload),
+           ) VALUES ($1, 'recurso', $2, $3, $4)""",
+        tenant_id, recurso_id, evento_tipo, payload,
     )
 
 

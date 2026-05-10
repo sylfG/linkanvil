@@ -77,6 +77,69 @@ async def test_process_inserts_notification_and_skips_telegram_when_no_chat():
 
         # Sin chat_id ni en Redis ni en BD → no debe haber llamada HTTP
         worker.http.post.assert_not_called()
+
+        # SSE fan-out: redis.publish a `resources:{tenant_id}` con payload válido
+        worker.redis.publish.assert_awaited_once()
+        ch, body = worker.redis.publish.await_args[0]
+        assert ch == f"resources:{tenant_id}"
+        sse_payload = json.loads(body)
+        assert sse_payload["evento_tipo"] == "recurso.cuarentena"
+        assert sse_payload["recurso_id"] == str(rid)
+        assert sse_payload["motivo"] == "caducidad"
+        assert "created_at" in sse_payload
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM notificaciones WHERE tenant_id = $1", tenant_id,
+            )
+            if rid:
+                await conn.execute("DELETE FROM recursos WHERE id = $1", rid)
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_process_continues_when_redis_publish_fails():
+    """Si redis.publish lanza, la fila de notificaciones debe haberse
+    insertado igualmente (no bloqueante)."""
+    db = DatabaseManager()
+    await db.connect()
+    tenant_id = "tenant_test_worker_publish_fail"
+    rid = None
+    try:
+        async with db.pool.acquire() as conn:
+            rid = await conn.fetchval(
+                """INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado)
+                   VALUES ($1, $2, 'Pub fail', 'media', 'activo')
+                   ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
+                   RETURNING id""",
+                "http://worker-test.example/pubfail", "hash_worker_pubfail",
+            )
+
+        worker = NotifierWorker()
+        worker.db = db
+        worker.redis = AsyncMock()
+        worker.redis.get = AsyncMock(return_value=None)
+        worker.redis.publish = AsyncMock(side_effect=RuntimeError("redis down"))
+        worker.http = AsyncMock()
+
+        msg = _fake_message({
+            "evento_tipo": "recurso.expirado",
+            "tenant_id": tenant_id,
+            "recurso_id": str(rid),
+            "url": "http://worker-test.example/pubfail",
+            "motivo": "gracia_agotada",
+            "trace_id": "trc-pubfail",
+        })
+        # No debe propagar la excepción
+        await worker.process_message(msg)
+
+        # La fila se ha insertado pese al fallo de Redis publish
+        async with db.pool.acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM notificaciones WHERE tenant_id = $1",
+                tenant_id,
+            )
+            assert n == 1
     finally:
         async with db.pool.acquire() as conn:
             await conn.execute(

@@ -278,6 +278,14 @@ services:
     depends_on:
       cerebro-api:
         condition: service_healthy
+    healthcheck:
+      # busybox wget en alpine; usamos IPv4 explícito porque `localhost`
+      # resuelve a IPv6 (::1) y Next.js solo escucha en 0.0.0.0:3001.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3001/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
   # ---------------------------------------------------------------------------
   # 🔀 API GATEWAY — Traefik
   #    Rate limiting, enrutamiento dinámico, generación de Trace-ID
@@ -473,6 +481,15 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.qdrant.rule=Host(`qdrant.localhost`)"
       - "traefik.http.services.qdrant.loadbalancer.server.port=6333"
+    # Imagen no trae curl/wget; usamos bash que sí está disponible y
+    # pedimos /readyz vía /dev/tcp + redirección HTTP manual sería frágil.
+    # Mejor: TCP probe — si qdrant acepta conexión en 6333 está vivo.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # ---------------------------------------------------------------------------
   # 🤖 LLM GATEWAY — LiteLLM
@@ -669,6 +686,9 @@ services:
       - jaeger
     networks:
       - cerebro-net
+    # Imagen distroless (no shell, no curl/wget, ni siquiera ls). Docker
+    # healthcheck necesita un binario en el contenedor — imposible aquí.
+    # La salud se monitoriza vía las propias métricas Prometheus en :8888.
     healthcheck:
       disable: true
 
@@ -771,6 +791,9 @@ services:
         condition: service_healthy
     networks:
       - cerebro-net
+    # Imagen distroless (kbudde/rabbitmq-exporter). Sin shell ni binarios
+    # extras — no hay forma de meter healthcheck dentro. Como prueba
+    # indirecta: Prometheus scraping de :9419 falla si el exporter cae.
     healthcheck:
       disable: true
 

@@ -49,6 +49,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
 PUBLIC_INGESTION_URL = os.getenv("PUBLIC_INGESTION_URL", "")
 COLLECTION = "cerebro_recursos"
 
+# Mismo namespace que `src/data/embedder_worker.py` para derivar el point
+# id por (recurso, tenant). Si cambia allí, hay que cambiar aquí.
+_QDRANT_POINT_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _qdrant_point_id(recurso_id: str, tenant_id: str) -> str:
+    return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}"))
+
 _redis: Optional[aioredis.Redis] = None
 _http: Optional[httpx.AsyncClient] = None
 
@@ -364,9 +372,26 @@ async def rescue_resource(
 ):
     row = await db.rescue_recurso(user["tenant_id"], recurso_id)
     if not row:
-        raise HTTPException(404, "Recurso no encontrado o no está en cuarentena")
+        raise HTTPException(404, "Recurso no encontrado o no rescatable")
     return {"status": "rescued", **{k: (v.isoformat() if hasattr(v, "isoformat") else str(v))
                                      for k, v in row.items()}}
+
+
+@app.post("/resources/{recurso_id}/quarantine")
+async def quarantine_resource(
+    recurso_id: str,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    row = await db.quarantine_recurso(user["tenant_id"], recurso_id)
+    if not row:
+        raise HTTPException(404, "Recurso no encontrado o no está en estado cuarentenable")
+    return {
+        "status": "quarantined",
+        "id": str(row["id"]),
+        "url": row["url"],
+        "quarantine_grace_until": row["quarantine_grace_until"].isoformat(),
+    }
 
 
 @app.post("/resources/{recurso_id}/expire")
@@ -394,8 +419,13 @@ async def delete_resource(
     # Esto vive fuera de la transacción SQL para no acoplar el commit a un
     # servicio externo: si Qdrant falla, el SQL ya está y un GC posterior
     # limpiará el punto huérfano.
-    if result["deleted_globally"]:
-        try:
+    # Limpieza Qdrant:
+    # - Si el recurso desapareció globalmente: borra todos los puntos (todos
+    #   los tenants) por filtro recurso_id.
+    # - Si solo se desligó de este tenant: borra el punto concreto por
+    #   point_id = uuid_v5(recurso_id, tenant_id) — sino quedaría huérfano.
+    try:
+        if result["deleted_globally"]:
             await _http.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/delete",
                 json={
@@ -407,8 +437,18 @@ async def delete_resource(
                 },
                 timeout=5.0,
             )
-        except Exception as e:
-            logger.warning(f"Qdrant cleanup failed for {result['id']}: {e}")
+        else:
+            point_id = _qdrant_point_id(str(result["id"]), user["tenant_id"])
+            await _http.post(
+                f"{QDRANT_URL}/collections/{COLLECTION}/points/delete",
+                json={"points": [point_id]},
+                timeout=5.0,
+            )
+    except Exception as e:
+        logger.warning(
+            f"Qdrant cleanup failed for {result['id']} "
+            f"(global={result['deleted_globally']}): {e}"
+        )
     return {
         "status": "deleted",
         "id": str(result["id"]),

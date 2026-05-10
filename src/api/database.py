@@ -84,7 +84,13 @@ async def get_resources(
 ) -> list[dict]:
     """Lista los recursos asociados al tenant via la pivote `usuario_recursos`.
     `created_at` es el momento en que el usuario añadió la URL a su KB
-    (no el de creación global del recurso)."""
+    (no el de creación global del recurso).
+
+    Por defecto (`estado='todos'`) excluimos `cuarentena` y `expirado` —
+    tienen vistas dedicadas (`/quarantine`, `/expired`) y mezclarlos en la
+    KB es ruidoso. Para verlos hay que pedirlos explícitamente
+    (`estado='cuarentena'` o `estado='expirado'`) o usar el alias
+    `estado='_all'` que sí los incluye."""
     p = await get_pool()
     base = """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
                      r.estado, r.volatilidad, r.fecha_caducidad,
@@ -92,14 +98,20 @@ async def get_resources(
               FROM recursos r
               JOIN usuario_recursos ur ON ur.recurso_id = r.id
               WHERE ur.tenant_id = $1"""
-    if estado and estado != "todos":
+    if estado == "_all":
+        rows = await p.fetch(
+            base + " ORDER BY ur.created_at DESC LIMIT $2",
+            tenant_id, limit,
+        )
+    elif estado and estado != "todos":
         rows = await p.fetch(
             base + " AND r.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
             tenant_id, estado, limit,
         )
     else:
         rows = await p.fetch(
-            base + " ORDER BY ur.created_at DESC LIMIT $2",
+            base + " AND r.estado NOT IN ('cuarentena','expirado')"
+                   " ORDER BY ur.created_at DESC LIMIT $2",
             tenant_id, limit,
         )
     return [dict(r) for r in rows]
@@ -305,8 +317,10 @@ async def _emit_outbox(conn, tenant_id: str, recurso_id, evento_tipo: str, paylo
 async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
     """Devuelve un recurso a 'activo' y limpia los campos de cuarentena.
     Recalcula `fecha_caducidad` a partir de la volatilidad para que el cron
-    no lo vuelva a meter inmediatamente. Devuelve None si el tenant no es
-    dueño o el recurso no está en cuarentena."""
+    no lo vuelva a meter inmediatamente. Acepta tanto recursos en
+    cuarentena como expirados (rescate fast-track desde la papelera).
+    Devuelve None si el tenant no es dueño o el recurso no está en un
+    estado rescatable."""
     p = await get_pool()
     async with p.acquire() as conn:
         async with conn.transaction():
@@ -330,7 +344,7 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
                            ) * INTERVAL '1 day'
                        ))::DATE,
                        updated_at = NOW()
-                   WHERE id = $1::uuid AND estado = 'cuarentena'
+                   WHERE id = $1::uuid AND estado IN ('cuarentena','expirado')
                    RETURNING id, url, fecha_caducidad""",
                 recurso_id,
             )
@@ -345,6 +359,49 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
                     "fecha_caducidad": row["fecha_caducidad"].isoformat(),
                 },
             )
+            return dict(row)
+
+
+async def quarantine_recurso(
+    tenant_id: str, recurso_id: str, grace_days: int = GRACE_PERIOD_DAYS,
+) -> Optional[dict]:
+    """Mueve manualmente un recurso `activo` o `procesando` a cuarentena
+    con motivo='manual'. Útil desde la KB cuando el usuario decide que un
+    recurso ya no es relevante pero quiere darse un período de gracia
+    antes de eliminarlo del RAG. Idempotente: si ya está en cuarentena,
+    devuelve None (no transición)."""
+    p = await get_pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
+                return None
+            row = await conn.fetchrow(
+                """UPDATE recursos
+                   SET estado = 'cuarentena',
+                       quarantined_at = NOW(),
+                       quarantine_reason = 'manual',
+                       quarantine_grace_until = (NOW() + ($2::int * INTERVAL '1 day'))::DATE,
+                       updated_at = NOW()
+                   WHERE id = $1::uuid AND estado IN ('activo','procesando')
+                   RETURNING id, url, quarantine_grace_until""",
+                recurso_id, grace_days,
+            )
+            if not row:
+                return None
+            tenants = await conn.fetch(
+                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+                row["id"],
+            )
+            for t in tenants:
+                await _emit_outbox(
+                    conn, t["tenant_id"], row["id"], "recurso.cuarentena",
+                    {
+                        "recurso_id": str(row["id"]),
+                        "url": row["url"],
+                        "motivo": "manual",
+                        "quarantined_by": tenant_id,
+                    },
+                )
             return dict(row)
 
 

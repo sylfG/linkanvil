@@ -7,6 +7,7 @@ import {
   Trash2,
   X,
   CalendarX,
+  RotateCcw,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
@@ -71,6 +72,18 @@ export default function ExpiredPage() {
     setConfirm(null);
     try {
       await apiCall(`/resources/${id}`, { method: "DELETE" }, token);
+      setItems((prev) => prev.filter((it) => it.id !== id));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function rescue(id: string) {
+    setBusyId(id);
+    try {
+      await apiCall(`/resources/${id}/rescue`, { method: "POST" }, token);
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);
@@ -182,6 +195,15 @@ export default function ExpiredPage() {
                 </div>
 
                 <div className="flex gap-2 pt-1 border-t border-border/60">
+                  <button
+                    disabled={busy}
+                    onClick={() => rescue(it.id)}
+                    className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-green-900/20 text-green-300 border border-green-700/30 hover:bg-green-900/40 transition-colors disabled:opacity-40"
+                    title="Devolver a activo (recalcula caducidad por volatilidad)"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Rescatar
+                  </button>
                   <button
                     disabled={busy}
                     onClick={() => setConfirm(it.id)}

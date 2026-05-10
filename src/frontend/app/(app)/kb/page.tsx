@@ -9,6 +9,9 @@ import {
   Tag,
   X,
   ChevronDown,
+  AlertTriangle,
+  CalendarX,
+  Trash2,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
@@ -27,7 +30,9 @@ interface Resource {
   created_at: string;
 }
 
-const ESTADO_OPTS = ["todos", "activo", "procesando", "completado", "expirado", "cuarentena"];
+// "todos" en backend ahora excluye cuarentena/expirado (esos tienen vista dedicada).
+// Mantenemos el resto de filtros explícitos por si el usuario quiere un corte.
+const ESTADO_OPTS = ["todos", "activo", "procesando", "cuarentena", "expirado"];
 
 const ESTADO_COLORS: Record<string, string> = {
   activo: "bg-green-800/30 text-green-300 border-green-700/30",
@@ -64,6 +69,9 @@ export default function KBPage() {
   const [search, setSearch] = useState("");
   const [estado, setEstado] = useState("todos");
   const [selected, setSelected] = useState<Resource | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<"quarantine" | "expire" | "delete" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,6 +90,26 @@ export default function KBPage() {
 
   // SSE: cualquier transición de recurso refresca la lista en vivo.
   useResourceStream(token, () => { load(); });
+
+  async function runAction(action: "quarantine" | "expire" | "delete") {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      if (action === "delete") {
+        await apiCall(`/resources/${selected.id}`, { method: "DELETE" }, token);
+      } else {
+        await apiCall(`/resources/${selected.id}/${action}`, { method: "POST" }, token);
+      }
+      setSelected(null);
+      setConfirm(null);
+      await load();
+    } catch (e: any) {
+      setActionError(e?.message ?? "Acción fallida");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     const q = search.toLowerCase();
@@ -311,6 +339,126 @@ export default function KBPage() {
                   {selected.fecha_caducidad && (
                     <p>Caduca: {selected.fecha_caducidad}</p>
                   )}
+                </div>
+
+                {actionError && (
+                  <div className="p-2.5 rounded-lg bg-red-900/20 border border-red-700/30 text-xs text-red-300">
+                    {actionError}
+                  </div>
+                )}
+              </div>
+
+              {/* Drawer footer: acciones según estado */}
+              <div className="border-t border-border p-4 space-y-2">
+                {(selected.estado === "activo" || selected.estado === "procesando") && (
+                  <button
+                    disabled={busy}
+                    onClick={() => setConfirm("quarantine")}
+                    className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-amber-900/20 text-amber-300 border border-amber-700/30 hover:bg-amber-900/40 transition-colors disabled:opacity-40"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Mandar a cuarentena
+                  </button>
+                )}
+                {selected.estado !== "expirado" && (
+                  <button
+                    disabled={busy}
+                    onClick={() => setConfirm("expire")}
+                    className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-red-900/20 text-red-300 border border-red-700/30 hover:bg-red-900/40 transition-colors disabled:opacity-40"
+                  >
+                    <CalendarX className="w-3.5 h-3.5" />
+                    Marcar como expirado
+                  </button>
+                )}
+                {(selected.estado === "cuarentena" || selected.estado === "expirado") && (
+                  <button
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      setActionError(null);
+                      try {
+                        await apiCall(`/resources/${selected.id}/rescue`, { method: "POST" }, token);
+                        setSelected(null);
+                        await load();
+                      } catch (e: any) {
+                        setActionError(e?.message ?? "Rescate fallido");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-green-900/20 text-green-300 border border-green-700/30 hover:bg-green-900/40 transition-colors disabled:opacity-40"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Rescatar a activo
+                  </button>
+                )}
+                <button
+                  disabled={busy}
+                  onClick={() => setConfirm("delete")}
+                  className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-red-950/30 text-red-200 border border-red-800/40 hover:bg-red-900/40 transition-colors disabled:opacity-40"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Eliminar permanentemente
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Confirmación */}
+      <AnimatePresence>
+        {confirm && selected && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[60] bg-black/70"
+              onClick={() => !busy && setConfirm(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+            >
+              <div className="bg-surface border border-border rounded-2xl shadow-2xl max-w-sm w-full p-5">
+                <h3 className="font-semibold text-sm mb-2">
+                  {confirm === "delete"
+                    ? "¿Eliminar definitivamente?"
+                    : confirm === "expire"
+                      ? "¿Marcar como expirado?"
+                      : "¿Mandar a cuarentena?"}
+                </h3>
+                <p className="text-xs text-muted mb-4">
+                  {confirm === "delete"
+                    ? "Borra el recurso de tu base de conocimiento. Si nadie más lo tiene, se elimina globalmente y se purga de Qdrant. No se puede deshacer."
+                    : confirm === "expire"
+                      ? "Lo retira inmediatamente del RAG. Aún podrás rescatarlo desde la vista de Expirados."
+                      : "Período de gracia configurable; durante ese tiempo seguirá visible en la vista de Cuarentena y podrás rescatarlo o expirarlo."}
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    disabled={busy}
+                    onClick={() => setConfirm(null)}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-card border border-border text-muted hover:text-slate-200 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => runAction(confirm)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg text-white transition-colors ${
+                      confirm === "delete"
+                        ? "bg-red-700 hover:bg-red-600"
+                        : confirm === "expire"
+                          ? "bg-red-600 hover:bg-red-500"
+                          : "bg-amber-700 hover:bg-amber-600"
+                    }`}
+                  >
+                    {busy ? "Procesando..." : "Sí, continuar"}
+                  </button>
                 </div>
               </div>
             </motion.div>

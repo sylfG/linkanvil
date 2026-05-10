@@ -318,6 +318,44 @@ async def list_expired_endpoint(
     return {"items": items, "count": len(items)}
 
 
+# ---------------------------------------------------------------------------
+# Notifications (F-05.3) — feed in-app de transiciones del ciclo de vida
+# ---------------------------------------------------------------------------
+
+@app.get("/notifications")
+async def list_notifications_endpoint(
+    count_only: bool = False,
+    only_unread: bool = False,
+    limit: int = Query(50, gt=0, le=200),
+    user=Depends(get_current_user),
+):
+    if count_only:
+        return {"count": await db.count_unread_notifications(user["tenant_id"])}
+    items = await db.list_notifications(user["tenant_id"], limit, only_unread)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/notifications/{notification_id}/read")
+async def mark_notification_read_endpoint(
+    notification_id: str,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    ok = await db.mark_notification_read(user["tenant_id"], notification_id)
+    if not ok:
+        raise HTTPException(404, "Notificación no encontrada o ya leída")
+    return {"status": "read", "id": notification_id}
+
+
+@app.post("/notifications/read-all")
+async def mark_all_read_endpoint(
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    count = await db.mark_all_notifications_read(user["tenant_id"])
+    return {"status": "ok", "marked": count}
+
+
 @app.post("/resources/{recurso_id}/rescue")
 async def rescue_resource(
     recurso_id: str,

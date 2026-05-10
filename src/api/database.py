@@ -219,6 +219,72 @@ async def count_expired(tenant_id: str) -> int:
     return int(row["n"])
 
 
+# ── notificaciones in-app (F-05.3) ────────────────────────────────────────────
+
+async def list_notifications(
+    tenant_id: str, limit: int = 50, only_unread: bool = False,
+) -> list[dict]:
+    p = await get_pool()
+    if only_unread:
+        rows = await p.fetch(
+            """SELECT id, evento_tipo, recurso_id, titulo, url, motivo,
+                      leido, created_at
+               FROM notificaciones
+               WHERE tenant_id = $1 AND leido = FALSE
+               ORDER BY created_at DESC LIMIT $2""",
+            tenant_id, limit,
+        )
+    else:
+        rows = await p.fetch(
+            """SELECT id, evento_tipo, recurso_id, titulo, url, motivo,
+                      leido, created_at
+               FROM notificaciones
+               WHERE tenant_id = $1
+               ORDER BY created_at DESC LIMIT $2""",
+            tenant_id, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def count_unread_notifications(tenant_id: str) -> int:
+    p = await get_pool()
+    row = await p.fetchrow(
+        """SELECT COUNT(*) AS n FROM notificaciones
+           WHERE tenant_id = $1 AND leido = FALSE""",
+        tenant_id,
+    )
+    return int(row["n"])
+
+
+async def mark_notification_read(tenant_id: str, notification_id: str) -> bool:
+    """Marca una notificación como leída. Devuelve True si se actualizó
+    una fila (existía y pertenecía al tenant), False si no."""
+    p = await get_pool()
+    row = await p.fetchrow(
+        """UPDATE notificaciones
+           SET leido = TRUE, leido_en = NOW()
+           WHERE id = $1::uuid AND tenant_id = $2 AND leido = FALSE
+           RETURNING id""",
+        notification_id, tenant_id,
+    )
+    return row is not None
+
+
+async def mark_all_notifications_read(tenant_id: str) -> int:
+    p = await get_pool()
+    row = await p.fetchrow(
+        """WITH upd AS (
+              UPDATE notificaciones
+              SET leido = TRUE, leido_en = NOW()
+              WHERE tenant_id = $1 AND leido = FALSE
+              RETURNING id
+           )
+           SELECT COUNT(*) AS n FROM upd""",
+        tenant_id,
+    )
+    return int(row["n"])
+
+
 async def _tenant_owns_recurso(conn, tenant_id: str, recurso_id: str) -> bool:
     row = await conn.fetchrow(
         "SELECT 1 FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",

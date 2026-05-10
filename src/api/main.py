@@ -464,6 +464,36 @@ async def ingest_stream(token: str):
     )
 
 
+@app.get("/resources/stream")
+async def resources_stream(token: str):
+    """SSE para transiciones del ciclo de vida del recurso (cuarentena,
+    expirado, rescatado). El notifier-worker publica a `resources:{tenant_id}`
+    tras insertar la notificación; aquí lo reenviamos al cliente."""
+    try:
+        payload = verify_token(token)
+    except ValueError:
+        raise HTTPException(401, "Token inválido")
+    tenant_id = payload.get("tenant_id", "")
+
+    async def _events() -> AsyncGenerator[str, None]:
+        pubsub = _redis.pubsub()
+        await pubsub.subscribe(f"resources:{tenant_id}")
+        try:
+            yield 'data: {"type":"connected"}\n\n'
+            async for msg in pubsub.listen():
+                if msg["type"] == "message":
+                    yield f"data: {msg['data']}\n\n"
+        finally:
+            await pubsub.unsubscribe(f"resources:{tenant_id}")
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Chat (RAG + LiteLLM proxy with streaming)
 # ---------------------------------------------------------------------------

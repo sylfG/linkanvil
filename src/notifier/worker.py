@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 import aio_pika
@@ -229,6 +230,25 @@ class NotifierWorker:
             except Exception as e:
                 logger.error(f"INSERT notificacion falló: {e}")
                 return
+
+            # Fan-out a SSE: cualquier UI suscrita a `resources:{tenant_id}`
+            # se entera al instante. No bloqueante: si Redis falla, ya hemos
+            # persistido la notificación; el polling de fallback recoge.
+            try:
+                if self.redis is not None:
+                    await self.redis.publish(
+                        f"resources:{tenant_id}",
+                        json.dumps({
+                            "evento_tipo": evento_tipo,
+                            "recurso_id": recurso_id,
+                            "url": url,
+                            "titulo": titulo,
+                            "motivo": motivo,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }),
+                    )
+            except Exception as e:
+                logger.warning(f"redis.publish resources:{tenant_id} falló: {e}")
 
             target = await self._get_telegram_target(tenant_id)
             if target:

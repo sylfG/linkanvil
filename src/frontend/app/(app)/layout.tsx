@@ -11,7 +11,7 @@ import {
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
-import { useResourceStream } from "@/lib/resource_stream";
+import { ResourceStreamProvider, useResourceStream } from "@/lib/resource_stream";
 import { NotificationsBell } from "./_NotificationsBell";
 
 type NavItem = {
@@ -334,6 +334,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
+    <ResourceStreamProvider token={token}>
     <div className="flex h-screen overflow-hidden bg-bg">
       {/* Desktop sidebar */}
       <aside className="hidden md:flex flex-col w-60 border-r border-border bg-surface flex-shrink-0">
@@ -376,5 +377,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
     </div>
+    </ResourceStreamProvider>
   );
 }

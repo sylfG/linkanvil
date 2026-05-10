@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
-import { useResourceStream } from "@/lib/resource_stream";
+import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 
 interface QuarantineItem {
   id: string;
@@ -64,6 +64,7 @@ export default function QuarantinePage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; action: "expire" | "delete" } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const dispatchEvent = useResourceStreamDispatch();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,10 +100,24 @@ export default function QuarantinePage() {
   // dispara un re-fetch inmediato.
   useResourceStream(token, () => { load(); });
 
+  function fireOptimistic(id: string, evento_tipo: "recurso.rescatado" | "recurso.expirado" | "recurso.eliminado") {
+    const item = items.find((it) => it.id === id);
+    dispatchEvent({
+      evento_tipo,
+      recurso_id: id,
+      url: item?.url,
+      titulo: item?.titulo,
+      motivo: "manual",
+      created_at: new Date().toISOString(),
+      optimistic: true,
+    });
+  }
+
   async function rescue(id: string) {
     setBusyId(id);
     try {
       await apiCall(`/resources/${id}/rescue`, { method: "POST" }, token);
+      fireOptimistic(id, "recurso.rescatado");
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);
@@ -116,6 +131,7 @@ export default function QuarantinePage() {
     setConfirm(null);
     try {
       await apiCall(`/resources/${id}/expire`, { method: "POST" }, token);
+      fireOptimistic(id, "recurso.expirado");
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);
@@ -129,6 +145,7 @@ export default function QuarantinePage() {
     setConfirm(null);
     try {
       await apiCall(`/resources/${id}`, { method: "DELETE" }, token);
+      fireOptimistic(id, "recurso.eliminado");
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);

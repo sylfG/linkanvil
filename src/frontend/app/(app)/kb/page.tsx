@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
-import { useResourceStream } from "@/lib/resource_stream";
+import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 
 interface Resource {
   id: string;
@@ -72,6 +72,7 @@ export default function KBPage() {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<"quarantine" | "expire" | "delete" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const dispatchEvent = useResourceStreamDispatch();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,6 +102,20 @@ export default function KBPage() {
       } else {
         await apiCall(`/resources/${selected.id}/${action}`, { method: "POST" }, token);
       }
+      // Despierta a sidebar (badges) y bell (notif) sin esperar 2s al SSE.
+      const eventoTipo =
+        action === "quarantine" ? "recurso.cuarentena" :
+        action === "expire" ? "recurso.expirado" :
+        "recurso.eliminado";
+      dispatchEvent({
+        evento_tipo: eventoTipo,
+        recurso_id: selected.id,
+        url: selected.url,
+        titulo: selected.titulo,
+        motivo: "manual",
+        created_at: new Date().toISOString(),
+        optimistic: true,
+      });
       setSelected(null);
       setConfirm(null);
       await load();
@@ -378,6 +393,14 @@ export default function KBPage() {
                       setActionError(null);
                       try {
                         await apiCall(`/resources/${selected.id}/rescue`, { method: "POST" }, token);
+                        dispatchEvent({
+                          evento_tipo: "recurso.rescatado",
+                          recurso_id: selected.id,
+                          url: selected.url,
+                          titulo: selected.titulo,
+                          created_at: new Date().toISOString(),
+                          optimistic: true,
+                        });
                         setSelected(null);
                         await load();
                       } catch (e: any) {

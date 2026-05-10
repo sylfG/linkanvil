@@ -11,18 +11,26 @@ export interface ResourceEvent {
   evento_tipo:
     | "recurso.cuarentena"
     | "recurso.expirado"
-    | "recurso.rescatado";
+    | "recurso.rescatado"
+    | "recurso.eliminado";
   recurso_id?: string;
   url?: string;
   titulo?: string;
   motivo?: string;
   created_at?: string;
+  // True cuando el evento es local (dispatch tras una acción del
+  // usuario) para feedback instantáneo, sin esperar la cadena
+  // outbox → RabbitMQ → notifier → Redis → SSE. Los listeners pueden
+  // usar este flag para insertar entradas optimistas y deduplicarlas
+  // cuando llegue la versión real del backend ~2 s más tarde.
+  optimistic?: boolean;
 }
 
 type Listener = (ev: ResourceEvent) => void;
 
 interface ResourceStreamCtx {
   subscribe: (cb: Listener) => () => void;
+  dispatch: (ev: ResourceEvent) => void;
 }
 
 const Ctx = createContext<ResourceStreamCtx | null>(null);
@@ -31,8 +39,10 @@ const Ctx = createContext<ResourceStreamCtx | null>(null);
  * Provider con UN solo EventSource hacia /api/resources/stream y
  * fan-out a múltiples suscriptores. Los navegadores limitan a ~6
  * conexiones HTTP/1.1 por origen y cada `useSSE` abría una propia,
- * llegando a colapsar (algunas suscripciones se quedan en queue y
- * nunca reciben). Centralizar evita el límite y duplica trabajo.
+ * llegando a colapsar. Centralizar evita el límite y permite además
+ * inyectar eventos locales (`dispatch`) tras acciones del usuario,
+ * sin esperar a que la cadena outbox→RabbitMQ→notifier→Redis traiga
+ * el evento real.
  */
 export function ResourceStreamProvider({
   token,
@@ -48,6 +58,16 @@ export function ResourceStreamProvider({
     return () => {
       listenersRef.current.delete(cb);
     };
+  }, []);
+
+  const dispatch = useCallback((ev: ResourceEvent) => {
+    listenersRef.current.forEach((cb) => {
+      try {
+        cb(ev);
+      } catch {
+        /* un listener fallido no afecta al resto */
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -80,7 +100,9 @@ export function ResourceStreamProvider({
     };
   }, [token]);
 
-  return <Ctx.Provider value={{ subscribe }}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={{ subscribe, dispatch }}>{children}</Ctx.Provider>
+  );
 }
 
 /**
@@ -101,4 +123,17 @@ export function useResourceStream(
       cbRef.current?.(ev);
     });
   }, [ctx]);
+}
+
+/**
+ * Hook para inyectar un evento local en el bus tras una acción del
+ * usuario (e.g. tras confirmar un modal). Despierta a todos los
+ * listeners en el siguiente tick para que actualicen sus contadores y
+ * listas sin esperar a la cadena del backend. La cadena real llega
+ * 2-3 s después y los listeners deben deduplicar si registran items
+ * optimistas en estado local (ver bell).
+ */
+export function useResourceStreamDispatch() {
+  const ctx = useContext(Ctx);
+  return ctx?.dispatch ?? (() => {});
 }

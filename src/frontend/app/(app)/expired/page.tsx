@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
-import { useResourceStream } from "@/lib/resource_stream";
+import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 
 interface ExpiredItem {
   id: string;
@@ -34,6 +34,7 @@ export default function ExpiredPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const dispatchEvent = useResourceStreamDispatch();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,11 +68,24 @@ export default function ExpiredPage() {
   // SSE: nuevos expirados aparecen sin refresh manual.
   useResourceStream(token, () => { load(); });
 
+  function fireOptimistic(id: string, evento_tipo: "recurso.rescatado" | "recurso.eliminado") {
+    const item = items.find((it) => it.id === id);
+    dispatchEvent({
+      evento_tipo,
+      recurso_id: id,
+      url: item?.url,
+      titulo: item?.titulo,
+      created_at: new Date().toISOString(),
+      optimistic: true,
+    });
+  }
+
   async function remove(id: string) {
     setBusyId(id);
     setConfirm(null);
     try {
       await apiCall(`/resources/${id}`, { method: "DELETE" }, token);
+      fireOptimistic(id, "recurso.eliminado");
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);
@@ -84,6 +98,7 @@ export default function ExpiredPage() {
     setBusyId(id);
     try {
       await apiCall(`/resources/${id}/rescue`, { method: "POST" }, token);
+      fireOptimistic(id, "recurso.rescatado");
       setItems((prev) => prev.filter((it) => it.id !== id));
     } catch (e: any) {
       setError(e.message);

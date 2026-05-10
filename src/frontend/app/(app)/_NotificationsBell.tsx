@@ -15,6 +15,9 @@ interface NotificationItem {
   motivo?: string;
   leido: boolean;
   created_at: string;
+  // Inserciones locales (dispatch) tienen id sintético; se reemplazan
+  // por la fila real cuando la API trae la notificación tras el SSE.
+  optimistic?: boolean;
 }
 
 const REASON_LABEL: Record<string, string> = {
@@ -57,12 +60,30 @@ export function NotificationsBell({ token }: { token: string | null }) {
       const data = await apiCall<{ items: NotificationItem[]; count: number }>(
         "/notifications?limit=20", {}, token,
       );
-      setItems(data.items);
-      setUnread(data.items.filter((n) => !n.leido).length);
+      // Mantenemos las entradas optimistas que aún no han sido confirmadas
+      // por el backend (mismo recurso_id+evento_tipo no presente en data.items).
+      setItems((prev) => {
+        const optimistic = prev.filter(
+          (p) => p.optimistic && !data.items.some(
+            (r) => r.recurso_id === p.recurso_id && r.evento_tipo === p.evento_tipo,
+          ),
+        );
+        return [...optimistic, ...data.items];
+      });
+      setUnread((prev) => {
+        // Recalcular en el siguiente tick con el state ya fusionado.
+        const real = data.items.filter((n) => !n.leido).length;
+        return real + (prev > real ? prev - real : 0);
+      });
     } catch {
       /* el badge es opcional */
     }
   }, [token]);
+
+  // Recalcula unread cuando items cambia (cubre la entrada optimista).
+  useEffect(() => {
+    setUnread(items.filter((n) => !n.leido).length);
+  }, [items]);
 
   useEffect(() => {
     refresh();
@@ -79,7 +100,31 @@ export function NotificationsBell({ token }: { token: string | null }) {
   }, [refresh]);
 
   // SSE: nueva notificación → refresh inmediato del feed.
-  useResourceStream(token, () => { refresh(); });
+  // Si el evento es optimista (dispatch local tras una acción), también
+  // insertamos un placeholder al instante para que la campana cuente sin
+  // esperar al round-trip de /notifications. La inserción real lo
+  // sobrescribe cuando llega vía SSE.
+  useResourceStream(token, (ev) => {
+    if (ev.optimistic && ev.evento_tipo !== "recurso.eliminado") {
+      const placeholder: NotificationItem = {
+        id: `optimistic-${ev.recurso_id ?? Math.random()}-${ev.evento_tipo}`,
+        evento_tipo: ev.evento_tipo,
+        recurso_id: ev.recurso_id,
+        titulo: ev.titulo,
+        url: ev.url,
+        motivo: ev.motivo,
+        leido: false,
+        created_at: ev.created_at ?? new Date().toISOString(),
+        optimistic: true,
+      };
+      setItems((prev) => {
+        // Evita duplicar si ya hay una optimista igual.
+        if (prev.some((p) => p.id === placeholder.id)) return prev;
+        return [placeholder, ...prev];
+      });
+    }
+    refresh();
+  });
 
   // close on outside click
   useEffect(() => {

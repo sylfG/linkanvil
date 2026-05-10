@@ -87,6 +87,12 @@
       "vhost": "cerebro",
       "durable": true,
       "auto_delete": false
+    },
+    {
+      "name": "q.notifications",
+      "vhost": "cerebro",
+      "durable": true,
+      "auto_delete": false
     }
   ],
   "bindings": [
@@ -115,6 +121,13 @@
       "source": "cerebro.procesamiento",
       "vhost": "cerebro",
       "destination": "q.embeddings",
+      "destination_type": "queue",
+      "routing_key": ""
+    },
+    {
+      "source": "cerebro.procesamiento",
+      "vhost": "cerebro",
+      "destination": "q.notifications",
       "destination_type": "queue",
       "routing_key": ""
     }

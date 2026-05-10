@@ -119,6 +119,38 @@ services:
       redis:
         condition: service_healthy
 
+  notifier-worker:
+    build:
+      context: .
+      dockerfile: infra/scraper.Dockerfile
+    command: ["python", "-m", "src.notifier.worker"]
+    container_name: cerebro-notifier
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.3"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import redis,os,sys; r=redis.Redis.from_url(os.environ['REDIS_URL']); sys.exit(0 if r.get('worker:notifier:heartbeat') else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-cerebro}:${RABBITMQ_PASS:-cerebro_pass}@rabbitmq:5672/cerebro
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
+    networks:
+      - cerebro-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   embedder-worker:
     build:
       context: .

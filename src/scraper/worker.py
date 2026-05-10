@@ -77,7 +77,10 @@ async def _extract_metadata_with_llm(
         "- \"keywords\": lista de 3-5 palabras clave\n"
         "- \"volatility_score\": \"baja\" (docs/tutoriales), \"media\" (artículos), "
         "\"alta\" (noticias), o \"dinamica\" (precios/stocks)\n"
-        "- \"estimated_useful_life_days\": entero entre 30 y 365\n\n"
+        "- \"estimated_useful_life_days\": entero entre 30 y 365\n"
+        "- \"expiration_date\": fecha ISO YYYY-MM-DD si el contenido menciona una "
+        "fecha concreta de evento, deadline, fin de oferta o caducidad explícita; "
+        "null si no aplica o no se puede determinar\n\n"
         f"URL: {url}\n"
         f"Título HTML: {title or '(sin título)'}\n\n"
         f"Texto:\n{clean_text[:6000]}\n\n"
@@ -113,6 +116,7 @@ async def _extract_metadata_with_llm(
         "keywords": [],
         "volatility_score": "media",
         "estimated_useful_life_days": 30,
+        "expiration_date": None,
     }
 
 

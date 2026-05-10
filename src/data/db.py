@@ -3,9 +3,28 @@ import os
 import json
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 logger = logging.getLogger(__name__)
+
+# Período de gracia tras detectar caducidad (alineado con audit_cron). Importado
+# perezosamente para evitar dependencia circular si audit_cron crece.
+GRACE_PERIOD_DAYS = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))
+
+
+def _parse_iso_date(value) -> date | None:
+    """Acepta str ISO (YYYY-MM-DD o ISO datetime) o None. Devuelve date o None."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        # fromisoformat acepta tanto YYYY-MM-DD como YYYY-MM-DDTHH:MM:SS
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.date()
+    except ValueError:
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
 
 class DatabaseManager:
     def __init__(self, db_url: str = None):
@@ -145,21 +164,45 @@ class DatabaseManager:
         volatilidad = vol_map.get(volatilidad, "media")
 
         useful_life = extracted_data.get("estimated_useful_life_days", 30)
-        fecha_caducidad = datetime.utcnow() + timedelta(days=useful_life)
-        estado = "procesando"
+        parsed_exp = _parse_iso_date(extracted_data.get("expiration_date"))
+        today = datetime.utcnow().date()
+
+        if parsed_exp is not None:
+            fecha_caducidad = parsed_exp
+        else:
+            fecha_caducidad = today + timedelta(days=useful_life)
+
+        already_expired = fecha_caducidad <= today
+        if already_expired:
+            estado = "cuarentena"
+            quarantine_reason = "caducidad"
+            quarantine_grace_until = today + timedelta(days=GRACE_PERIOD_DAYS)
+            quarantined_at = datetime.utcnow()
+            evento_tipo = "recurso.cuarentena"
+        else:
+            estado = "procesando"
+            quarantine_reason = None
+            quarantine_grace_until = None
+            quarantined_at = None
+            evento_tipo = "recurso.procesado"
 
         recurso_id = None
 
-        logger.info(f"Guardando transaccionalmente recurso global + link tenant + outbox. Tenant ID: {tenant_id}")
+        logger.info(
+            f"Guardando recurso global + link tenant + outbox. Tenant={tenant_id} "
+            f"estado={estado} caducidad={fecha_caducidad}"
+        )
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
                     INSERT INTO recursos (
                         url, url_hash, titulo, resumen, categoria, tags,
-                        volatilidad, fecha_caducidad, estado
+                        volatilidad, fecha_caducidad, estado,
+                        quarantined_at, quarantine_reason, quarantine_grace_until
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9
+                        $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9,
+                        $10, $11, $12
                     )
                     ON CONFLICT (url_hash)
                     DO UPDATE SET
@@ -170,11 +213,15 @@ class DatabaseManager:
                         volatilidad = EXCLUDED.volatilidad,
                         fecha_caducidad = EXCLUDED.fecha_caducidad,
                         estado = EXCLUDED.estado,
+                        quarantined_at = EXCLUDED.quarantined_at,
+                        quarantine_reason = EXCLUDED.quarantine_reason,
+                        quarantine_grace_until = EXCLUDED.quarantine_grace_until,
                         updated_at = NOW()
                     RETURNING id
                     """,
                     url, url_hash, titulo, resumen, categoria, tags,
                     volatilidad, fecha_caducidad, estado,
+                    quarantined_at, quarantine_reason, quarantine_grace_until,
                 )
 
                 recurso_id = row['id']
@@ -193,18 +240,20 @@ class DatabaseManager:
                     "trace_id": trace_id,
                     "recurso_id": str(recurso_id),
                     "url": url,
-                    "extracted_info": extracted_data
+                    "extracted_info": extracted_data,
                 }
+                if already_expired:
+                    outbox_payload["motivo"] = "caducidad"
 
                 await conn.execute(
                     """
                     INSERT INTO outbox_eventos (
                         tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
                     ) VALUES (
-                        $1, 'recurso', $2, 'recurso.procesado', $3::jsonb
+                        $1, 'recurso', $2, $3, $4::jsonb
                     )
                     """,
-                    tenant_id, recurso_id, json.dumps(outbox_payload)
+                    tenant_id, recurso_id, evento_tipo, json.dumps(outbox_payload)
                 )
 
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")

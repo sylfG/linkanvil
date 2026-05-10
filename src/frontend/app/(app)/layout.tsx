@@ -11,6 +11,7 @@ import {
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
+import { NotificationsBell } from "./_NotificationsBell";
 
 type NavItem = {
   href: string;
@@ -204,7 +205,8 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
         <div className="w-8 h-8 rounded-lg bg-accent/20 flex items-center justify-center flex-shrink-0">
           <Brain className="w-5 h-5 text-accent-light" />
         </div>
-        <span className="font-bold text-slate-100">LinkAnvil</span>
+        <span className="font-bold text-slate-100 flex-1">LinkAnvil</span>
+        <NotificationsBell token={token} />
       </div>
 
       {/* Scrollable nav + history */}

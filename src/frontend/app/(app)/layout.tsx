@@ -4,7 +4,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Brain, MessageSquare, Link2, BookOpen, AlertTriangle,
+  Brain, MessageSquare, Link2, BookOpen, AlertTriangle, CalendarX,
   LogOut, Menu, X, Plus, Trash2,
   User, Bot, CheckCircle2, AlertCircle, Loader2, Key, Copy, Check,
 } from "lucide-react";
@@ -16,7 +16,7 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   label: string;
-  badge?: "quarantine";
+  badge?: "quarantine" | "expired";
 };
 
 const NAV: NavItem[] = [
@@ -24,6 +24,7 @@ const NAV: NavItem[] = [
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
+  { href: "/expired", icon: CalendarX, label: "Expirados", badge: "expired" },
 ];
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
@@ -157,18 +158,21 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   const { sessions, activeId, setActive, createSession, deleteSession } = useChatStore();
   const [profileOpen, setProfileOpen] = useState(false);
   const [quarantineCount, setQuarantineCount] = useState(0);
+  const [expiredCount, setExpiredCount] = useState(0);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     async function refresh() {
       try {
-        const res = await apiCall<{ count: number }>(
-          "/resources/quarantine?count_only=true",
-          {},
-          token,
-        );
-        if (!cancelled) setQuarantineCount(res.count);
+        const [q, e] = await Promise.all([
+          apiCall<{ count: number }>("/resources/quarantine?count_only=true", {}, token),
+          apiCall<{ count: number }>("/resources/expired?count_only=true", {}, token),
+        ]);
+        if (!cancelled) {
+          setQuarantineCount(q.count);
+          setExpiredCount(e.count);
+        }
       } catch {
         /* el badge es opcional, no rompemos el sidebar si la API falla */
       }
@@ -209,7 +213,14 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
         {NAV.map(({ href, icon: Icon, label, badge }) => {
           const active = pathname === href && href !== "/";
           const chatActive = href === "/" && (pathname === "/" || pathname === "");
-          const showBadge = badge === "quarantine" && quarantineCount > 0;
+          const badgeCount =
+            badge === "quarantine" ? quarantineCount :
+            badge === "expired" ? expiredCount : 0;
+          const showBadge = !!badge && badgeCount > 0;
+          const badgeCls =
+            badge === "expired"
+              ? "bg-red-700/40 text-red-200 border border-red-600/40"
+              : "bg-amber-700/40 text-amber-200 border border-amber-600/40";
           return (
             <Link
               key={href}
@@ -224,8 +235,8 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
               <Icon className="w-4 h-4 flex-shrink-0" />
               <span className="flex-1">{label}</span>
               {showBadge && (
-                <span className="ml-auto bg-amber-700/40 text-amber-200 border border-amber-600/40 text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">
-                  {quarantineCount > 99 ? "99+" : quarantineCount}
+                <span className={`ml-auto ${badgeCls} text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[20px] text-center`}>
+                  {badgeCount > 99 ? "99+" : badgeCount}
                 </span>
               )}
             </Link>

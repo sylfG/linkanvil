@@ -8,7 +8,6 @@ import {
   ExternalLink,
   Tag,
   X,
-  ChevronDown,
   AlertTriangle,
   CalendarX,
   Trash2,
@@ -16,6 +15,7 @@ import {
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
+import { Pagination, PAGE_SIZE } from "@/components/Pagination";
 
 interface Resource {
   id: string;
@@ -29,26 +29,6 @@ interface Resource {
   fecha_caducidad?: string;
   created_at: string;
 }
-
-// "todos" en backend ahora excluye cuarentena/expirado (esos tienen vista dedicada).
-// Mantenemos el resto de filtros explícitos por si el usuario quiere un corte.
-const ESTADO_OPTS = ["todos", "activo", "procesando", "cuarentena", "expirado"];
-
-const ESTADO_COLORS: Record<string, string> = {
-  activo: "bg-green-800/30 text-green-300 border-green-700/30",
-  completado: "bg-blue-800/30 text-blue-300 border-blue-700/30",
-  procesando: "bg-yellow-800/30 text-yellow-300 border-yellow-700/30",
-  expirado: "bg-red-800/30 text-red-300 border-red-700/30",
-  cuarentena: "bg-orange-800/30 text-orange-300 border-orange-700/30",
-};
-
-const ESTADO_EMOJI: Record<string, string> = {
-  activo: "✅",
-  completado: "✅",
-  procesando: "⏳",
-  expirado: "🗑️",
-  cuarentena: "⚠️",
-};
 
 function parseTags(raw: string | string[] | null | undefined): string[] {
   if (!raw) return [];
@@ -67,25 +47,36 @@ export default function KBPage() {
   const [filtered, setFiltered] = useState<Resource[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [estado, setEstado] = useState("todos");
   const [selected, setSelected] = useState<Resource | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<"quarantine" | "expire" | "delete" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const dispatchEvent = useResourceStreamDispatch();
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Si el filtro/búsqueda reduce los resultados, no nos quedamos en una página
+  // que ya no existe.
+  useEffect(() => {
+    if (page > totalPages) setPage(1);
+  }, [page, totalPages]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // KB muestra solo recursos activos. Procesando vive en /ingest mientras
+      // se vectoriza; cuarentena y expirado tienen vista propia.
       const data = await apiCall<Resource[]>(
-        `/resources?estado=${estado}&limit=200`,
+        "/resources?estado=activo&limit=200",
         {},
         token
       );
       setResources(data);
     } catch {}
     setLoading(false);
-  }, [estado, token]);
+  }, [token]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -153,7 +144,7 @@ export default function KBPage() {
         <p className="text-sm text-muted mt-1">{filtered.length} recurso(s)</p>
       </div>
 
-      {/* Filters */}
+      {/* Search */}
       <div className="flex flex-wrap gap-2 mb-5 items-center">
         <div className="relative flex-1 min-w-[160px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
@@ -163,21 +154,6 @@ export default function KBPage() {
             placeholder="Buscar..."
             className="w-full bg-card border border-border rounded-lg pl-8 pr-3 py-2 text-sm text-slate-100 placeholder-muted outline-none focus:border-accent-light transition-colors"
           />
-        </div>
-
-        <div className="relative">
-          <select
-            value={estado}
-            onChange={(e) => setEstado(e.target.value)}
-            className="appearance-none bg-card border border-border rounded-lg pl-3 pr-7 py-2 text-sm text-slate-200 outline-none cursor-pointer"
-          >
-            {ESTADO_OPTS.map((e) => (
-              <option key={e} value={e}>
-                {e === "todos" ? "Todos los estados" : e}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
         </div>
 
         <button
@@ -217,9 +193,8 @@ export default function KBPage() {
             hidden: {},
           }}
         >
-          {filtered.map((r) => {
+          {pageItems.map((r) => {
             const tags = parseTags(r.tags);
-            const colorClass = ESTADO_COLORS[r.estado] || "bg-slate-800/30 text-slate-300 border-slate-700/30";
             return (
               <motion.button
                 key={r.id}
@@ -230,16 +205,9 @@ export default function KBPage() {
                 onClick={() => setSelected(r)}
                 className="bg-card border border-border rounded-xl p-4 text-left hover:border-accent/40 hover:bg-accent/5 transition-all group"
               >
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-sm font-medium text-slate-100 leading-snug line-clamp-2 flex-1">
-                    {r.titulo || r.url}
-                  </h3>
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full border flex-shrink-0 ${colorClass}`}
-                  >
-                    {ESTADO_EMOJI[r.estado] || "❓"} {r.estado}
-                  </span>
-                </div>
+                <h3 className="text-sm font-medium text-slate-100 leading-snug line-clamp-2 mb-2">
+                  {r.titulo || r.url}
+                </h3>
 
                 <p className="text-xs text-muted font-mono truncate mb-2 group-hover:text-accent-light transition-colors">
                   {r.url}
@@ -269,6 +237,13 @@ export default function KBPage() {
           })}
         </motion.div>
       )}
+
+      <Pagination
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={filtered.length}
+        onChange={setPage}
+      />
 
       {/* Detail drawer */}
       <AnimatePresence>

@@ -151,6 +151,21 @@ class ScraperContext:
         ]
         return any(s in lowered for s in markers)
 
+    def _content_too_short(self, html: str) -> bool:
+        """Heurística de SPA: el HTML responde 200 OK pero apenas tiene
+        texto extraíble sin renderizar JS (típico de React/Vue/Astro sin
+        SSR). En esos casos conviene escalar a Stealth antes de
+        cuarentenar — Stealth ejecuta JS y suele recuperar el contenido."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+                tag.decompose()
+            text = soup.get_text(separator=" ", strip=True)
+            return len(text) < 300
+        except Exception:
+            return False
+
     async def execute(self, url: str, source: str | None = None) -> str:
         # Reescritura anti-bot: si el dominio es notoriamente complicado
         # (Medium/Datadome), pedimos contenido al espejo legible. La URL
@@ -174,6 +189,12 @@ class ScraperContext:
                 html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
                 if self._looks_blocked(html):
                     logger.warning(f"[{self.trace_id}] Stealth tampoco superó el muro, cuarentena: {url}")
+                    raise BlockedContentError(url)
+            elif self._content_too_short(html):
+                logger.info(f"[{self.trace_id}] Basic devolvió texto corto (posible SPA), escalando a Stealth")
+                html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
+                if self._looks_blocked(html):
+                    logger.warning(f"[{self.trace_id}] Stealth bloqueado tras escalado por contenido corto, cuarentena: {url}")
                     raise BlockedContentError(url)
             return html
         except httpx.HTTPStatusError as e:

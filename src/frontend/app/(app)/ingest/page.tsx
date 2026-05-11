@@ -1,24 +1,96 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link2, Plus, CheckCircle2, Loader2, AlertCircle, Trash2 } from "lucide-react";
 import { apiCall, sseUrl } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { useSSE, type IngestEvent } from "@/lib/sse";
 
+interface Procesando {
+  id?: string;        // id de Postgres si ya se insertó el placeholder
+  url: string;
+  titulo?: string;
+  status: string;     // mensaje para mostrar
+  icon: string;
+  createdAt?: number; // timestamp local — solo para optimistas (sin id)
+}
+
+// Las entradas optimistas (las que añadimos al hacer submit, sin id de
+// Postgres todavía) caducan tras este tiempo. Cubre el caso de scrapes
+// muy rápidos que pasan directos a 'activo' sin que lleguemos a ver el
+// placeholder en el backend, dejando un fantasma en la lista para siempre.
+const OPTIMISTIC_TTL_MS = 8_000;
+
 export default function IngestPage() {
   const { token } = useAuthStore();
   const [urlsInput, setUrlsInput] = useState("");
   const [source, setSource] = useState("web");
   const [loading, setLoading] = useState(false);
-  const [submitted, setSubmitted] = useState<{ url: string; status: string; icon: string }[]>([]);
+  const [procesando, setProcesando] = useState<Procesando[]>([]);
   const [error, setError] = useState("");
+
+  // Carga los recursos en estado=procesando del backend para que sigan
+  // visibles tras un refresh mientras la ingesta no haya completado.
+  const loadProcesando = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await apiCall<{ id: string; url: string; titulo?: string }[]>(
+        "/resources?estado=procesando&limit=50",
+        {},
+        token,
+      );
+      setProcesando((prev) => {
+        const now = Date.now();
+        // Mantén entradas optimistas (sin id) que aún no llegaron a Postgres,
+        // pero descarta las que llevan más del TTL — son fantasmas de scrapes
+        // muy rápidos que pasaron directos a 'activo'.
+        const optimistic = prev.filter(
+          (p) => !p.id && p.createdAt && now - p.createdAt < OPTIMISTIC_TTL_MS,
+        );
+        const fromBackend = data.map((r) => ({
+          id: r.id,
+          url: r.url,
+          titulo: r.titulo,
+          status: "Procesando...",
+          icon: "⏳",
+        }));
+        // Evita duplicados entre optimistas y backend.
+        const seen = new Set(fromBackend.map((p) => p.url));
+        return [...fromBackend, ...optimistic.filter((p) => !seen.has(p.url))];
+      });
+    } catch {
+      /* silencioso — la sección procesando es informativa, no bloqueante */
+    }
+  }, [token]);
+
+  useEffect(() => { loadProcesando(); }, [loadProcesando]);
+
+  // Polling de seguridad cada 20s — el SSE es el camino rápido, pero si por
+  // algún motivo el navegador pierde el evento (reconexión silenciosa, tab
+  // dormida), nos sincronizamos contra el backend que es la fuente de verdad
+  // (ya filtra estado=procesando).
+  useEffect(() => {
+    if (!token) return;
+    const interval = setInterval(loadProcesando, 20_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") loadProcesando();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [token, loadProcesando]);
 
   const sseFeedUrl = token ? sseUrl(token) : null;
   const { events, clear } = useSSE(sseFeedUrl, (ev) => {
+    // Defensive: limpia optimistas por URL match.
     if (ev.url) {
-      setSubmitted((prev) => prev.filter((s) => s.url !== ev.url));
+      setProcesando((prev) => prev.filter((s) => s.url !== ev.url));
     }
+    // Fuente de verdad: el backend ya devuelve solo estado=procesando, así
+    // que tras la transición a activo el item desaparece de la lista solo.
+    loadProcesando();
   });
 
   async function handleSubmit(e: React.FormEvent) {
@@ -31,8 +103,9 @@ export default function IngestPage() {
 
     setLoading(true);
     setError("");
-    const results: typeof submitted = [];
+    const results: Procesando[] = [];
 
+    const now = Date.now();
     for (const url of urls) {
       try {
         const resp = await apiCall<any>(
@@ -43,16 +116,20 @@ export default function IngestPage() {
         const isDup = resp.is_duplicate;
         results.push({
           url,
-          status: isDup ? "Duplicado — ya en la base" : "Encolada ✓",
+          status: isDup ? "Duplicado — re-procesando" : "Encolada ✓",
           icon: isDup ? "⏭️" : "📥",
+          createdAt: now,
         });
       } catch (err: any) {
-        results.push({ url, status: `Error: ${err.message}`, icon: "❌" });
+        results.push({ url, status: `Error: ${err.message}`, icon: "❌", createdAt: now });
       }
     }
-    setSubmitted((prev) => [...results, ...prev]);
+    setProcesando((prev) => [...results, ...prev]);
     setUrlsInput("");
     setLoading(false);
+    // Tras un pequeño retraso, refrescamos para reemplazar las entradas
+    // optimistas por las reales con id de Postgres (placeholder insertado).
+    setTimeout(() => loadProcesando(), 800);
   }
 
   return (
@@ -154,23 +231,26 @@ export default function IngestPage() {
         </div>
       )}
 
-      {/* Submitted (queued) */}
-      {submitted.length > 0 && (
+      {/* Procesando (vivas en backend o recién enviadas) */}
+      {procesando.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-slate-300 mb-3 flex items-center gap-1.5">
-            <Loader2 className="w-4 h-4 text-muted animate-spin" />
-            Encoladas ({submitted.length})
+            <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+            Procesando ({procesando.length})
           </h2>
           <div className="space-y-2">
-            {submitted.map((item, i) => (
+            {procesando.map((item, i) => (
               <div
-                key={i}
-                className="bg-card border border-border rounded-xl p-3.5 flex items-center gap-3"
+                key={item.id ?? `opt-${i}`}
+                className="bg-amber-900/10 border border-amber-700/30 rounded-xl p-3.5 flex items-center gap-3"
               >
                 <span className="text-base flex-shrink-0">{item.icon}</span>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
+                  {item.titulo && (
+                    <p className="text-sm font-medium text-slate-200 truncate">{item.titulo}</p>
+                  )}
                   <p className="text-xs font-mono text-muted truncate">{item.url}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{item.status}</p>
+                  <p className="text-xs text-amber-300/80 mt-0.5">{item.status}</p>
                 </div>
               </div>
             ))}

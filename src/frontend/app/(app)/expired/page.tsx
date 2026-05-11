@@ -12,6 +12,7 @@ import {
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
+import { Pagination, PAGE_SIZE } from "@/components/Pagination";
 
 interface ExpiredItem {
   id: string;
@@ -34,7 +35,15 @@ export default function ExpiredPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const dispatchEvent = useResourceStreamDispatch();
+
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const pageItems = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(1);
+  }, [page, totalPages]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,7 +168,7 @@ export default function ExpiredPage() {
           animate="visible"
           variants={{ visible: { transition: { staggerChildren: 0.03 } }, hidden: {} }}
         >
-          {items.map((it) => {
+          {pageItems.map((it) => {
             const busy = busyId === it.id;
             return (
               <motion.li
@@ -233,6 +242,13 @@ export default function ExpiredPage() {
           })}
         </motion.ul>
       )}
+
+      <Pagination
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={items.length}
+        onChange={setPage}
+      />
 
       <AnimatePresence>
         {confirm && (

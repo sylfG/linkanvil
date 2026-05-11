@@ -244,6 +244,17 @@ class ScraperWorker:
 
             except Exception as e:
                 logger.error(f"[{trace_id}] Fallo en extracción: {e}")
+                # Importante: el placeholder ya se insertó con estado='procesando'.
+                # Si no lo movemos a cuarentena aquí queda colgado para siempre,
+                # apareciendo en la lista de "Procesando" del frontend sin que
+                # nadie lo avance. Cuarentena (motivo manual) deja el recurso
+                # visible para que el usuario decida (rescatar / eliminar).
+                if placeholder_id:
+                    try:
+                        await self.db.quarantine_recurso_blocked(placeholder_id)
+                        logger.info(f"[{trace_id}] Placeholder movido a cuarentena tras fallo: {url}")
+                    except Exception as qe:
+                        logger.error(f"[{trace_id}] Fallo marcando cuarentena post-error: {qe}")
                 await message.reject(requeue=False)
 
     async def consume(self):

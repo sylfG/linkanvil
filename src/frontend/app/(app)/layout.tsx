@@ -22,7 +22,6 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { href: "/", icon: MessageSquare, label: "Chat" },
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
@@ -157,7 +156,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { user, clearAuth, token } = useAuthStore();
-  const { sessions, activeId, setActive, createSession, deleteSession } = useChatStore();
+  const { sessions, activeId, setActive, createSession, deleteSession, messagesMap } = useChatStore();
   const [profileOpen, setProfileOpen] = useState(false);
   const [quarantineCount, setQuarantineCount] = useState(0);
   const [expiredCount, setExpiredCount] = useState(0);
@@ -196,6 +195,21 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
 
   async function newChat() {
     if (!token) return;
+    // Reusa una sesión vacía existente si la hay: o (a) ya tenemos sus
+    // mensajes cargados localmente y son 0, o (b) la sesión sigue con el
+    // título por defecto "Nueva conversación" (titulo NULL en backend),
+    // que es el indicador fiable de "aún no se envió ningún mensaje".
+    const emptyExisting = sessions.find((s) => {
+      const msgs = messagesMap[s.id];
+      if (msgs !== undefined) return msgs.length === 0;
+      return s.title === "Nueva conversación";
+    });
+    if (emptyExisting) {
+      setActive(emptyExisting.id);
+      router.push("/");
+      onNavClick?.();
+      return;
+    }
     await createSession(token);
     router.push("/");
     onNavClick?.();
@@ -216,8 +230,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
       <div className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
         {/* Main nav */}
         {NAV.map(({ href, icon: Icon, label, badge }) => {
-          const active = pathname === href && href !== "/";
-          const chatActive = href === "/" && (pathname === "/" || pathname === "");
+          const active = pathname === href;
           const badgeCount =
             badge === "quarantine" ? quarantineCount :
             badge === "expired" ? expiredCount : 0;
@@ -232,7 +245,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
               href={href}
               onClick={onNavClick}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                active || chatActive
+                active
                   ? "bg-accent/20 text-accent-light"
                   : "text-muted hover:text-slate-100 hover:bg-white/5"
               }`}
@@ -248,15 +261,25 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
           );
         })}
 
-        {/* Chat history */}
-        {sessions.length > 0 && (
-          <div className="pt-3">
-            <div className="flex items-center justify-between px-3 mb-1">
-              <span className="text-[11px] text-muted uppercase tracking-wider font-medium">Conversaciones</span>
-              <button onClick={newChat} className="p-0.5 rounded hover:bg-white/10 text-muted hover:text-slate-300 transition-colors" title="Nueva conversación">
-                <Plus className="w-3.5 h-3.5" />
-              </button>
-            </div>
+        {/* Chat history — siempre presente para que "Nuevo chat" sea
+            visible incluso sin sesiones aún */}
+        <div className="pt-3">
+          <div className="px-3 mb-1">
+            <span className="text-[11px] text-muted uppercase tracking-wider font-medium">Conversaciones</span>
+          </div>
+          {/* Botón "Nuevo chat" fijo justo bajo la cabecera Conversaciones.
+              sticky top-0 lo mantiene visible cuando la lista de chats
+              scrollea por debajo. */}
+          <div className="sticky top-0 z-10 bg-surface pb-1">
+            <button
+              onClick={newChat}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-accent/20 hover:bg-accent/30 text-accent-light text-sm font-medium w-full transition-colors"
+            >
+              <Plus className="w-4 h-4 flex-shrink-0" />
+              Nuevo chat
+            </button>
+          </div>
+          {sessions.length > 0 && (
             <div className="space-y-0.5">
               {sessions.map((s) => (
                 <div
@@ -278,19 +301,8 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Botón fijo: nuevo chat (siempre visible debajo de Conversaciones) */}
-      <div className="px-3 pt-2 pb-3 border-t border-border flex-shrink-0">
-        <button
-          onClick={newChat}
-          className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-lg bg-accent/20 hover:bg-accent/30 text-accent-light text-sm font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Nuevo chat
-        </button>
+          )}
+        </div>
       </div>
 
       {/* Bottom: user + logout */}

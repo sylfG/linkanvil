@@ -282,6 +282,17 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
         )}
       </div>
 
+      {/* Botón fijo: nuevo chat (siempre visible debajo de Conversaciones) */}
+      <div className="px-3 pt-2 pb-3 border-t border-border flex-shrink-0">
+        <button
+          onClick={newChat}
+          className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-lg bg-accent/20 hover:bg-accent/30 text-accent-light text-sm font-medium transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Nuevo chat
+        </button>
+      </div>
+
       {/* Bottom: user + logout */}
       <div className="p-3 border-t border-border flex-shrink-0">
         <button

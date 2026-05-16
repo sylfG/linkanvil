@@ -39,13 +39,13 @@ def _qdrant_chunk_point_id(recurso_id: str, tenant_id: str, chunk_idx: int) -> s
     return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}:chunk:{chunk_idx}"))
 
 
-def _chunk_text(text: str, target_chars: int = 1600, overlap_chars: int = 200) -> list[str]:
-    """Trocea texto preservando límites de párrafo. target_chars≈400 tokens (model max=512).
-    Overlap incluye el último párrafo del chunk anterior si cabe en overlap_chars,
-    para que respuestas que cruzan fronteras de chunk sigan siendo recuperables."""
+def _chunk_text(text: str, target_chars: int = 1200, overlap_chars: int = 150) -> list[str]:
+    """Trocea texto preservando límites de línea. target_chars≈350 tokens (model max=512).
+    Overlap incluye la última línea del chunk anterior si cabe en overlap_chars.
+    Usa \n+ para manejar tanto texto con párrafos dobles como texto web con saltos simples."""
     if not text or not text.strip():
         return []
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    paragraphs = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
     if not paragraphs:
         step = max(1, target_chars - overlap_chars)
         return [text[i:i + target_chars] for i in range(0, len(text), step) if text[i:i + target_chars].strip()]

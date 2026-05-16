@@ -19,7 +19,7 @@ MODEL       = os.getenv("LITELLM_MODEL", "cerebro-lite")
 AUDIT_FILES = [
     "src/api/main.py",
     "src/api/auth.py",
-    "src/ingestion/worker.py",
+    "src/ingestion/main.py",
     "src/scraper/worker.py",
 ]
 

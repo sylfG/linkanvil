@@ -1,16 +1,36 @@
 #!/usr/bin/env bash
-# pre-commit: ruff check rápido sin IA (feedback inmediato antes del commit)
-# Activar: git config core.hooksPath .githooks
+# pre-commit: ruff lint + format check sobre archivos Python staged.
+# Sin IA — rápido, feedback inmediato.
 set -euo pipefail
 
-STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
-[ -z "$STAGED" ] && exit 0
+# Collect staged .py files into an array (handles spaces in paths)
+mapfile -t STAGED < <(
+    git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true
+)
 
-if command -v ruff &>/dev/null; then
-    # shellcheck disable=SC2086
-    ruff check $STAGED || {
-        echo "❌ ruff falló. Corrige los errores o usa: git commit --no-verify"
-        exit 1
-    }
+# Nothing to check
+[[ ${#STAGED[@]} -eq 0 ]] && exit 0
+
+if ! command -v ruff &>/dev/null; then
+    echo "⚠️  ruff no encontrado — instalar con: pip install ruff"
+    exit 0
 fi
+
+echo "🔎 ruff: revisando ${#STAGED[@]} archivo(s) Python..."
+
+# Lint
+if ! ruff check "${STAGED[@]}"; then
+    echo "❌ ruff check falló. Corrige los errores o usa: git commit --no-verify"
+    exit 1
+fi
+
+# Format check (no modifica, solo verifica)
+if ! ruff format --check "${STAGED[@]}"; then
+    echo "❌ ruff format: hay archivos sin formatear."
+    echo "   Ejecuta: ruff format ${STAGED[*]}"
+    echo "   O usa: git commit --no-verify"
+    exit 1
+fi
+
+echo "✅ ruff OK"
 exit 0

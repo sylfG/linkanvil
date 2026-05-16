@@ -19,10 +19,18 @@ jobs:
           cache: pip
 
       - name: Install analysis tools
-        run: pip install ruff mypy bandit pip-audit
+        run: |
+          pip install \
+            "ruff>=0.8,<1.0" \
+            "mypy>=1.10,<2.0" \
+            "bandit>=1.7,<2.0" \
+            "pip-audit>=2.7,<3.0"
 
-      - name: ruff — linting + format check
+      - name: ruff — lint
         run: ruff check src/
+
+      - name: ruff — format check
+        run: ruff format --check src/
 
       - name: mypy — type checking
         run: mypy src/ --ignore-missing-imports

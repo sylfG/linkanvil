@@ -3,79 +3,95 @@
 pre-push: analiza el diff con LiteLLM antes de subir a GitHub.
 Bloquea el push si encuentra findings CRITICAL.
 Fail-open si LiteLLM no responde.
-
-Activar: git config core.hooksPath .githooks
 """
-import subprocess, sys, os, json
-try:
-    import urllib.request
-except ImportError:
-    sys.exit(0)
+from __future__ import annotations
 
-LITELLM_URL = os.getenv("LITELLM_URL", "http://localhost:4000")
-MODEL       = os.getenv("LITELLM_MODEL", "cerebro-lite")
-WATCH_PATHS = ["src/api/", "src/data/", "src/scraper/", "src/ingestion/"]
+import subprocess
+import sys
+from pathlib import Path
+
+# Locate repo root via git, then add ops/cron to path for litellm_client
+try:
+    _repo_root = Path(
+        subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    )
+except subprocess.CalledProcessError:
+    _repo_root = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(_repo_root / "ops" / "cron"))
+
+import litellm_client  # noqa: E402  (path set above)
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+MAX_DIFF_CHARS = 8_000
+
+WATCH_PATHS = [
+    "src/api/",
+    "src/data/",
+    "src/scraper/",
+    "src/ingestion/",
+]
+
+_PROMPT_FILE = _repo_root / "ops" / "prompts" / "pre-push.txt"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _has_parent_commit() -> bool:
+    """Return True if HEAD has at least one parent (i.e. not the initial commit)."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD~1"],
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def get_diff() -> str:
+    """Return unified diff of changed files in WATCH_PATHS, or empty string."""
     try:
-        result = subprocess.run(
-            ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
-            capture_output=True, text=True
-        )
-        diff = result.stdout.strip()
-        if not diff:
-            # primer commit o sin cambios en HEAD~1 — mirar staged
+        if _has_parent_commit():
+            result = subprocess.run(
+                ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
+                capture_output=True,
+                text=True,
+            )
+        else:
+            # Initial commit: compare against empty tree
             result = subprocess.run(
                 ["git", "diff", "--cached", "--", *WATCH_PATHS],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
-            diff = result.stdout.strip()
-        return diff
+        return result.stdout.strip()
     except Exception:
         return ""
 
 
-def call_litellm(diff: str) -> str:
-    prompt = (
-        "Eres un revisor de seguridad para linkanvil (FastAPI multi-tenant RAG).\n"
-        "Analiza este diff. Busca SOLO hallazgos reales con alta confianza (>80%):\n\n"
-        "1. JWT sin validación tenant_id en endpoints\n"
-        "2. Queries asyncpg con f-strings o concatenación de strings (SQL injection)\n"
-        "3. SSRF: URLs de usuario que llegan al scraper sin validación\n"
-        "4. Secrets hardcodeados (claves, tokens, contraseñas)\n"
-        "5. Notificaciones directas que saltan el outbox pattern (outbox_eventos)\n"
-        "6. Campos Pydantic sin validación que llegan a la DB\n\n"
-        "Formato de respuesta:\n"
-        "- Si hay hallazgos: una línea por hallazgo con prefijo CRITICAL/HIGH/MEDIUM, "
-        "archivo:línea, descripción\n"
-        "- Si no hay hallazgos: una línea 'CLEAN'\n\n"
-        "No expliques metodología. Solo lista hallazgos reales o CLEAN.\n\n"
-        f"Diff:\n{diff[:8000]}"
-    )
-
-    payload = json.dumps({
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
-        "temperature": 0,
-    }).encode()
-
-    req = urllib.request.Request(
-        f"{LITELLM_URL}/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+def load_prompt(diff: str) -> str:
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.load(resp)
-            return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"⚠️  LiteLLM no disponible ({e}) — push continúa sin análisis",
-              file=sys.stderr)
-        return "SKIP"
+        template = _PROMPT_FILE.read_text(encoding="utf-8")
+        return template.replace("{diff}", diff[:MAX_DIFF_CHARS])
+    except OSError:
+        # Fallback inline prompt if file is missing
+        return (
+            "Analiza este diff de Python/FastAPI buscando: JWT sin tenant_id, "
+            "SQL injection (f-strings en asyncpg), SSRF, secrets hardcodeados. "
+            "Responde CRITICAL/HIGH/MEDIUM linea descripcion, o CLEAN.\n\nDiff:\n"
+            + diff[:MAX_DIFF_CHARS]
+        )
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     diff = get_diff()
@@ -83,14 +99,21 @@ def main() -> None:
         sys.exit(0)
 
     print("🔍 Analizando cambios con LiteLLM...", file=sys.stderr)
-    result = call_litellm(diff)
+    response = litellm_client.call(load_prompt(diff))
 
-    if result == "SKIP":
+    if response is None:
+        # fail-open: LiteLLM unavailable, warning already printed by client
         sys.exit(0)
 
-    print(result)
+    findings = litellm_client.parse_findings(response)
 
-    if "CRITICAL" in result:
+    if findings:
+        for f in findings:
+            print(f)
+    else:
+        print("✅ Sin hallazgos de seguridad")
+
+    if litellm_client.has_critical(findings):
         print(
             "\n❌ Push bloqueado — findings CRITICAL. Corrige antes de hacer push.",
             file=sys.stderr,

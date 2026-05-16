@@ -87,6 +87,39 @@ ssh linkanvil "curl -s 'http://localhost:6333/collections/cerebro_chunks'"
 | `security-audit` | Antes de cualquier exposición pública de la API |
 | `hotfix` | Fix urgente en producción (bugs de embedding, constraint violations) |
 
+## Git hooks (análisis de IA vía LiteLLM)
+
+Los hooks están en `.githooks/` y usan LiteLLM local (`localhost:4000`). Activar en cada clon:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-push .githooks/pre-commit
+```
+
+| Hook | Cuándo corre | Qué hace |
+|---|---|---|
+| `pre-commit` | Cada commit | `ruff check` sobre archivos staged (sin IA, rápido) |
+| `pre-push` | Antes de `git push` | LiteLLM analiza el diff de `src/api/`, `src/data/`, `src/scraper/`, `src/ingestion/` — bloquea en CRITICAL |
+
+Variables de entorno opcionales (tienen defaults):
+- `LITELLM_URL` — default `http://localhost:4000`
+- `LITELLM_MODEL` — default `cerebro-lite`
+
+Para saltarse un hook: `git push --no-verify` o `git commit --no-verify`
+
+## Auditoría semanal (cron en servidor)
+
+```bash
+# Ejecutar manualmente:
+python3 ops/cron/weekly-audit.py
+
+# Instalar cron (lunes 09:00 UTC):
+# Añadir a crontab -e:
+# 0 9 * * 1 cd /root/linkanvil && python3 ops/cron/weekly-audit.py >> /var/log/linkanvil-audit.log 2>&1
+```
+
+El reporte se guarda en `ops/sessions/audit-YYYY-MM-DD.md`.
+
 ## Gotchas conocidos
 
 - **NVIDIA embedding model**: límite de 512 tokens por chunk. `_chunk_text()` usa `target_chars=1200` (~350 tokens). Cambiar a valores más altos romperá el embedding.

@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""
+pre-push: analiza el diff con LiteLLM antes de subir a GitHub.
+Bloquea el push si encuentra findings CRITICAL.
+Fail-open si LiteLLM no responde.
+
+Activar: git config core.hooksPath .githooks
+"""
+import subprocess, sys, os, json
+try:
+    import urllib.request
+except ImportError:
+    sys.exit(0)
+
+LITELLM_URL = os.getenv("LITELLM_URL", "http://localhost:4000")
+MODEL       = os.getenv("LITELLM_MODEL", "cerebro-lite")
+WATCH_PATHS = ["src/api/", "src/data/", "src/scraper/", "src/ingestion/"]
+
+
+def get_diff() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
+            capture_output=True, text=True
+        )
+        diff = result.stdout.strip()
+        if not diff:
+            # primer commit o sin cambios en HEAD~1 — mirar staged
+            result = subprocess.run(
+                ["git", "diff", "--cached", "--", *WATCH_PATHS],
+                capture_output=True, text=True
+            )
+            diff = result.stdout.strip()
+        return diff
+    except Exception:
+        return ""
+
+
+def call_litellm(diff: str) -> str:
+    prompt = (
+        "Eres un revisor de seguridad para linkanvil (FastAPI multi-tenant RAG).\n"
+        "Analiza este diff. Busca SOLO hallazgos reales con alta confianza (>80%):\n\n"
+        "1. JWT sin validación tenant_id en endpoints\n"
+        "2. Queries asyncpg con f-strings o concatenación de strings (SQL injection)\n"
+        "3. SSRF: URLs de usuario que llegan al scraper sin validación\n"
+        "4. Secrets hardcodeados (claves, tokens, contraseñas)\n"
+        "5. Notificaciones directas que saltan el outbox pattern (outbox_eventos)\n"
+        "6. Campos Pydantic sin validación que llegan a la DB\n\n"
+        "Formato de respuesta:\n"
+        "- Si hay hallazgos: una línea por hallazgo con prefijo CRITICAL/HIGH/MEDIUM, "
+        "archivo:línea, descripción\n"
+        "- Si no hay hallazgos: una línea 'CLEAN'\n\n"
+        "No expliques metodología. Solo lista hallazgos reales o CLEAN.\n\n"
+        f"Diff:\n{diff[:8000]}"
+    )
+
+    payload = json.dumps({
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 600,
+        "temperature": 0,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{LITELLM_URL}/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"⚠️  LiteLLM no disponible ({e}) — push continúa sin análisis",
+              file=sys.stderr)
+        return "SKIP"
+
+
+def main() -> None:
+    diff = get_diff()
+    if not diff:
+        sys.exit(0)
+
+    print("🔍 Analizando cambios con LiteLLM...", file=sys.stderr)
+    result = call_litellm(diff)
+
+    if result == "SKIP":
+        sys.exit(0)
+
+    print(result)
+
+    if "CRITICAL" in result:
+        print(
+            "\n❌ Push bloqueado — findings CRITICAL. Corrige antes de hacer push.",
+            file=sys.stderr,
+        )
+        print("   Para saltarlo: git push --no-verify", file=sys.stderr)
+        sys.exit(1)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

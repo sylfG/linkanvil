@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# pre-commit: ruff check rápido sin IA (feedback inmediato antes del commit)
+# Activar: git config core.hooksPath .githooks
+set -euo pipefail
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+[ -z "$STAGED" ] && exit 0
+
+if command -v ruff &>/dev/null; then
+    # shellcheck disable=SC2086
+    ruff check $STAGED || {
+        echo "❌ ruff falló. Corrige los errores o usa: git commit --no-verify"
+        exit 1
+    }
+fi
+exit 0

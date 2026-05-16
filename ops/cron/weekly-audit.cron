@@ -1,0 +1,4 @@
+# Auditoría semanal linkanvil — lunes 09:00 UTC
+# Instalar: crontab -e y añadir la siguiente línea
+# (o: crontab /root/linkanvil/ops/cron/weekly-audit.cron para reemplazar el crontab completo)
+0 9 * * 1 cd /root/linkanvil && python3 ops/cron/weekly-audit.py >> /var/log/linkanvil-audit.log 2>&1

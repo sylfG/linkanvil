@@ -122,7 +122,11 @@ class DatabaseManager:
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, estado, fecha_caducidad FROM recursos WHERE url_hash = $1",
+                """
+                SELECT id, estado, fecha_caducidad,
+                       (contenido IS NOT NULL AND length(contenido) > 0) AS has_contenido
+                FROM recursos WHERE url_hash = $1
+                """,
                 url_hash,
             )
             return dict(row) if row else None
@@ -141,7 +145,7 @@ class DatabaseManager:
                 tenant_id, recurso_id,
             )
 
-    async def save_with_outbox(self, tenant_id: str, trace_id: str, extracted_data: dict, url: str):
+    async def save_with_outbox(self, tenant_id: str, trace_id: str, extracted_data: dict, url: str, contenido: str | None = None):
         """
         Patrón Outbox transaccional (F-03.1): upsert global en `recursos`,
         link en `usuario_recursos` y evento en `outbox_eventos`, todo atómico.
@@ -197,17 +201,18 @@ class DatabaseManager:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO recursos (
-                        url, url_hash, titulo, resumen, categoria, tags,
+                        url, url_hash, titulo, resumen, contenido, categoria, tags,
                         volatilidad, fecha_caducidad, estado,
                         quarantined_at, quarantine_reason, quarantine_grace_until
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9,
-                        $10, $11, $12
+                        $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
+                        $11, $12, $13
                     )
                     ON CONFLICT (url_hash)
                     DO UPDATE SET
                         titulo = EXCLUDED.titulo,
                         resumen = EXCLUDED.resumen,
+                        contenido = EXCLUDED.contenido,
                         categoria = EXCLUDED.categoria,
                         tags = EXCLUDED.tags,
                         volatilidad = EXCLUDED.volatilidad,
@@ -219,7 +224,7 @@ class DatabaseManager:
                         updated_at = NOW()
                     RETURNING id
                     """,
-                    url, url_hash, titulo, resumen, categoria, tags,
+                    url, url_hash, titulo, resumen, contenido, categoria, tags,
                     volatilidad, fecha_caducidad, estado,
                     quarantined_at, quarantine_reason, quarantine_grace_until,
                 )
@@ -241,6 +246,10 @@ class DatabaseManager:
                     "recurso_id": str(recurso_id),
                     "url": url,
                     "extracted_info": extracted_data,
+                    # contenido viaja en el evento para que el embedder pueda chunkear
+                    # sin tener que releer Postgres; recursos.contenido queda como
+                    # fuente de verdad para re-embedding/backfill futuros.
+                    "contenido": contenido or "",
                 }
                 if already_expired:
                     outbox_payload["motivo"] = "caducidad"

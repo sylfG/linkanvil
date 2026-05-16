@@ -4,6 +4,7 @@ import httpx
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from typing import Optional
@@ -32,6 +33,50 @@ _QDRANT_POINT_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 def _qdrant_point_id(recurso_id: str, tenant_id: str) -> str:
     return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}"))
+
+
+def _qdrant_chunk_point_id(recurso_id: str, tenant_id: str, chunk_idx: int) -> str:
+    return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}:chunk:{chunk_idx}"))
+
+
+def _chunk_text(text: str, target_chars: int = 1600, overlap_chars: int = 200) -> list[str]:
+    """Trocea texto preservando límites de párrafo. target_chars≈400 tokens (model max=512).
+    Overlap incluye el último párrafo del chunk anterior si cabe en overlap_chars,
+    para que respuestas que cruzan fronteras de chunk sigan siendo recuperables."""
+    if not text or not text.strip():
+        return []
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    if not paragraphs:
+        step = max(1, target_chars - overlap_chars)
+        return [text[i:i + target_chars] for i in range(0, len(text), step) if text[i:i + target_chars].strip()]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        if len(para) > target_chars:
+            if current:
+                chunks.append("\n\n".join(current))
+                current, current_len = [], 0
+            step = max(1, target_chars - overlap_chars)
+            for i in range(0, len(para), step):
+                slice_ = para[i:i + target_chars]
+                if slice_.strip():
+                    chunks.append(slice_)
+            continue
+        if current_len + len(para) + 2 > target_chars and current:
+            chunks.append("\n\n".join(current))
+            tail = current[-1]
+            if tail and len(tail) <= overlap_chars:
+                current = [tail]
+                current_len = len(tail) + 2
+            else:
+                current, current_len = [], 0
+        current.append(para)
+        current_len += len(para) + 2
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
 RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
 EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_PROCESAMIENTO", "cerebro.procesamiento")
 QUEUE_NAME = "q.recurso.embedder"
@@ -78,6 +123,77 @@ class EmbedderWorker:
         resp.raise_for_status()
         data = resp.json()
         return data["data"][0]["embedding"]
+
+    async def _generate_embeddings_batch(self, texts: list[str], trace_id: str) -> list[list[float]]:
+        if not texts:
+            return []
+        headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+        payload = {"model": "cerebro-embeddings", "input": texts, "input_type": "passage"}
+        resp = await self.http.post(LITELLM_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return [d["embedding"] for d in data["data"]]
+
+    async def _inject_chunks_to_qdrant(
+        self,
+        recurso_id: str,
+        tenant_id: str,
+        url: str,
+        title: str,
+        chunks: list[str],
+        vectors: list[list[float]],
+        trace_id: str,
+    ):
+        if not chunks or len(chunks) != len(vectors):
+            logger.warning(f"[{trace_id}] inject_chunks: nada que upsert (chunks={len(chunks)} vectors={len(vectors)})")
+            return
+        points = []
+        for idx, (chunk_txt, vector) in enumerate(zip(chunks, vectors)):
+            points.append({
+                "id": _qdrant_chunk_point_id(recurso_id, tenant_id, idx),
+                "vector": vector,
+                "payload": {
+                    "tenant_id": tenant_id,
+                    "recurso_id": recurso_id,
+                    "url": url,
+                    "title": title,
+                    "chunk_idx": idx,
+                    "chunk_text": chunk_txt,
+                },
+            })
+        resp = await self.http.put(
+            f"{QDRANT_URL}/collections/cerebro_chunks/points?wait=true",
+            json={"points": points},
+        )
+        resp.raise_for_status()
+        logger.info(f"[{trace_id}] {len(points)} chunks inyectados en cerebro_chunks (recurso={recurso_id} tenant={tenant_id})")
+
+    async def _fetch_existing_chunks_for_recurso(self, recurso_id: str) -> list[dict]:
+        """Devuelve todos los puntos de `cerebro_chunks` (cualquier tenant) para un
+        recurso, con vector + payload. Usado para clonar chunks al nuevo tenant
+        cuando se reusa un recurso global ya scrapeado por otro."""
+        out: list[dict] = []
+        next_offset = None
+        while True:
+            body = {
+                "filter": {"must": [{"key": "recurso_id", "match": {"value": recurso_id}}]},
+                "limit": 256,
+                "with_vector": True,
+                "with_payload": True,
+            }
+            if next_offset is not None:
+                body["offset"] = next_offset
+            resp = await self.http.post(
+                f"{QDRANT_URL}/collections/cerebro_chunks/points/scroll",
+                json=body,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("result", {})
+            out.extend(data.get("points", []) or [])
+            next_offset = data.get("next_page_offset")
+            if not next_offset:
+                break
+        return out
 
     async def _inject_to_qdrant(self, recurso_id: str, tenant_id: str, vector: list[float], extracted_info: dict, url: str, trace_id: str):
         point_id = _qdrant_point_id(recurso_id, tenant_id)
@@ -233,6 +349,7 @@ class EmbedderWorker:
             recurso_id = payload.get("recurso_id")
             url = payload.get("url", "")
             ext_info = payload.get("extracted_info", {})
+            contenido = payload.get("contenido") or ""
             reused = bool(payload.get("reused"))
 
             if not recurso_id:
@@ -274,6 +391,12 @@ class EmbedderWorker:
                     await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
                     await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
                     # `estado` es global: ya estará en 'activo' por el primer tenant.
+
+                    # Clonar chunks RAG desde el tenant origen (si existen);
+                    # si no, re-chunkear `contenido` desde Postgres.
+                    await self._replicate_or_build_chunks(
+                        recurso_id, tenant_id, url, ext_info.get("title", ""), trace_id,
+                    )
                 else:
                     # Rama normal: nuevo recurso global, generar embedding desde cero.
                     keywords_str = ','.join(ext_info.get('keywords', []))
@@ -292,6 +415,12 @@ class EmbedderWorker:
                     await self.db.update_recurso_estado(recurso_id, "activo")
                     logger.info(f"[{trace_id}] Estado actualizado a 'activo' para ID {recurso_id}")
 
+                    # Chunking + embedding por chunk para que el RAG del /chat
+                    # tenga acceso al contenido real (no solo al resumen corto).
+                    await self._build_chunks_from_text(
+                        recurso_id, tenant_id, url, ext_info.get("title", ""), contenido, trace_id,
+                    )
+
                 # Notificar completado vía Redis pub/sub (para SSE en cerebro-api)
                 if self.redis:
                     titulo = ext_info.get("title") or url
@@ -307,6 +436,76 @@ class EmbedderWorker:
             except Exception as e:
                 logger.error(f"[{trace_id}] F-03.2 Fallo crítico procesando embedding/qdrant: {e}")
                 raise e
+
+    async def _fetch_recurso_contenido(self, recurso_id: str) -> str:
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT contenido, resumen FROM recursos WHERE id = $1::uuid",
+                recurso_id,
+            )
+        if not row:
+            return ""
+        return (row["contenido"] or row["resumen"] or "") or ""
+
+    async def _build_chunks_from_text(
+        self,
+        recurso_id: str,
+        tenant_id: str,
+        url: str,
+        title: str,
+        contenido: str,
+        trace_id: str,
+    ):
+        if not contenido:
+            contenido = await self._fetch_recurso_contenido(recurso_id)
+        if not contenido.strip():
+            logger.warning(f"[{trace_id}] Sin contenido para chunkear (recurso={recurso_id}); RAG por chunks vacío.")
+            return
+        chunks = _chunk_text(contenido)
+        if not chunks:
+            return
+        vectors = await self._generate_embeddings_batch(chunks, trace_id)
+        await self._inject_chunks_to_qdrant(recurso_id, tenant_id, url, title, chunks, vectors, trace_id)
+
+    async def _replicate_or_build_chunks(
+        self,
+        recurso_id: str,
+        tenant_id: str,
+        url: str,
+        title: str,
+        trace_id: str,
+    ):
+        existing = await self._fetch_existing_chunks_for_recurso(recurso_id)
+        # Quitar puntos del mismo tenant si los hubiera (re-procesamiento idempotente)
+        existing = [p for p in existing if (p.get("payload") or {}).get("tenant_id") != tenant_id]
+        if existing:
+            points = []
+            for p in existing:
+                src_payload = p.get("payload") or {}
+                chunk_idx = src_payload.get("chunk_idx", 0)
+                points.append({
+                    "id": _qdrant_chunk_point_id(recurso_id, tenant_id, chunk_idx),
+                    "vector": p.get("vector"),
+                    "payload": {
+                        "tenant_id": tenant_id,
+                        "recurso_id": recurso_id,
+                        "url": url,
+                        "title": title or src_payload.get("title", ""),
+                        "chunk_idx": chunk_idx,
+                        "chunk_text": src_payload.get("chunk_text", ""),
+                    },
+                })
+            resp = await self.http.put(
+                f"{QDRANT_URL}/collections/cerebro_chunks/points?wait=true",
+                json={"points": points},
+            )
+            resp.raise_for_status()
+            logger.info(f"[{trace_id}] {len(points)} chunks clonados de tenant origen → {tenant_id} (recurso={recurso_id})")
+            return
+        # Sin chunks fuente (recurso ingerido antes del chunking): chunkear desde Postgres
+        await self._build_chunks_from_text(recurso_id, tenant_id, url, title, "", trace_id)
 
     async def _fetch_recurso_ext_info(self, recurso_id: str) -> Optional[dict]:
         """Lee título/resumen/categoría/volatilidad del recurso global desde Postgres.

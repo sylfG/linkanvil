@@ -568,19 +568,21 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                                 {"key": "tenant_id", "match": {"value": user["tenant_id"]}}
                             ]
                         },
-                        "limit": 5,
+                        "limit": 10,
                         "with_payload": True,
                     }
+                    # Buscamos chunks de contenido (no resúmenes de recurso):
+                    # cerebro_chunks tiene un punto por trozo de ~600 tokens con
+                    # el texto literal en payload.chunk_text. Imprescindible para
+                    # responder preguntas sobre detalles concretos (fechas, cifras).
                     qr = await _http.post(
-                        f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+                        f"{QDRANT_URL}/collections/cerebro_chunks/points/search",
                         json=search,
                         timeout=5.0,
                     )
                     if qr.status_code == 200:
                         raw_hits = qr.json().get("result", [])
                         if raw_hits:
-                            # Los IDs de punto son UUID v5 derivados de (recurso_id, tenant_id);
-                            # `recurso_id` real está en el payload.
                             recurso_ids = [
                                 str(h.get("payload", {}).get("recurso_id"))
                                 for h in raw_hits
@@ -596,47 +598,25 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                                 if str(h.get("payload", {}).get("recurso_id")) in active_set
                             ]
                         if hits:
-                            # Enriquecemos con titulo+resumen+tags desde Postgres:
-                            # el payload de Qdrant solo trae metadatos cortos
-                            # (title/category/volatility) y el LLM necesita el
-                            # resumen para responder preguntas de contenido.
-                            enriched = await db.get_resources_for_rag(
-                                user["tenant_id"], list(active_set)
-                            )
-                            by_id = {r["id"]: r for r in enriched}
-                            score_by_id = {
-                                str(h["payload"].get("recurso_id")): h["score"]
-                                for h in hits
-                            }
-                            ordered = sorted(
-                                (by_id[i] for i in score_by_id if i in by_id),
-                                key=lambda r: score_by_id.get(r["id"], 0.0),
-                                reverse=True,
-                            )
+                            # Contexto = chunks ordenados por score; el texto ya
+                            # viaja en el payload de Qdrant, sin roundtrip a PG.
                             frags = []
-                            for r in ordered:
-                                raw_tags = r.get("tags")
-                                if isinstance(raw_tags, str):
-                                    try:
-                                        tags_list = json.loads(raw_tags) or []
-                                    except Exception:
-                                        tags_list = []
-                                elif isinstance(raw_tags, list):
-                                    tags_list = raw_tags
-                                else:
-                                    tags_list = []
-                                tags_str = ", ".join(tags_list) if tags_list else "—"
+                            for h in hits:
+                                p = h.get("payload") or {}
+                                title = p.get("title") or p.get("url") or ""
+                                chunk_txt = p.get("chunk_text", "")
+                                if not chunk_txt:
+                                    continue
                                 frags.append(
-                                    f"### {r.get('titulo') or r.get('url')}\n"
-                                    f"URL: {r.get('url','')}\n"
-                                    f"Categoría: {r.get('categoria') or '—'}\n"
-                                    f"Tags: {tags_str}\n"
-                                    f"Resumen: {r.get('resumen') or '(sin resumen)'}"
+                                    f"### {title}\n"
+                                    f"URL: {p.get('url','')}\n"
+                                    f"Fragmento (chunk {p.get('chunk_idx', 0)}):\n{chunk_txt}"
                                 )
-                            context_block = (
-                                "## Contexto recuperado de tu base de conocimiento:\n\n"
-                                + "\n\n---\n\n".join(frags)
-                            )
+                            if frags:
+                                context_block = (
+                                    "## Contexto recuperado de tu base de conocimiento:\n\n"
+                                    + "\n\n---\n\n".join(frags)
+                                )
             except Exception as e:
                 logger.warning(f"RAG error: {e}")
 
@@ -677,10 +657,23 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
 
     rag_sources = []
     if req.use_rag and hits:
-        rag_sources = [
-            {"title": h["payload"].get("title", ""), "url": h["payload"].get("url", ""), "score": round(h["score"], 3)}
-            for h in hits
-        ]
+        # Dedupe por recurso: con chunks, varios hits pueden pertenecer al mismo
+        # documento; nos quedamos con el score máximo por recurso para la UI.
+        best_by_recurso: dict[str, dict] = {}
+        for h in hits:
+            p = h.get("payload") or {}
+            rid = str(p.get("recurso_id") or "")
+            if not rid:
+                continue
+            score = round(h["score"], 3)
+            prev = best_by_recurso.get(rid)
+            if prev is None or score > prev["score"]:
+                best_by_recurso[rid] = {
+                    "title": p.get("title", ""),
+                    "url": p.get("url", ""),
+                    "score": score,
+                }
+        rag_sources = sorted(best_by_recurso.values(), key=lambda s: s["score"], reverse=True)
 
     async def _stream() -> AsyncGenerator[str, None]:
         if rag_sources:

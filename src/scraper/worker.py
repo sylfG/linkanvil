@@ -30,7 +30,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
 REUSE_FRESHNESS_MARGIN_DAYS = int(os.getenv("REUSE_FRESHNESS_MARGIN_DAYS", "15"))
 
 
-def _html_to_clean_text(html: str, max_chars: int = 8000) -> tuple[str, str]:
+def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
+    # max_chars ≈ 8000 tokens (asumiendo ~4 chars/token en español/inglés);
+    # límite pensado para no inflar payloads RabbitMQ ni el almacenamiento, pero
+    # suficiente para chunkear y preservar detalles concretos del documento.
     """(title, clean_text). Try trafilatura → BeautifulSoup → regex."""
     try:
         import trafilatura
@@ -166,7 +169,12 @@ class ScraperWorker:
                 if existing and existing["estado"] == "activo":
                     fecha_cad = existing["fecha_caducidad"]
                     fresh = (fecha_cad is None) or (fecha_cad > (datetime.utcnow().date() + margin))
-                    if fresh:
+                    # No reusamos si el recurso aún no tiene `contenido`: los
+                    # ingestados antes del chunking carecen de él y, sin
+                    # contenido, el RAG por chunks no puede responder. Forzar
+                    # un re-scrape los rellena en el primer reuso.
+                    has_contenido = bool(existing.get("has_contenido"))
+                    if fresh and has_contenido:
                         recurso_id = str(existing["id"])
                         await self.db.link_user_to_recurso(tenant_id, recurso_id)
                         await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
@@ -237,6 +245,7 @@ class ScraperWorker:
                     trace_id=trace_id,
                     extracted_data=extracted_data,
                     url=url,
+                    contenido=clean_text,
                 )
 
                 logger.info(f"[{trace_id}] Guardado con ID={recurso_id}")

@@ -343,7 +343,7 @@ class DatabaseManager:
                         ON CONFLICT (recurso_origen, recurso_destino) 
                         DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, recurso_origen, c["recurso_destino"], c["similitud"], tipo_relacion
+                        tenant_id, recurso_origen, c["recurso_destino"], min(c["similitud"], 1.0), tipo_relacion
                     )
                     
                     # Relación bidireccional (inversa)
@@ -364,7 +364,7 @@ class DatabaseManager:
                         ON CONFLICT (recurso_origen, recurso_destino) 
                         DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, c["recurso_destino"], recurso_origen, c["similitud"], tipo_inverso
+                        tenant_id, c["recurso_destino"], recurso_origen, min(c["similitud"], 1.0), tipo_inverso
                     )
 
                     # Si es obsolescencia, mandamos el destino (antiguo) a cuarentena

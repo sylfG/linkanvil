@@ -29,6 +29,8 @@ import litellm_client  # noqa: E402  (path set above)
 # Configuration
 # ---------------------------------------------------------------------------
 
+# Maximum diff characters sent to the model.
+# Derived from cerebro-lite context budget (~8k chars leaves room for the prompt).
 MAX_DIFF_CHARS = 8_000
 
 WATCH_PATHS = [
@@ -45,48 +47,53 @@ _PROMPT_FILE = _repo_root / "ops" / "prompts" / "pre-push.txt"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _has_parent_commit() -> bool:
-    """Return True if HEAD has at least one parent (i.e. not the initial commit)."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD~1"],
-        capture_output=True,
-    )
-    return result.returncode == 0
-
-
 def get_diff() -> str:
-    """Return unified diff of changed files in WATCH_PATHS, or empty string."""
+    """
+    Return unified diff of changed files in WATCH_PATHS, or empty string.
+
+    Uses a single subprocess call: tries HEAD~1..HEAD first (normal commit),
+    falls back to --cached if HEAD has no parent (initial commit).
+    """
     try:
-        if _has_parent_commit():
-            result = subprocess.run(
-                ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
-                capture_output=True,
-                text=True,
-            )
-        else:
-            # Initial commit: compare against empty tree
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--", *WATCH_PATHS],
-                capture_output=True,
-                text=True,
-            )
+        result = subprocess.run(
+            ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            diff = result.stdout.strip()
+            if diff:
+                return diff
+        # HEAD~1 doesn't exist (initial commit) — compare staged files instead
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--", *WATCH_PATHS],
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip()
     except Exception:
         return ""
 
 
 def load_prompt(diff: str) -> str:
+    """
+    Load prompt template from ops/prompts/pre-push.txt and inject the diff.
+    Exits with error if the prompt file is missing — no silent fallback.
+    """
     try:
         template = _PROMPT_FILE.read_text(encoding="utf-8")
-        return template.replace("{diff}", diff[:MAX_DIFF_CHARS])
     except OSError:
-        # Fallback inline prompt if file is missing
-        return (
-            "Analiza este diff de Python/FastAPI buscando: JWT sin tenant_id, "
-            "SQL injection (f-strings en asyncpg), SSRF, secrets hardcodeados. "
-            "Responde CRITICAL/HIGH/MEDIUM linea descripcion, o CLEAN.\n\nDiff:\n"
-            + diff[:MAX_DIFF_CHARS]
+        print(
+            f"❌ Prompt file not found: {_PROMPT_FILE}\n"
+            "   Ensure ops/prompts/pre-push.txt exists in the repository.\n"
+            "   Para saltarlo: git push --no-verify",
+            file=sys.stderr,
         )
+        sys.exit(1)
+
+    truncated = diff[:MAX_DIFF_CHARS]
+    suffix = "\n... [TRUNCADO — diff demasiado grande para análisis completo]\n" if len(diff) > MAX_DIFF_CHARS else ""
+    return template.replace("{diff}", truncated + suffix)
 
 
 # ---------------------------------------------------------------------------

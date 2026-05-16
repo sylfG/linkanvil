@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
@@ -67,6 +68,17 @@ class TestParseFindings(unittest.TestCase):
         findings = parse_findings(text)
         self.assertEqual(len(findings), 1)
 
+    def test_description_excludes_severity_keyword(self):
+        """Bug fix: description must not repeat the severity prefix."""
+        findings = parse_findings("CRITICAL auth.py:42 JWT missing tenant_id")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].description, "auth.py:42 JWT missing tenant_id")
+
+    def test_description_excludes_severity_with_colon(self):
+        """Colon after severity keyword must not appear in description."""
+        findings = parse_findings("HIGH: sql injection risk in db.py")
+        self.assertEqual(findings[0].description, "sql injection risk in db.py")
+
 
 # ---------------------------------------------------------------------------
 # has_critical
@@ -79,6 +91,13 @@ class TestHasCritical(unittest.TestCase):
 
     def test_only_high_is_false(self):
         findings = [Finding(Severity.HIGH, "some issue")]
+        self.assertFalse(has_critical(findings))
+
+    def test_only_medium_and_low_is_false(self):
+        findings = [
+            Finding(Severity.MEDIUM, "medium issue"),
+            Finding(Severity.LOW, "low issue"),
+        ]
         self.assertFalse(has_critical(findings))
 
     def test_critical_in_list_is_true(self):
@@ -118,13 +137,22 @@ class TestValidateUrl(unittest.TestCase):
 # call()
 # ---------------------------------------------------------------------------
 
-def _make_response(content: str, status: int = 200) -> MagicMock:
+def _make_response(content: str) -> MagicMock:
     """Return a mock object that behaves like urllib urlopen context manager."""
     payload = json.dumps({
         "choices": [{"message": {"content": content}}]
     }).encode()
     mock_resp = MagicMock()
     mock_resp.read.return_value = payload
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def _make_raw_response(raw_bytes: bytes) -> MagicMock:
+    """Return a mock with arbitrary raw bytes (for malformed JSON tests)."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = raw_bytes
     mock_resp.__enter__ = MagicMock(return_value=mock_resp)
     mock_resp.__exit__ = MagicMock(return_value=False)
     return mock_resp
@@ -151,6 +179,40 @@ class TestCallLitellm(unittest.TestCase):
 
     def test_returns_none_on_invalid_url_scheme(self):
         result = call("test prompt", litellm_url="ftp://bad-scheme.com")
+        self.assertIsNone(result)
+
+    @patch(
+        "litellm_client.urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            url=None, code=500, msg="Internal Server Error", hdrs=None, fp=None
+        ),
+    )
+    def test_returns_none_on_http_500(self, _):
+        result = call("test prompt", litellm_url="http://localhost:4000")
+        self.assertIsNone(result)
+
+    @patch(
+        "litellm_client.urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            url=None, code=401, msg="Unauthorized", hdrs=None, fp=None
+        ),
+    )
+    def test_returns_none_on_http_401(self, _):
+        result = call("test prompt", litellm_url="http://localhost:4000")
+        self.assertIsNone(result)
+
+    @patch("litellm_client.urllib.request.urlopen")
+    def test_returns_none_on_missing_choices_key(self, mock_urlopen):
+        """JSON response without 'choices' key must not raise — return None."""
+        mock_urlopen.return_value = _make_raw_response(b'{"error": "model not found"}')
+        result = call("test prompt", litellm_url="http://localhost:4000")
+        self.assertIsNone(result)
+
+    @patch("litellm_client.urllib.request.urlopen")
+    def test_returns_none_on_invalid_json(self, mock_urlopen):
+        """Non-JSON response body must return None."""
+        mock_urlopen.return_value = _make_raw_response(b"not json at all")
+        result = call("test prompt", litellm_url="http://localhost:4000")
         self.assertIsNone(result)
 
 

@@ -26,6 +26,8 @@ import litellm_client  # noqa: E402
 # Constants
 # ---------------------------------------------------------------------------
 
+# Maximum characters read per audit file.
+# Derived from cerebro-lite context budget (4 files × 4k = 16k chars + prompt).
 MAX_CHARS_PER_FILE = 4_000
 
 AUDIT_FILES = [
@@ -43,7 +45,12 @@ _PROMPT_FILE_NAME = "weekly-audit.txt"
 # ---------------------------------------------------------------------------
 
 def find_repo_root() -> Path:
-    """Return the git repository root, or raise RuntimeError if not found."""
+    """
+    Return the git repository root via git rev-parse.
+
+    Works in both normal repos and git worktrees.
+    Raises RuntimeError if not inside a git repo.
+    """
     try:
         root = Path(
             subprocess.check_output(
@@ -53,10 +60,6 @@ def find_repo_root() -> Path:
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("No se encontró un repositorio git") from exc
-
-    if not (root / ".git").exists():
-        raise RuntimeError(f"Directorio .git no encontrado en {root}")
-
     return root
 
 
@@ -65,12 +68,23 @@ def find_repo_root() -> Path:
 # ---------------------------------------------------------------------------
 
 def read_audit_files(repo_root: Path) -> dict[str, str]:
-    """Read AUDIT_FILES and return {path: content}. Missing files noted."""
+    """
+    Read AUDIT_FILES and return {relative_path: content}.
+
+    Files exceeding MAX_CHARS_PER_FILE are truncated with a visible marker
+    so the model knows it received partial content.
+    Missing files are recorded as '*archivo no encontrado*'.
+    """
     result: dict[str, str] = {}
     for rel_path in AUDIT_FILES:
         full = repo_root / rel_path
         if full.exists():
-            result[rel_path] = full.read_text(encoding="utf-8", errors="replace")[:MAX_CHARS_PER_FILE]
+            raw = full.read_text(encoding="utf-8", errors="replace")
+            if len(raw) > MAX_CHARS_PER_FILE:
+                content = raw[:MAX_CHARS_PER_FILE] + "\n... [TRUNCADO]\n"
+            else:
+                content = raw
+            result[rel_path] = content
         else:
             result[rel_path] = "*archivo no encontrado*"
     return result
@@ -92,7 +106,7 @@ def format_code_block(files: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 def _compute_hash(files: dict[str, str]) -> str:
-    """SHA-256 of all file contents concatenated."""
+    """SHA-256 of all file paths and contents (sorted for determinism)."""
     h = hashlib.sha256()
     for path in sorted(files):
         h.update(path.encode())
@@ -116,9 +130,17 @@ def _save_cache(cache_path: Path, file_hash: str, report_path: str) -> None:
     )
 
 
-def is_cache_hit(cache_path: Path, file_hash: str) -> bool:
+def load_cache_if_hit(cache_path: Path, file_hash: str) -> dict | None:
+    """
+    Return the cache dict if the stored hash matches file_hash (cache hit).
+    Returns None on cache miss or read error.
+
+    Single disk read — callers reuse the returned dict directly.
+    """
     cache = _load_cache(cache_path)
-    return cache.get("hash") == file_hash
+    if cache.get("hash") == file_hash:
+        return cache
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -126,20 +148,21 @@ def is_cache_hit(cache_path: Path, file_hash: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def load_prompt(prompts_dir: Path, code_block: str) -> str:
+    """
+    Load prompt template from ops/prompts/weekly-audit.txt and inject code.
+    Exits with error if the prompt file is missing — no silent fallback.
+    """
     prompt_file = prompts_dir / _PROMPT_FILE_NAME
     try:
         template = prompt_file.read_text(encoding="utf-8")
-        return template.replace("{code}", code_block)
     except OSError:
-        # Fallback inline prompt
-        return (
-            "Eres el security-reviewer de linkanvil. "
-            "Audita estos archivos buscando: JWT sin tenant_id, SQL injection, "
-            "SSRF, secrets hardcodeados, rate limiting ausente, outbox bypass. "
-            "Responde en markdown con ## Resumen Ejecutivo, ## Hallazgos, "
-            "## Acciones recomendadas.\n\n"
-            + code_block
+        print(
+            f"❌ Prompt file not found: {prompt_file}\n"
+            "   Ensure ops/prompts/weekly-audit.txt exists in the repository.",
+            file=sys.stderr,
         )
+        sys.exit(1)
+    return template.replace("{code}", code_block)
 
 
 # ---------------------------------------------------------------------------
@@ -170,15 +193,15 @@ def main() -> None:
     cache_path = sessions_dir / ".audit-cache.json"
     prompts_dir = repo_root / "ops" / "prompts"
 
-    # Read source files
+    # Read source files and compute hash
     files = read_audit_files(repo_root)
     file_hash = _compute_hash(files)
 
-    # Cache check
-    if is_cache_hit(cache_path, file_hash):
-        cache = _load_cache(cache_path)
-        print(f"⏭️  Sin cambios desde el último análisis — omitiendo LiteLLM")
-        print(f"   Último reporte: {cache.get('last_report', 'desconocido')}")
+    # Single disk read — reuse cache dict if hit
+    cached = load_cache_if_hit(cache_path, file_hash)
+    if cached is not None:
+        print("⏭️  Sin cambios desde el último análisis — omitiendo LiteLLM")
+        print(f"   Último reporte: {cached.get('last_report', 'desconocido')}")
         sys.exit(0)
 
     # Build prompt and call LiteLLM

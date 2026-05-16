@@ -77,7 +77,8 @@ def parse_findings(text: str) -> list[Finding]:
                 severity = Severity(severity_str)
             except ValueError:
                 continue
-            desc = line[m.start():].strip()
+            # Slice from end of match so description excludes the severity keyword
+            desc = line[m.end():].strip().lstrip(":").strip()
             findings.append(Finding(severity=severity, description=desc))
     return findings
 

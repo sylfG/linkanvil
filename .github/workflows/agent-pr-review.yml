@@ -1,0 +1,113 @@
+name: Agent — PR Review
+
+# Triggers on every PR open, update or reopen.
+# Runs code-reviewer + security-reviewer in parallel and posts
+# a combined markdown comment on the PR.
+#
+# Required secret: ANTHROPIC_API_KEY
+# Required permission: pull-requests: write
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Code review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          claude -p \
+            --allowedTools "Bash(git diff*),Bash(git log*),Read,Grep,Glob" \
+            --model sonnet \
+            "You are the code-reviewer agent for linkanvil, a Python/FastAPI multi-tenant RAG system.
+            Run: git diff ${BASE}...${HEAD}
+            to see all changes, then read full context of modified files.
+            Focus on: async correctness (asyncpg, aio_pika), multi-tenancy leaks (missing tenant_id filters),
+            outbox pattern violations (never send notifications directly), chunking logic safety.
+            Apply CRITICAL/HIGH/MEDIUM/LOW. Skip LOW issues. Output in markdown." \
+          > /tmp/code-review.md
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/code-review.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Security review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          claude -p \
+            --allowedTools "Bash(git diff*),Bash(git log*),Read,Grep,Glob" \
+            --model sonnet \
+            "You are the security-reviewer agent for linkanvil, a Python/FastAPI multi-tenant API.
+            Run: git diff ${BASE}...${HEAD}
+            Focus on: JWT auth bypasses, SQL injection via asyncpg (raw string params), tenant isolation,
+            SSRF via user-submitted URLs (scraper), hardcoded secrets, input validation on FastAPI endpoints.
+            Only report findings with >80% confidence. Output as markdown with severity labels." \
+          > /tmp/security-review.md
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/security-review.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  post-comment:
+    needs: [code-review, security-review]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post combined review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="## Code Review — Claude Code Agents
+
+          ${{ needs.code-review.outputs.body }}
+
+          ---
+
+          ## Security Review — Claude Code Agents
+
+          ${{ needs.security-review.outputs.body }}"
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "${BODY}"

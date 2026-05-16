@@ -274,7 +274,7 @@ class EmbedderWorker:
         
         headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "cerebro-llm",  # Ajusta al modelo que uses para chat, o el que esté ruteado por litellm
+            "model": "cerebro-lite",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             "max_tokens": 10

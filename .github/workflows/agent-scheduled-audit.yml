@@ -1,0 +1,156 @@
+name: Agent — Scheduled Audit
+
+# Weekly audit: security review of the FastAPI public surface + doc health check.
+# Runs every Monday at 09:00 UTC. Results are posted as a GitHub Issue.
+# Can also be triggered manually via workflow_dispatch.
+#
+# Required secret: ANTHROPIC_API_KEY
+# Required permission: issues: write
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Monday 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Audit scope: security | docs | full'
+        required: false
+        default: 'full'
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  SCOPE: ${{ github.event.inputs.scope || 'full' }}
+
+jobs:
+  security-audit:
+    if: ${{ env.SCOPE == 'full' || env.SCOPE == 'security' }}
+    runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.audit.outputs.report }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run security-reviewer agent
+        id: audit
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          SINCE=$(date -d '7 days ago' +%Y-%m-%d 2>/dev/null || date -v-7d +%Y-%m-%d)
+          CHANGED=$(git log --since="${SINCE}" --name-only --pretty=format: | sort -u | grep -v '^$' | head -50)
+
+          claude -p \
+            --allowedTools "Read,Grep,Glob,Bash(git log*),Bash(git diff*)" \
+            --model sonnet \
+            "You are the security-reviewer agent for linkanvil, a Python/FastAPI multi-tenant RAG API.
+
+            Critical files to always audit (regardless of changes):
+            - src/api/main.py (FastAPI endpoints — JWT auth, CORS, rate limiting)
+            - src/api/auth.py (token validation, tenant resolution)
+            - src/ingestion/worker.py (receives external URLs — SSRF risk)
+            - src/scraper/worker.py (fetches external URLs — SSRF, redirect following)
+
+            Files changed in the last 7 days:
+            ${CHANGED}
+
+            For each file, check:
+            1. Hardcoded credentials or secrets
+            2. JWT validation bypasses or missing tenant_id checks
+            3. SSRF via user-submitted URLs (validate against allowlist if any)
+            4. SQL injection via asyncpg (always use parameterized queries \$1, \$2...)
+            5. Input validation on Pydantic models (missing validators)
+            6. Multi-tenancy leaks (query results mixing tenants)
+
+            Output: markdown with Executive Summary, Findings by severity (CRITICAL/HIGH/MEDIUM), Recommended actions." \
+          > /tmp/security-audit.md
+
+          echo "report<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/security-audit.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  docs-audit:
+    if: ${{ env.SCOPE == 'full' || env.SCOPE == 'docs' }}
+    runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.audit.outputs.report }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run doc-updater agent
+        id: audit
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p \
+            --allowedTools "Read,Grep,Glob,Bash(git log*)" \
+            --model sonnet \
+            "You are the doc-updater agent for linkanvil.
+            Check:
+            - README.md completeness (does it describe the ingestion flow, RAG, multi-tenancy?)
+            - .claude/CLAUDE.md accuracy vs current code (stack, gotchas, commands)
+            - docs/ for stale content vs recent git changes
+            - Missing docs for recently added features (check git log last 30 days)
+
+            Output: markdown with Summary, Stale/missing docs, Recommended updates (prioritized)." \
+          > /tmp/docs-audit.md
+
+          echo "report<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/docs-audit.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  create-audit-issue:
+    needs: [security-audit, docs-audit]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create audit issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SECURITY_REPORT: ${{ needs.security-audit.outputs.report }}
+          DOCS_REPORT: ${{ needs.docs-audit.outputs.report }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+
+          gh label create audit --color e4e669 --description "Automated audit report" \
+            --repo ${{ github.repository }} 2>/dev/null || true
+
+          gh issue create \
+            --repo ${{ github.repository }} \
+            --title "Weekly Audit — ${DATE}" \
+            --body "# Weekly Audit — ${DATE}
+
+          Automated audit by Claude Code agents.
+
+          ## Security Audit
+
+          ${SECURITY_REPORT:-*Skipped (scope: docs)*}
+
+          ---
+
+          ## Documentation Health
+
+          ${DOCS_REPORT:-*Skipped (scope: security)*}
+
+          ---
+          *Triggered by: ${{ github.event_name }} | Scope: ${SCOPE}*" \
+            --label audit

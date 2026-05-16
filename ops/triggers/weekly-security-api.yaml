@@ -1,0 +1,23 @@
+name: weekly-security-api
+description: "Security review semanal de los endpoints públicos FastAPI y auth"
+schedule: "0 9 * * 1"   # Lunes 09:00 UTC
+prompt: |
+  Eres el agente security-reviewer para linkanvil (Python/FastAPI multi-tenant RAG).
+
+  Lee y audita estos archivos críticos:
+  - src/api/main.py
+  - src/api/auth.py
+  - src/api/models.py
+  - src/ingestion/worker.py
+
+  Busca específicamente:
+  1. JWT: ¿se valida tenant_id en todos los endpoints? ¿hay endpoints sin auth?
+  2. asyncpg: ¿todas las queries usan parámetros $1, $2...? ¿hay f-strings con datos de usuario?
+  3. SSRF: ¿las URLs de usuario pasan validación antes de ser scrapeadas?
+  4. Pydantic models: ¿hay campos sin validación que llegan a la DB?
+  5. Rate limiting: ¿todos los endpoints POST tienen rate limiting?
+
+  Guarda el reporte en ops/sessions/security-api-$(date +%Y-%m-%d).md
+agent: security-reviewer
+model: sonnet
+tags: [scheduled, security, api]

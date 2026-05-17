@@ -10,77 +10,132 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    _repo_root = Path(
-        subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-    )
-except subprocess.CalledProcessError:
-    _repo_root = Path(__file__).resolve().parent.parent
+# _REPO_ROOT is resolved statically from the hook file location.
+# This is intentional: pre-push always runs from inside the git tree,
+# unlike weekly-audit.py which runs via cron from an arbitrary CWD.
+_HOOK_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _HOOK_DIR.parent
 
-sys.path.insert(0, str(_repo_root / "ops" / "cron"))
+sys.path.insert(0, str(_REPO_ROOT / "ops" / "cron"))
 
 import litellm_client  # noqa: E402
-from config import MAX_DIFF_CHARS, WATCH_PATHS  # noqa: E402
+from hook_config import MAX_DIFF_CHARS, NEW_BRANCH_BASE_REFS, WATCH_PATHS  # noqa: E402
+from utils import load_prompt  # noqa: E402
+import paths  # noqa: E402
 
-_PROMPT_FILE = _repo_root / "ops" / "prompts" / "pre-push.txt"
+_PROMPT_FILE = paths.pre_push_prompt()
+_NULL_SHA = "0" * 40
 
 
-def get_diff() -> str:
-    """
-    Return unified diff of changed files in WATCH_PATHS, or empty string.
-
-    Uses a single subprocess call: tries HEAD~1..HEAD first (normal commit),
-    falls back to --cached if HEAD has no parent (initial commit).
-    """
+def _run_git(*args: str, timeout: int = 5) -> tuple[int, str]:
+    """Run git, return (returncode, stripped_stdout). Empty stdout on failure."""
     try:
-        result = subprocess.run(
-            ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
+        out = subprocess.run(
+            ["git", *args],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout,
         )
-        if result.returncode == 0:
-            diff = result.stdout.strip()
-            if diff:
-                return diff
-        result = subprocess.run(
-            ["git", "diff", "--cached", "--", *WATCH_PATHS],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout.strip()
-    except Exception:
-        return ""
+        return out.returncode, out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return -1, ""
 
 
-def load_prompt(diff: str) -> str:
+def parse_push_refs(stdin_lines: list[str]) -> list[tuple[str, str]]:
+    """
+    Parse pre-push hook stdin into (remote_sha, local_sha) pairs.
+
+    Git protocol: each line is `<local-ref> <local-sha> <remote-ref> <remote-sha>`.
+    Branch deletions (local_sha == NULL_SHA) are skipped.
+    """
+    refs: list[tuple[str, str]] = []
+    for line in stdin_lines:
+        parts = line.strip().split()
+        if len(parts) != 4:
+            continue
+        _, local_sha, _, remote_sha = parts
+        if local_sha == _NULL_SHA:
+            continue
+        refs.append((remote_sha, local_sha))
+    return refs
+
+
+def _resolve_new_branch_base(local_sha: str) -> str | None:
+    """Find a base commit for a new-branch push by probing common upstream refs."""
+    for ref in NEW_BRANCH_BASE_REFS:
+        rc, sha = _run_git("merge-base", ref, local_sha)
+        if rc == 0 and sha:
+            return sha
+    return None
+
+
+def _diff_range(remote_sha: str, local_sha: str) -> str:
+    """Get diff for one ref being pushed, restricted to WATCH_PATHS."""
+    if remote_sha == _NULL_SHA:
+        base = _resolve_new_branch_base(local_sha)
+        range_arg = f"{base}..{local_sha}" if base else f"{local_sha}~1..{local_sha}"
+    else:
+        range_arg = f"{remote_sha}..{local_sha}"
+    rc, out = _run_git("diff", range_arg, "--", *WATCH_PATHS)
+    return out if rc == 0 else ""
+
+
+def _diff_for_manual_invocation() -> str:
+    """Single-commit diff for manual invocation (no stdin from git hook protocol)."""
+    rc, out = _run_git("diff", "HEAD~1..HEAD", "--", *WATCH_PATHS)
+    if rc == 0:
+        return out
+    rc, out = _run_git("diff", "--cached", "--", *WATCH_PATHS)
+    return out if rc == 0 else ""
+
+
+def _read_stdin_lines() -> list[str]:
+    """Read hook stdin if available. Safe against pytest's captured stdin (OSError)."""
+    try:
+        if sys.stdin.isatty():
+            return []
+        return sys.stdin.readlines()
+    except (OSError, ValueError):
+        return []
+
+
+def get_diff(stdin_lines: list[str] | None = None) -> str:
+    """
+    Aggregate diff across all refs being pushed, restricted to WATCH_PATHS.
+
+    When `stdin_lines` is provided (or readable from sys.stdin in a real hook
+    invocation), iterates each ref and concatenates `git diff <remote>..<local>`.
+    Without stdin, falls back to a single HEAD~1..HEAD diff.
+    """
+    if stdin_lines is None:
+        stdin_lines = _read_stdin_lines()
+
+    if not stdin_lines:
+        return _diff_for_manual_invocation()
+
+    refs = parse_push_refs(stdin_lines)
+    if not refs:
+        return _diff_for_manual_invocation()
+
+    pieces = [_diff_range(remote_sha, local_sha) for remote_sha, local_sha in refs]
+    return "\n".join(p for p in pieces if p).strip()
+
+
+def build_prompt(diff: str) -> str:
     """
     Load prompt template from ops/prompts/pre-push.txt and inject the diff.
-    Exits with error if the prompt file is missing.
-    """
-    try:
-        template = _PROMPT_FILE.read_text(encoding="utf-8")
-    except OSError:
-        print(
-            f"❌ Prompt file not found: {_PROMPT_FILE}\n"
-            "   Ensure ops/prompts/pre-push.txt exists in the repository.\n"
-            "   Para saltarlo: git push --no-verify",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    if len(diff) > MAX_DIFF_CHARS:
+    Raises FileNotFoundError if the template is missing -- caller decides exit policy.
+    """
+    is_truncated = len(diff) > MAX_DIFF_CHARS
+    if is_truncated:
         print(
-            f"⚠️  Diff truncado a {MAX_DIFF_CHARS} chars — el analisis sera parcial",
+            f"warning  Diff truncado a {MAX_DIFF_CHARS} chars -- el analisis sera parcial",
             file=sys.stderr,
         )
     truncated = diff[:MAX_DIFF_CHARS]
-    suffix = "\n... [TRUNCADO — diff demasiado grande para analisis completo]\n" if len(diff) > MAX_DIFF_CHARS else ""
-    return template.replace("{diff}", truncated + suffix)
+    suffix = "\n... [TRUNCADO -- diff demasiado grande para analisis completo]\n" if is_truncated else ""
+    return load_prompt(_PROMPT_FILE, {"{diff}": truncated + suffix})
 
 
 def main() -> None:
@@ -88,8 +143,18 @@ def main() -> None:
     if not diff:
         sys.exit(0)
 
-    print("🔍 Analizando cambios con LiteLLM...", file=sys.stderr)
-    response = litellm_client.call(load_prompt(diff))
+    print("info  Analizando cambios con LiteLLM...", file=sys.stderr)
+    try:
+        prompt = build_prompt(diff)
+    except (FileNotFoundError, ValueError) as exc:
+        print(
+            f"error  {exc}\n"
+            "   Para saltarlo: git push --no-verify",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    response = litellm_client.send_prompt(prompt)
 
     if response is None:
         sys.exit(0)
@@ -100,11 +165,11 @@ def main() -> None:
         for f in findings:
             print(f)
     else:
-        print("✅ Sin hallazgos de seguridad")
+        print("ok  Sin hallazgos de seguridad")
 
     if litellm_client.has_critical(findings):
         print(
-            "\n❌ Push bloqueado — findings CRITICAL. Corrige antes de hacer push.",
+            "\nerror  Push bloqueado -- findings CRITICAL. Corrige antes de hacer push.",
             file=sys.stderr,
         )
         print("   Para saltarlo: git push --no-verify", file=sys.stderr)

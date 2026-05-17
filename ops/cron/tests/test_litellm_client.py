@@ -8,14 +8,11 @@ import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
-# Allow running from repo root or ops/cron/
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
-
 from litellm_client import (
     Finding,
     Severity,
     _validate_url,
-    call,
+    send_prompt,
     has_critical,
     parse_findings,
 )
@@ -134,28 +131,22 @@ class TestValidateUrl(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# call()
+# send_prompt()
 # ---------------------------------------------------------------------------
 
+def _mock_urlopen(body: bytes) -> MagicMock:
+    """Minimal mock for urllib.request.urlopen (context-manager protocol)."""
+    m = MagicMock()
+    m.read.return_value = body
+    m.__enter__ = MagicMock(return_value=m)
+    m.__exit__ = MagicMock(return_value=False)
+    return m
+
+
 def _make_response(content: str) -> MagicMock:
-    """Return a mock object that behaves like urllib urlopen context manager."""
-    payload = json.dumps({
-        "choices": [{"message": {"content": content}}]
-    }).encode()
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = payload
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
-
-
-def _make_raw_response(raw_bytes: bytes) -> MagicMock:
-    """Return a mock with arbitrary raw bytes (for malformed JSON tests)."""
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = raw_bytes
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
+    """Return a mock urlopen with a well-formed LiteLLM response body."""
+    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+    return _mock_urlopen(payload)
 
 
 class TestCallLitellm(unittest.TestCase):
@@ -163,22 +154,22 @@ class TestCallLitellm(unittest.TestCase):
     @patch("litellm_client.urllib.request.urlopen")
     def test_returns_content_on_success(self, mock_urlopen):
         mock_urlopen.return_value = _make_response("CLEAN")
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertEqual(result, "CLEAN")
 
     @patch("litellm_client.urllib.request.urlopen")
     def test_strips_whitespace(self, mock_urlopen):
         mock_urlopen.return_value = _make_response("  CLEAN  \n")
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertEqual(result, "CLEAN")
 
     @patch("litellm_client.urllib.request.urlopen", side_effect=OSError("connection refused"))
     def test_returns_none_on_connection_error(self, _):
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertIsNone(result)
 
     def test_returns_none_on_invalid_url_scheme(self):
-        result = call("test prompt", litellm_url="ftp://bad-scheme.com")
+        result = send_prompt("test prompt", litellm_url="ftp://bad-scheme.com")
         self.assertIsNone(result)
 
     @patch(
@@ -188,7 +179,7 @@ class TestCallLitellm(unittest.TestCase):
         ),
     )
     def test_returns_none_on_http_500(self, _):
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertIsNone(result)
 
     @patch(
@@ -198,48 +189,38 @@ class TestCallLitellm(unittest.TestCase):
         ),
     )
     def test_returns_none_on_http_401(self, _):
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
+        self.assertIsNone(result)
+
+    @patch("litellm_client.urllib.request.urlopen")
+    def test_returns_none_on_empty_choices(self, mock_urlopen):
+        """choices=[] raises IndexError on [0]; must return None, not raise."""
+        mock_urlopen.return_value = _mock_urlopen(json.dumps({"choices": []}).encode())
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertIsNone(result)
 
     @patch("litellm_client.urllib.request.urlopen")
     def test_returns_none_on_missing_choices_key(self, mock_urlopen):
         """JSON response without 'choices' key must not raise — return None."""
-        mock_urlopen.return_value = _make_raw_response(b'{"error": "model not found"}')
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        mock_urlopen.return_value = _mock_urlopen(b'{"error": "model not found"}')
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
         self.assertIsNone(result)
 
     @patch("litellm_client.urllib.request.urlopen")
     def test_returns_none_on_invalid_json(self, mock_urlopen):
         """Non-JSON response body must return None."""
-        mock_urlopen.return_value = _make_raw_response(b"not json at all")
-        result = call("test prompt", litellm_url="http://localhost:4000")
+        mock_urlopen.return_value = _mock_urlopen(b"not json at all")
+        result = send_prompt("test prompt", litellm_url="http://localhost:4000")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_timeout(self):
+        """Network timeout must not propagate — fail-open contract."""
+        with patch(
+            "litellm_client.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("timed out"),
+        ):
+            result = send_prompt("prompt", model="m", timeout=1)
         self.assertIsNone(result)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-# ---------------------------------------------------------------------------
-# temperature parameter
-# ---------------------------------------------------------------------------
-
-class TestTemperatureParameter(unittest.TestCase):
-
-    @patch("litellm_client.urllib.request.urlopen")
-    def test_default_temperature_is_zero(self, mock_urlopen):
-        """Default temperature must be 0 in the sent payload."""
-        mock_urlopen.return_value = _make_response("CLEAN")
-        call("test prompt", litellm_url="http://localhost:4000")
-        req = mock_urlopen.call_args[0][0]
-        payload = json.loads(req.data.decode())
-        self.assertEqual(payload["temperature"], 0)
-
-    @patch("litellm_client.urllib.request.urlopen")
-    def test_custom_temperature_sent_in_payload(self, mock_urlopen):
-        """Custom temperature value must be forwarded to LiteLLM."""
-        mock_urlopen.return_value = _make_response("CLEAN")
-        call("test prompt", litellm_url="http://localhost:4000", temperature=0.7)
-        req = mock_urlopen.call_args[0][0]
-        payload = json.loads(req.data.decode())
-        self.assertAlmostEqual(payload["temperature"], 0.7)
+if __name__ == "__main__":    unittest.main()

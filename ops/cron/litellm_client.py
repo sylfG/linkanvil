@@ -3,9 +3,9 @@
 Shared LiteLLM HTTP client for linkanvil git hooks and cron scripts.
 
 Usage:
-    from litellm_client import call, parse_findings, has_critical, Severity
+    from litellm_client import send_prompt, parse_findings, has_critical, Severity
 
-call() returns the model response text, or None if LiteLLM is unavailable.
+send_prompt() returns the model response text, or None if LiteLLM is unavailable.
 Never raises — fail-open is always respected.
 """
 from __future__ import annotations
@@ -44,8 +44,8 @@ class Finding:
 # Parsing
 # ---------------------------------------------------------------------------
 
-_SEVERITY_RE = re.compile(
-    r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b",
+_FINDING_RE = re.compile(
+    r"^(CRITICAL|HIGH|MEDIUM|LOW)[:\s]+(.+)",
     re.IGNORECASE,
 )
 
@@ -57,7 +57,9 @@ def parse_findings(text: str) -> list[Finding]:
     Accepts lines like:
         CRITICAL src/api/auth.py:42 JWT missing tenant_id check
         HIGH: some description
-        CLEAN  →  empty list
+        CLEAN  ->  empty list
+
+    Severity keyword must appear at the start of the line (anchored match).
     """
     if not text:
         return []
@@ -70,15 +72,14 @@ def parse_findings(text: str) -> list[Finding]:
         line = line.strip()
         if not line:
             continue
-        m = _SEVERITY_RE.search(line)
+        m = _FINDING_RE.match(line)
         if m:
             severity_str = m.group(1).upper()
             try:
                 severity = Severity(severity_str)
             except ValueError:
                 continue
-            # Slice from end of match so description excludes the severity keyword
-            desc = line[m.end():].strip().lstrip(":").strip()
+            desc = m.group(2).strip()
             findings.append(Finding(severity=severity, description=desc))
     return findings
 
@@ -105,7 +106,7 @@ def _validate_url(url: str) -> str:
     return url
 
 
-def call(
+def send_prompt(
     prompt: str,
     *,
     max_tokens: int = 600,
@@ -118,7 +119,7 @@ def call(
     Send a prompt to LiteLLM and return the response text.
 
     Returns None if LiteLLM is unreachable or returns an error.
-    Never raises — callers should treat None as fail-open.
+    Never raises -- callers should treat None as fail-open.
 
     temperature: 0 for deterministic audit output; higher values for exploration.
     """
@@ -126,7 +127,7 @@ def call(
     try:
         base_url = _validate_url(raw_url.rstrip("/"))
     except ValueError as exc:
-        print(f"⚠️  {exc} — skipping LiteLLM call", flush=True)
+        print(f"warning  {exc} -- skipping LiteLLM call", flush=True)
         return None
 
     resolved_model = model or os.getenv("LITELLM_MODEL", _DEFAULT_MODEL)
@@ -138,7 +139,7 @@ def call(
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-    ).encode()
+    ).encode("utf-8")
 
     req = urllib.request.Request(
         f"{base_url}/v1/chat/completions",
@@ -153,11 +154,11 @@ def call(
             data = json.loads(raw)
             return data["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as exc:
-        print(f"⚠️  LiteLLM HTTP {exc.code} — push continúa sin análisis", flush=True)
+        print(f"warning  LiteLLM HTTP {exc.code} -- push continua sin analisis", flush=True)
         return None
     except urllib.error.URLError as exc:
-        print(f"⚠️  LiteLLM no disponible ({exc.reason}) — push continúa sin análisis", flush=True)
+        print(f"warning  LiteLLM no disponible ({exc.reason}) -- push continua sin analisis", flush=True)
         return None
-    except (KeyError, json.JSONDecodeError, OSError) as exc:
-        print(f"⚠️  LiteLLM respuesta inválida ({exc}) — push continúa sin análisis", flush=True)
+    except (KeyError, IndexError, json.JSONDecodeError, OSError) as exc:
+        print(f"warning  LiteLLM respuesta invalida ({exc}) -- push continua sin analisis", flush=True)
         return None

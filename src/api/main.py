@@ -72,6 +72,19 @@ async def lifespan(app: FastAPI):
     global _redis, _http
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=10.0))
+
+    # Sanity checks de configuración crítica al arrancar — visibles en logs
+    # para que el operador detecte deriva entre cerebro-api y cerebro-n8n
+    # (ambos leen AUDIT_CRON_TOKEN de la misma .env vía docker-compose, pero
+    # un override manual puede romper el silencio).
+    if not os.getenv("AUDIT_CRON_TOKEN", ""):
+        logger.warning(
+            "AUDIT_CRON_TOKEN no configurado — /admin/audit-cron devolverá 503 "
+            "y el cron diario de n8n fallará en autenticación."
+        )
+    else:
+        logger.info("AUDIT_CRON_TOKEN configurado (longitud=%d)", len(os.getenv("AUDIT_CRON_TOKEN", "")))
+
     yield
     if _redis:
         await _redis.aclose()

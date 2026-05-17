@@ -106,6 +106,55 @@ def _validate_url(url: str) -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# .env fallback — git hooks run en el shell del usuario, sin variables del
+# docker compose. Si no hay LITELLM_KEY/LITELLM_MASTER_KEY exportadas,
+# leemos .env del root del repo para que la autenticación funcione sin
+# que el usuario tenga que `export` manual.
+# ---------------------------------------------------------------------------
+
+_DOTENV_LOADED = False
+
+
+def _load_dotenv_fallback() -> None:
+    """Parse .env del repo y poblar os.environ. Idempotente y silencioso."""
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+
+    # Subir desde ops/cron/ hasta la raíz del repo.
+    candidate = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(4):
+        env_path = os.path.join(candidate, ".env")
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        key, _, value = line.partition("=")
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        # No pisamos variables ya exportadas en el shell.
+                        os.environ.setdefault(key, value)
+            except OSError:
+                pass
+            return
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return
+        candidate = parent
+
+
+def _resolve_api_key() -> Optional[str]:
+    """Prefer LITELLM_KEY; fall back to LITELLM_MASTER_KEY (alias usado en
+    docker-compose para LiteLLM)."""
+    _load_dotenv_fallback()
+    return os.getenv("LITELLM_KEY") or os.getenv("LITELLM_MASTER_KEY")
+
+
 def send_prompt(
     prompt: str,
     *,
@@ -141,10 +190,15 @@ def send_prompt(
         }
     ).encode("utf-8")
 
+    headers = {"Content-Type": "application/json"}
+    api_key = _resolve_api_key()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     req = urllib.request.Request(
         f"{base_url}/v1/chat/completions",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 

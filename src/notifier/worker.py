@@ -46,6 +46,10 @@ REASON_LABELS = {
     "colision_semantica": "ha sido reemplazado por contenido más reciente",
     "manual": "se marcó manualmente",
     "gracia_agotada": "agotó su período de gracia",
+    # Migración 0006: cuarentena automática al detectar fecha pasada al ingestar.
+    "evento_pasado": "tiene fecha pasada y requiere revisión",
+    # Migración 0007: archivo automático tras detectar valor archivístico alto.
+    "auto_archive": "tiene fecha pasada y se archivó automáticamente",
 }
 
 
@@ -60,6 +64,15 @@ def _human_message(evento_tipo: str, motivo: Optional[str], titulo: Optional[str
             f"{url}"
         )
     if evento_tipo == "recurso.expirado":
+        # Auto-archive (migración 0007) usa el mismo evento_tipo que la
+        # expiración tradicional, pero el copy es distinto: no se borra
+        # del RAG, se archiva (recuperable con toggle Archivo ON).
+        if motivo == "auto_archive":
+            return (
+                f"📦 Tu recurso \"{label}\" se archivó automáticamente al detectar "
+                f"valor archivístico alto. Recuperable en el chat con el toggle "
+                f"\"Archivo ON\".\n{url}"
+            )
         razon = REASON_LABELS.get(motivo or "", "ha expirado")
         return (
             f"🗑 Tu recurso \"{label}\" {razon} y se eliminó del RAG activo.\n"

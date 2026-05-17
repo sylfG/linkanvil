@@ -25,6 +25,9 @@ const REASON_LABEL: Record<string, string> = {
   colision_semantica: "fue reemplazado",
   manual: "marcado manualmente",
   gracia_agotada: "expiró tras la gracia",
+  // Migraciones 0006 + 0007: nuevos motivos del flujo policy-driven.
+  evento_pasado: "fecha pasada",
+  auto_archive: "archivado automáticamente",
 };
 
 function eventMeta(ev: string) {

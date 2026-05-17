@@ -452,6 +452,18 @@ class EmbedderWorker:
                         f"(auto_archive={auto_archive})"
                     )
 
+                    # Auto-archive (migración 0007): cuando el destino fue
+                    # 'expirado' sin pasar por cuarentena, emitimos un
+                    # outbox event recurso.expirado con motivo='auto_archive'
+                    # para que el notifier-worker lo recoja y avise al
+                    # usuario (campana + Telegram). Sin esto, el flag
+                    # cambia silenciosamente y el usuario no se entera de
+                    # que el recurso fue archivado.
+                    if auto_archive:
+                        await self._emit_auto_archive_event(
+                            tenant_id, recurso_id, url, ext_info.get("title") or url, trace_id,
+                        )
+
                     # Chunking + embedding por chunk para que el RAG del /chat
                     # tenga acceso al contenido real (no solo al resumen corto).
                     # También cuando el destino es 'expirado' — el toggle
@@ -506,6 +518,51 @@ class EmbedderWorker:
                 recurso_id,
             )
         return bool(row and row["auto_archive_pending"])
+
+    async def _emit_auto_archive_event(
+        self,
+        tenant_id: str,
+        recurso_id: str,
+        url: str,
+        titulo: str,
+        trace_id: str,
+    ) -> None:
+        """Migración 0007: tras transición auto-archive a 'expirado', inserta
+        en outbox_eventos un evento `recurso.expirado` con motivo
+        `auto_archive` para que el notifier emita la notificación en feed
+        in-app + Telegram + SSE. Sin este event, el transition pasa
+        silencioso desde el punto de vista del usuario."""
+        if not self.db.pool:
+            await self.db.connect()
+        payload = {
+            "event_origin": "embedder_worker",
+            "trace_id": trace_id,
+            "recurso_id": str(recurso_id),
+            "url": url,
+            "titulo": titulo,
+            "motivo": "auto_archive",
+        }
+        try:
+            async with self.db.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO outbox_eventos (
+                        tenant_id, agregado_tipo, agregado_id,
+                        evento_tipo, payload
+                    ) VALUES (
+                        $1, 'recurso', $2::uuid, 'recurso.expirado', $3::jsonb
+                    )
+                    """,
+                    tenant_id, recurso_id, json.dumps(payload),
+                )
+            logger.info(f"[{trace_id}] Outbox event recurso.expirado/auto_archive emitido")
+        except Exception as e:
+            # No queremos que un fallo de outbox bloquee el ciclo del
+            # embedder. Si el INSERT falla, queda un recurso archivado
+            # sin notificación al usuario — molestia, no inconsistencia.
+            logger.warning(
+                f"[{trace_id}] Fallo emitiendo outbox auto_archive para {recurso_id}: {e}"
+            )
 
     async def _build_chunks_from_text(
         self,

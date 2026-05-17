@@ -430,3 +430,123 @@ Imágenes Docker reconstruidas y recreadas:
 5. **`AUDIT_CRON_TOKEN` rotación**: el token está en `.env` y en n8n env.
    Si se rota, hay que actualizar ambos sitios. No hay alerta si
    divergen.
+
+---
+
+# Sesión tarde 2026-05-17 — Clasificación temporal + policy JSONB + auto-archive
+
+## Origen de la sesión
+
+Tras documentar `prompts.md` y `lifecycle.md`, detectaste que recursos
+como Expojove 2024 y AEMET 2020 NO se trataban como contenido pasado:
+el LLM no extraía `expiration_date` (el prompt original solo pedía
+"deadline o fin de oferta futura"), caía al fallback `today + 30 días`
+y los recursos vivían como `activo` con caducidad sintética.
+
+## Cambios estructurales aplicados
+
+### Migración 0006 — clasificación del LLM
+- `recursos.temporal_class` VARCHAR(20) — `evento`/`referencia`/`evergreen`.
+- `recursos.valor_archivistico` VARCHAR(20) — `alto`/`medio`/`nulo`.
+- `recursos.fecha_evento` DATE — fecha del evento descrito (puede ser pasada).
+- `recursos_quarantine_reason_check` extendido con `'evento_pasado'`.
+- `usuarios.audit_strictness` (enum) — luego sustituido por migración 0007.
+
+### Migración 0007 — policy por celda + auto-archive
+- `usuarios.audit_policy` JSONB con 6 keys (matriz `temporal_class ×
+  valor_archivistico` para contenido pasado). Cada celda es
+  `activo`/`cuarentena`/`expirado`.
+- `recursos.auto_archive_pending` BOOLEAN — señal al embedder para
+  transicionar a `expirado` (no `activo`) tras vectorizar.
+- `usuarios.audit_strictness` eliminada. La migración es idempotente
+  (DO block con check de existencia) tras un fallo inicial del
+  `cerebro-migrate` por aplicación manual previa.
+
+### Backend
+- **Scraper prompt** extendido con 3 campos nuevos (incluyendo hint del
+  path `YYYY/MM/DD` de la URL para fechas).
+- **`db.py::save_with_outbox`** ahora es policy-driven: lookup
+  `policy[clave]` reemplaza el árbol if/elif anterior. Helper
+  `_get_user_audit_policy(tenant_id)` con cache in-process 60s.
+- **`db.py::update_recurso_estado` guard ampliado**: permite
+  `procesando → expirado` solo cuando `auto_archive_pending=true`,
+  preserva la defensa contra reverts a `activo` ya transicionados.
+- **`embedder_worker.py`** lee el flag al terminar y transiciona al
+  destino correcto. Tras auto-archive emite `recurso.expirado` con
+  `motivo='auto_archive'` para que el notifier avise al usuario.
+- **`notifier/worker.py`** mapea `motivo='auto_archive'` → copy 📦
+  "se archivó automáticamente. Recuperable en chat con Archivo ON".
+  También copy específico para `motivo='evento_pasado'` en cuarentena.
+- **`api/main.py`**: nuevo `PUT /profile/audit-policy` con validador
+  estricto de 6 keys. `GET /auth/me` devuelve `audit_policy`.
+  `POST /chat` acepta `include_archive: bool` para incluir `expirado`
+  en RAG (toggle "Archivo ON").
+
+### Frontend
+- **`lib/auth.ts`**: tipo `AuditPolicy`, constante `AUDIT_PRESETS` con
+  los 3 presets canónicos, helper `matchPreset()` para detectar
+  client-side si la policy actual coincide con un preset.
+- **`/profile` y panel lateral `ProfileModal`**: card "Auditoría de
+  recursos" con 3 botones preset (1-click) + 6 selects para ajuste fino.
+  Auto-save al cambiar cualquier celda. Badge dinámico "Basado en X" o
+  "Personalizada".
+- **Chat (`(app)/page.tsx`)**: toggle "Archivo ON/OFF" en ámbar junto
+  al botón "RAG ON". Pasa `include_archive` en el body de POST `/chat`.
+- **`/quarantine`**: REASON_META con entrada `evento_pasado`
+  (icono `CalendarX`, badge azul).
+- **`/expired`**: copy actualizado a "Archivo histórico" (no descarte).
+- **`_NotificationsBell.tsx`**: REASON_LABEL extendido con
+  `evento_pasado` y `auto_archive`.
+
+## Matriz de comportamiento (presets canónicos)
+
+| Preset | evento_pasado_{alto,medio,nulo} | referencia_pasada_{alto,medio,nulo} |
+|---|---|---|
+| Estricto | cuarentena / cuarentena / cuarentena | cuarentena / cuarentena / cuarentena |
+| **Equilibrado (default)** | expirado / cuarentena / cuarentena | expirado / cuarentena / cuarentena |
+| Permisivo | expirado / cuarentena / cuarentena | expirado / activo / cuarentena |
+
+## Bug detectado y resuelto durante la sesión
+
+**Síntoma**: el bell no se actualizaba aunque hubiera auto-archives.
+
+**Causa**: el embedder transicionaba `procesando → expirado` por SQL
+directo via `update_recurso_estado` pero NO emitía outbox event. El
+notifier-worker (whitelist: `cuarentena|expirado|rescatado`) nunca veía
+el cambio.
+
+**Fix**: helper `_emit_auto_archive_event` en el embedder que inserta
+`recurso.expirado` con motivo `auto_archive` tras la transición.
+Backfill manual de los 2 recursos pre-fix (Expojove + AEMET) vía
+`INSERT INTO outbox_eventos` con `SET LOCAL app.tenant_id` para
+respetar la RLS forzada.
+
+## Commits de la sesión
+
+| Hash | Asunto |
+|---|---|
+| `021c3ab` | feat(audit): clasificación temporal del LLM + audit_policy JSONB por celda |
+| `41bfd39` | feat(profile-modal): card de Auditoría de recursos en el panel lateral |
+| `37d4737` | fix(notifications): emite evento outbox cuando auto-archive transiciona |
+
+Publicados en `origin/develop`.
+
+## Pendientes y notas de operación
+
+1. **Pre-push hook con FP**: el LLM auditor de `ops/prompts/pre-push.txt`
+   reporta CRITICAL en `/auth/me` ignorando que `Depends(get_current_user)`
+   ES la validación JWT. Push usó `--no-verify` con autorización
+   explícita del usuario. Convendría enseñar al prompt a reconocer
+   `Depends(...)` de FastAPI.
+2. **Reuso cross-tenant + policy**: cuando un segundo tenant añade una
+   URL ya conocida (rama `reused`), hereda el `estado` global decidido
+   por el primer tenant — NO se re-evalúa la policy del nuevo tenant.
+   Es por diseño (estado global, sin per-tenant estados) pero conviene
+   documentarlo. Si lo cambias, requiere migración a estado per-tenant.
+3. **Backfill masivo**: rows pre-migración 0006 tienen
+   `temporal_class='evento'` por default. Para reclasificar URLs ya
+   ingestadas, re-ingéstalas manualmente — no hay cron de
+   reclasificación.
+4. **Pre-push hook no entiende `Depends`**: se podría añadir excepción
+   en el prompt para que pase los endpoints que usan `Depends(verify_csrf)`
+   o `Depends(get_current_user)` sin marcarlos CRITICAL.

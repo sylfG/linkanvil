@@ -422,7 +422,7 @@ mismo filtro o hasta una limpieza manual.
 | `procesando` | Fila con `estado='procesando'`, sin `contenido` aún | Sin point todavía | Sin chunks | No | Sí (página `/ingest`) | `recurso.procesado` cuando embedder termina |
 | `activo` | Fila completa | Point con payload tenant_id | Chunks por documento | **Sí** | Sí (`/kb`) | — |
 | `cuarentena` | `estado='cuarentena'` + 3 campos quarantine_* | **Sin cambios** (point sigue) | **Sin cambios** | No | Sí (`/quarantine`) | `recurso.cuarentena` con motivo |
-| `expirado` (archivo histórico) | `estado='expirado'`, `auto_archive_pending` se limpia | **Point inyectado** (auto-archive sí vectoriza) o sin cambios (expiración tradicional) | **Chunks inyectados** (auto-archive) o sin cambios | Sí con `include_archive=true` en `/chat` | Sí (`/expired`, copy "Archivo histórico") | `recurso.expirado` o `recurso.procesado` (auto-archive) |
+| `expirado` (archivo histórico) | `estado='expirado'`, `auto_archive_pending` se limpia | **Point inyectado** (auto-archive sí vectoriza) o sin cambios (expiración tradicional) | **Chunks inyectados** (auto-archive) o sin cambios | Sí con `include_archive=true` en `/chat` | Sí (`/expired`, copy "Archivo histórico") | `recurso.expirado` con `motivo='gracia_agotada'` (expiración tradicional) o `motivo='auto_archive'` (migración 0007, emitido por el embedder tras la transición) |
 | (borrado) | Sin fila si era el último tenant; sin link si quedan tenants | Point eliminado (global o per-tenant según caso) | Igual | No | No | `recurso.eliminado` |
 
 **Lectura clave**: hay dos formas de llegar a `expirado` ahora:
@@ -496,8 +496,53 @@ La única transición que toca Qdrant **eliminando** datos sigue siendo
 | `evento_tipo` | Lo emite | Lo consume |
 |---|---|---|
 | `recurso.procesado` | `save_with_outbox` tras INSERT | **embedder** (whitelist), notifier (silencioso) |
+| `recurso.expirado` con `motivo='auto_archive'` | **embedder** tras transición `procesando → expirado` cuando `auto_archive_pending=true` (migración 0007) | notifier (in-app + Telegram + SSE) |
 | `recurso.reusado` | `emit_reuse_event` cuando reuso cross-tenant | **embedder** (whitelist, copia vector) |
 | `recurso.cuarentena` | `audit_cron`, `quarantine_recurso`, colisión semántica | notifier (in-app + Telegram), frontend (SSE) |
-| `recurso.expirado` | `audit_cron` Fase B, `expire_recurso` | notifier, frontend |
+| `recurso.expirado` (motivos `caducidad`/`gracia_agotada`/`manual`/`auto_archive`) | `audit_cron` Fase B, `expire_recurso`, embedder (auto-archive) | notifier, frontend |
 | `recurso.rescatado` | `rescue_recurso` | notifier, frontend |
 | `recurso.eliminado` | `delete_recurso_for_tenant` | frontend (SSE) |
+
+### Mapping `motivo` → copy del notifier-worker
+
+El notifier traduce `(evento_tipo, motivo)` a un mensaje humano que va al
+feed in-app, al canal Redis `resources:{tenant}` (SSE), y al bot de
+Telegram del tenant si está configurado. Mapping en
+`src/notifier/worker.py::REASON_LABELS` + lógica de `_human_message`:
+
+| evento_tipo | motivo | Copy humano |
+|---|---|---|
+| `recurso.cuarentena` | `caducidad` | "ha caducado" |
+| `recurso.cuarentena` | `colision_semantica` | "ha sido reemplazado por contenido más reciente" |
+| `recurso.cuarentena` | `manual` | "se marcó manualmente" |
+| `recurso.cuarentena` | `evento_pasado` ⭐ | "tiene fecha pasada y requiere revisión" |
+| `recurso.expirado` | `gracia_agotada` | "agotó su período de gracia" |
+| `recurso.expirado` | `auto_archive` ⭐ | "se archivó automáticamente. Recuperable en chat con toggle Archivo ON" |
+| `recurso.rescatado` | — | "vuelve a estar activo" |
+
+⭐ = motivos añadidos por migraciones 0006 + 0007. El icono en la
+campana también diferencia: 📦 para `auto_archive`, ⚠️ para cuarentena,
+🗑 para `gracia_agotada`, ♻️ para rescate.
+
+### Pipeline de propagación de la notificación
+
+```
+Outbox event (recurso.X)
+       │
+       ▼
+cerebro-outbox  ── fanout exchange `cerebro.procesamiento`
+       │                                  │
+       │                                  ├─→ embedder (whitelist filtra)
+       │                                  │
+       ▼                                  ▼
+cerebro-notifier (q.notifications)    Otros consumidores
+       │
+       ├─→ INSERT cerebro.notificaciones (feed in-app)
+       ├─→ Redis PUBLISH `resources:{tenant}` (SSE → bell + sidebar badges)
+       └─→ Telegram API (si telegram_bot_active = true para el tenant)
+```
+
+**Doble vía de propagación al frontend**: la API también expone
+`GET /notifications?limit=20` que el bell consulta al montar y cada 5 min
+como red de seguridad. El SSE es la vía instantánea — el polling es fallback
+si el EventSource se cae sin que el browser auto-reconecte.

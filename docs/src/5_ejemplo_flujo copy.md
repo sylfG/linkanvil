@@ -250,15 +250,32 @@ Su tenant tiene `audit_policy` en el preset **Equilibrado** (default).
      whitelist), así que Expojove NO se vectoriza (gana cuarentena).
    - AEMET: outbox emitió `recurso.procesado` con `auto_archive_pending=true`.
      El embedder vectoriza, inyecta el point en Qdrant, construye chunks,
-     y al final lee la BD: `auto_archive_pending=true` → transiciona
-     directo a `'expirado'`.
+     transiciona directo a `'expirado'`, y **emite un segundo evento outbox
+     `recurso.expirado` con `motivo='auto_archive'`** (helper
+     `_emit_auto_archive_event`).
 
-4. **Resultado tras 30 segundos**:
-   - Expojove en `/quarantine` esperando decisión del usuario.
+4. **Notificación al usuario**:
+   - Expojove: el `recurso.cuarentena` con motivo `evento_pasado` llega
+     al notifier → INSERT en `notificaciones` + PUBLISH a Redis
+     `resources:{tenant}` + (si Telegram activo) bot manda mensaje
+     "⚠️ Tu recurso \"Expojove…\" tiene fecha pasada y requiere
+     revisión".
+   - AEMET: el `recurso.expirado` con motivo `auto_archive` llega al
+     notifier → INSERT + PUBLISH + Telegram "📦 Tu recurso
+     \"Avance Climático Nacional…\" se archivó automáticamente.
+     Recuperable en chat con toggle Archivo ON".
+   - El frontend recibe ambos via SSE (`/resources/stream`): la campana
+     incrementa unread y los badges del sidebar (`Cuarentena` / `Expirados`)
+     se refrescan al instante.
+
+5. **Resultado tras 30 segundos**:
+   - Expojove en `/quarantine` con badge azul "Evento pasado",
+     esperando decisión del usuario.
    - AEMET en `/expired` (UI dice "Archivo histórico") con chunks
      indexados en Qdrant.
+   - Bell con 2 notificaciones nuevas, una por cada URL.
 
-5. **Recuperación en chat**: el usuario pregunta "¿Cómo fue el verano
+6. **Recuperación en chat**: el usuario pregunta "¿Cómo fue el verano
    2020 según AEMET?". Si tiene el toggle **RAG ON + Archivo ON**, el
    `/chat` pasa `include_archive=true` y `get_active_resource_ids`
    amplía el filtro a `estado IN ('activo','expirado')`. Qdrant devuelve
@@ -266,11 +283,11 @@ Su tenant tiene `audit_policy` en el preset **Equilibrado** (default).
    Si tiene **Archivo OFF**, el AEMET no aparece (queda como archivo
    pasivo).
 
-6. **Cambio de policy**: el usuario va a `/profile`, switchea a preset
-   **Estricto** y re-ingesta el AEMET. Esta vez la key
-   `referencia_pasada_alto` dice `"cuarentena"` → AEMET va a triaje
-   manual. El usuario puede pulsar **Rescatar** o dejar que la gracia
-   lo mande a `expirado`.
+7. **Cambio de policy**: el usuario va a `/profile` (o abre el panel
+   lateral Perfil), switchea a preset **Estricto** y re-ingesta el AEMET.
+   Esta vez la key `referencia_pasada_alto` dice `"cuarentena"` → AEMET
+   va a triaje manual. El usuario puede pulsar **Rescatar** o dejar que
+   la gracia lo mande a `expirado`.
 
 ### 3.c Y luego — el usuario decide
 

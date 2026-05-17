@@ -117,21 +117,29 @@ async def get_resources(
     return [dict(r) for r in rows]
 
 
-async def get_active_resource_ids(tenant_id: str, ids: list[str]) -> list[str]:
-    """Return only the IDs from `ids` that the tenant has linked AND are estado='activo'."""
+async def get_active_resource_ids(
+    tenant_id: str, ids: list[str], include_archive: bool = False
+) -> list[str]:
+    """Return only the IDs from `ids` that the tenant has linked AND are
+    `estado='activo'`. Si `include_archive=True`, también incluye recursos
+    en `estado='expirado'` (que ahora funciona como "Archivo histórico" —
+    toggle del chat añadido en la migración 0006)."""
     if not ids:
         return []
     p = await get_pool()
+    allowed_states = ["activo"]
+    if include_archive:
+        allowed_states.append("expirado")
     rows = await p.fetch(
         """
         SELECT r.id::text
         FROM recursos r
         JOIN usuario_recursos ur ON ur.recurso_id = r.id
         WHERE ur.tenant_id = $1
-          AND r.estado = 'activo'
-          AND r.id = ANY($2::uuid[])
+          AND r.estado = ANY($2::text[])
+          AND r.id = ANY($3::uuid[])
         """,
-        tenant_id, ids,
+        tenant_id, allowed_states, ids,
     )
     return [r["id"] for r in rows]
 

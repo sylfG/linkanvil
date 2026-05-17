@@ -434,26 +434,49 @@ class EmbedderWorker:
                     await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
                     logger.info(f"[{trace_id}] Cruces en SQL procesados (F-03.3).")
 
-                    await self.db.update_recurso_estado(recurso_id, "activo")
-                    logger.info(f"[{trace_id}] Estado actualizado a 'activo' para ID {recurso_id}")
+                    # Migración 0007: si el scraper marcó el recurso con
+                    # auto_archive_pending=true (contenido pasado con valor
+                    # archivístico alto según la policy del tenant), el
+                    # destino final NO es 'activo' sino 'expirado'. Los
+                    # chunks ya se inyectaron en Qdrant para que el toggle
+                    # Archivo ON pueda recuperarlos. La consulta a BD es
+                    # autoritativa; el payload lo lleva como hint.
+                    auto_archive = bool(payload.get("auto_archive_pending"))
+                    if not auto_archive:
+                        auto_archive = await self._fetch_auto_archive_flag(recurso_id)
+                    target_estado = "expirado" if auto_archive else "activo"
+
+                    await self.db.update_recurso_estado(recurso_id, target_estado)
+                    logger.info(
+                        f"[{trace_id}] Estado actualizado a '{target_estado}' para ID {recurso_id} "
+                        f"(auto_archive={auto_archive})"
+                    )
 
                     # Chunking + embedding por chunk para que el RAG del /chat
                     # tenga acceso al contenido real (no solo al resumen corto).
+                    # También cuando el destino es 'expirado' — el toggle
+                    # Archivo ON depende de que los chunks existan.
                     await self._build_chunks_from_text(
                         recurso_id, tenant_id, url, ext_info.get("title", ""), contenido, trace_id,
                     )
 
-                # Notificar completado vía Redis pub/sub (para SSE en cerebro-api)
+                # Notificar completado vía Redis pub/sub (para SSE en cerebro-api).
+                # Para la rama reused, el estado global ya estará a 'activo'
+                # (o 'expirado' si el primer tenant lo archivó); para la
+                # nueva, refleja el target_estado que acabamos de aplicar.
                 if self.redis:
                     titulo = ext_info.get("title") or url
+                    estado_notif = "activo"
+                    if not reused:
+                        estado_notif = target_estado  # type: ignore[name-defined]
                     completion = json.dumps({
                         "recurso_id": recurso_id,
                         "url": url,
                         "titulo": titulo,
-                        "estado": "activo",
+                        "estado": estado_notif,
                     })
                     await self.redis.publish(f"ingest:complete:{tenant_id}", completion)
-                    logger.info(f"[{trace_id}] Publicado evento ingest:complete para tenant {tenant_id}")
+                    logger.info(f"[{trace_id}] Publicado evento ingest:complete (estado={estado_notif}) para tenant {tenant_id}")
 
             except Exception as e:
                 logger.error(f"[{trace_id}] F-03.2 Fallo crítico procesando embedding/qdrant: {e}")
@@ -470,6 +493,19 @@ class EmbedderWorker:
         if not row:
             return ""
         return (row["contenido"] or row["resumen"] or "") or ""
+
+    async def _fetch_auto_archive_flag(self, recurso_id: str) -> bool:
+        """Migración 0007: lee la columna `auto_archive_pending`. Se usa
+        cuando el evento outbox no llevaba el flag en el payload (rama
+        defensiva ante eventos antiguos en cola tras un deploy)."""
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT auto_archive_pending FROM recursos WHERE id = $1::uuid",
+                recurso_id,
+            )
+        return bool(row and row["auto_archive_pending"])
 
     async def _build_chunks_from_text(
         self,

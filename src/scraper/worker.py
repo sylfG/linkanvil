@@ -83,7 +83,28 @@ async def _extract_metadata_with_llm(
         "- \"estimated_useful_life_days\": entero entre 30 y 365\n"
         "- \"expiration_date\": fecha ISO YYYY-MM-DD si el contenido menciona una "
         "fecha concreta de evento, deadline, fin de oferta o caducidad explícita; "
-        "null si no aplica o no se puede determinar\n\n"
+        "null si no aplica o no se puede determinar\n"
+        "- \"event_date\": fecha ISO YYYY-MM-DD del evento principal descrito en el "
+        "contenido (puede ser pasada o futura). Si la URL contiene un patrón "
+        "YYYY/MM/DD en el path (típico de prensa: '/2024/03/18/'), úsalo como "
+        "pista cuando el texto no diga la fecha de forma explícita. null si no "
+        "hay ninguna fecha identificable.\n"
+        "- \"temporal_class\": clasificación temporal del contenido:\n"
+        "    * \"evento\" — feria, concierto, deadline, oferta, lanzamiento con "
+        "fecha concreta;\n"
+        "    * \"referencia\" — análisis o crónica descriptiva (artículo de prensa "
+        "retrospectivo, informe técnico, paper, post-mortem);\n"
+        "    * \"evergreen\" — tutorial, documentación técnica estable, definición, "
+        "guía atemporal.\n"
+        "- \"valor_archivistico\": ¿merece guardarse como referencia histórica si "
+        "su fecha es pasada?\n"
+        "    * \"alto\" — datos verificables, análisis estructural, autoridad de "
+        "la fuente (papers, informes oficiales tipo AEMET, post-mortems con "
+        "cifras, retrospectivas con datos);\n"
+        "    * \"medio\" — artículo de prensa estándar, crónica común con valor "
+        "moderado;\n"
+        "    * \"nulo\" — anuncio caducado o evento trivial pasado sin valor de "
+        "referencia.\n\n"
         f"URL: {url}\n"
         f"Título HTML: {title or '(sin título)'}\n\n"
         f"Texto:\n{clean_text[:6000]}\n\n"
@@ -120,6 +141,9 @@ async def _extract_metadata_with_llm(
         "volatility_score": "media",
         "estimated_useful_life_days": 30,
         "expiration_date": None,
+        "event_date": None,
+        "temporal_class": "evento",
+        "valor_archivistico": "medio",
     }
 
 

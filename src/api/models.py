@@ -35,16 +35,64 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+_POLICY_KEYS = (
+    "evento_pasado_alto",
+    "evento_pasado_medio",
+    "evento_pasado_nulo",
+    "referencia_pasada_alto",
+    "referencia_pasada_medio",
+    "referencia_pasada_nulo",
+)
+_POLICY_VALUES = ("activo", "cuarentena", "expirado")
+_DEFAULT_POLICY = {
+    "evento_pasado_alto": "expirado",
+    "evento_pasado_medio": "cuarentena",
+    "evento_pasado_nulo": "cuarentena",
+    "referencia_pasada_alto": "expirado",
+    "referencia_pasada_medio": "cuarentena",
+    "referencia_pasada_nulo": "cuarentena",
+}
+
+
 class UserResponse(BaseModel):
     id: UUID
     email: str
     tenant_id: str
     telegram_bot_active: bool
     created_at: datetime
+    # Policy de auditoría por celda (migración 0007). Decide qué hacer con
+    # recursos pasados según class × valor_archivistico. Default = preset
+    # Equilibrado. 6 keys: {evento_pasado|referencia_pasada}_{alto|medio|nulo}.
+    audit_policy: dict[str, str] = Field(default_factory=lambda: dict(_DEFAULT_POLICY))
 
 
 class TelegramBotRequest(BaseModel):
     bot_token: str
+
+
+class AuditPolicyRequest(BaseModel):
+    """Payload de PUT /profile/audit-policy. Exige las 6 keys del JSONB con
+    valores enum; rechaza extras para evitar drift silencioso del schema."""
+    policy: dict[str, str]
+
+    @field_validator("policy")
+    @classmethod
+    def validate_policy(cls, v: dict[str, str]) -> dict[str, str]:
+        if not isinstance(v, dict):
+            raise ValueError("policy debe ser un objeto JSON")
+        missing = [k for k in _POLICY_KEYS if k not in v]
+        if missing:
+            raise ValueError(f"policy: faltan keys requeridas: {', '.join(missing)}")
+        extra = [k for k in v if k not in _POLICY_KEYS]
+        if extra:
+            raise ValueError(f"policy: keys desconocidas: {', '.join(extra)}")
+        for k in _POLICY_KEYS:
+            val = v[k]
+            if val not in _POLICY_VALUES:
+                raise ValueError(
+                    f"policy[{k}]: '{val}' inválido (esperado {_POLICY_VALUES})"
+                )
+        return {k: v[k] for k in _POLICY_KEYS}  # normaliza orden
 
 
 class ChatMessage(BaseModel):
@@ -56,6 +104,9 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(..., min_length=1, max_length=100)
     model: str = "cerebro-lite"
     use_rag: bool = True
+    # Migración 0006: si True, el RAG también considera recursos en estado
+    # `expirado` (que ahora se llama "Archivo histórico"). Toggle del chat.
+    include_archive: bool = False
 
 
 class IngestRequest(BaseModel):

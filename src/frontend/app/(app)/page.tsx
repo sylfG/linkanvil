@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Zap, Cpu, RefreshCw,
-  Copy, Check, Download, ExternalLink, ChevronLeft,
+  Copy, Check, Download, ExternalLink, ChevronLeft, Archive,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -147,6 +147,10 @@ export default function ChatPage() {
   const { activeId, createSession, getMessages, setLocalMessages, loadMessages, appendMessages } = useChatStore();
   const [model, setModel] = useState("cerebro-lite");
   const [useRag, setUseRag] = useState(true);
+  // Archivo histórico (migración 0007): toggle que incluye recursos en
+  // estado 'expirado' al RAG. OFF por defecto: el archivo no contamina
+  // la KB activa salvo que el usuario lo pida explícitamente.
+  const [useArchive, setUseArchive] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -234,7 +238,7 @@ export default function ChatPage() {
           method: "POST",
           headers: buildHeaders(bearer),
           credentials: "include",
-          body: JSON.stringify({ messages: newMessages, model, use_rag: useRag }),
+          body: JSON.stringify({ messages: newMessages, model, use_rag: useRag, include_archive: useArchive }),
           signal: ac.signal,
         });
 
@@ -352,6 +356,22 @@ export default function ChatPage() {
         >
           <Zap className="w-3.5 h-3.5" />
           RAG {useRag ? "ON" : "OFF"}
+        </button>
+
+        <button
+          onClick={() => setUseArchive(!useArchive)}
+          disabled={!useRag}
+          title={useRag
+            ? "Incluir recursos del archivo histórico (estado expirado) en el RAG"
+            : "Archivo requiere RAG activado"}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            useArchive && useRag
+              ? "bg-amber-500/15 border-amber-400/40 text-amber-300"
+              : "bg-transparent border-border text-muted"
+          }`}
+        >
+          <Archive className="w-3.5 h-3.5" />
+          Archivo {useArchive && useRag ? "ON" : "OFF"}
         </button>
 
         {messages.length > 0 && (

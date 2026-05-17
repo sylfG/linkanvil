@@ -81,12 +81,21 @@ async def run_audit_cron() -> dict:
                     quarantine_grace_until = (NOW() + ($1::int * INTERVAL '1 day'))::DATE,
                     updated_at = NOW()
                 WHERE estado = 'activo'
+                  AND temporal_class = 'evento'
                   AND fecha_caducidad IS NOT NULL
                   AND fecha_caducidad <= NOW()::DATE
                 RETURNING id, url
                 """,
                 GRACE_PERIOD_DAYS,
             )
+            # NOTA migración 0006: el filtro `temporal_class = 'evento'`
+            # es defensa en profundidad. Las clases 'referencia' y
+            # 'evergreen' tienen fecha_caducidad NULL al ingestar y
+            # ya estarían excluidas por `IS NOT NULL`. Pero si algún
+            # flujo deja una caducidad rellena por error en una
+            # referencia, no queremos que el cron la cuarentene
+            # silenciosamente — esa decisión debe pasar por
+            # save_with_outbox respetando el strictness del tenant.
             cuarentenados = len(cuarentena_rows)
             if cuarentena_rows:
                 logger.info(

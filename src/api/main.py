@@ -31,6 +31,7 @@ from src.api.auth import (
 )
 from src.observability.logging import configure_json_logging
 from src.api.models import (
+    AuditPolicyRequest,
     ChatRequest,
     CfCookiesRequest,
     IngestRequest,
@@ -373,13 +374,27 @@ async def logout(response: Response, cerebro_refresh: str | None = Cookie(None))
 
 @app.get("/auth/me", response_model=UserResponse)
 async def me(user=Depends(get_current_user)):
-    return UserResponse(
-        id=user["id"],
-        email=user["email"],
-        tenant_id=user["tenant_id"],
-        telegram_bot_active=user["telegram_bot_active"],
-        created_at=user["created_at"],
-    )
+    # audit_policy puede venir como dict (asyncpg JSONB) o str (algunos
+    # drivers); en ambos casos UserResponse acepta dict directamente — el
+    # raw string se decodifica defensivamente.
+    raw_policy = user.get("audit_policy")
+    if isinstance(raw_policy, str):
+        try:
+            raw_policy = json.loads(raw_policy)
+        except Exception:
+            raw_policy = None
+    if not isinstance(raw_policy, dict):
+        raw_policy = None  # cae al default de UserResponse (preset Equilibrado)
+    kwargs = {
+        "id": user["id"],
+        "email": user["email"],
+        "tenant_id": user["tenant_id"],
+        "telegram_bot_active": user["telegram_bot_active"],
+        "created_at": user["created_at"],
+    }
+    if raw_policy is not None:
+        kwargs["audit_policy"] = raw_policy
+    return UserResponse(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +432,40 @@ async def update_telegram(
         "bot_username": bot_info.get("username"),
         "webhook_url": webhook_url,
     }
+
+
+@app.put("/profile/audit-policy")
+async def update_audit_policy(
+    req: AuditPolicyRequest,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    """Migración 0007: actualiza la policy de auditoría del tenant.
+
+    El body debe contener las 6 keys exactas del JSONB (ver
+    `AuditPolicyRequest.validate_policy`). Tres presets pueden usarse como
+    atajo desde el frontend (Estricto / Equilibrado / Permisivo) que
+    rellenan las 6 celdas, pero el servidor no distingue presets —
+    persiste exactamente lo que recibe.
+
+    Invalida la cache in-process del scraper para que el próximo ingest
+    lea la nueva policy. El scraper corre en un container distinto y NO
+    comparte memoria, así que la invalidación local del API es
+    cosmética; el escalado real depende del TTL de 60s.
+    """
+    policy_json = json.dumps(req.policy)
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE usuarios SET audit_policy = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
+            policy_json, str(user["id"]),
+        )
+    try:
+        from src.data.db import DatabaseManager
+        DatabaseManager.invalidate_policy_cache(user["tenant_id"])
+    except Exception:
+        pass
+    return {"status": "ok", "policy": req.policy}
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +796,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                             active_ids = await db.get_active_resource_ids(
                                 user["tenant_id"],
                                 recurso_ids,
+                                include_archive=req.include_archive,
                             )
                             active_set = set(active_ids)
                             hits = [

@@ -11,6 +11,7 @@ import {
   Hourglass,
   Sparkles,
   Hand,
+  CalendarX,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
@@ -26,7 +27,7 @@ interface QuarantineItem {
   volatilidad?: string;
   fecha_caducidad?: string;
   quarantined_at: string;
-  quarantine_reason: "caducidad" | "colision_semantica" | "manual";
+  quarantine_reason: "caducidad" | "colision_semantica" | "manual" | "evento_pasado";
   quarantine_grace_until: string;
   dias_restantes: number;
 }
@@ -49,6 +50,11 @@ const REASON_META: Record<
     label: "Manual",
     icon: Hand,
     cls: "bg-slate-800/30 text-slate-300 border-slate-700/30",
+  },
+  evento_pasado: {
+    label: "Evento pasado",
+    icon: CalendarX,
+    cls: "bg-blue-800/30 text-blue-300 border-blue-700/30",
   },
 };
 

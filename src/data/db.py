@@ -26,13 +26,79 @@ def _parse_iso_date(value) -> date | None:
         except ValueError:
             return None
 
+# Preset por defecto (Equilibrado) que sirve también como fail-safe del
+# cache si la consulta a usuarios.audit_policy falla. Coincide bit-a-bit
+# con el DEFAULT de la columna en la migración 0007.
+DEFAULT_AUDIT_POLICY: dict[str, str] = {
+    "evento_pasado_alto": "expirado",
+    "evento_pasado_medio": "cuarentena",
+    "evento_pasado_nulo": "cuarentena",
+    "referencia_pasada_alto": "expirado",
+    "referencia_pasada_medio": "cuarentena",
+    "referencia_pasada_nulo": "cuarentena",
+}
+
+POLICY_KEYS = frozenset(DEFAULT_AUDIT_POLICY.keys())
+POLICY_VALUES = frozenset({"activo", "cuarentena", "expirado"})
+
+
 class DatabaseManager:
+    # Cache de policy JSONB en memoria de proceso. La invalidación se hace
+    # explícitamente desde el endpoint `PUT /profile/audit-policy`. No
+    # usamos Redis para no acoplar workers al cliente redis; los workers
+    # son pocos y reinician con cada deploy.
+    _policy_cache: dict[str, tuple[dict[str, str], float]] = {}
+    _POLICY_TTL_SEC = 60.0
+
     def __init__(self, db_url: str = None):
         self.db_url = db_url or os.getenv(
-            "DATABASE_URL", 
+            "DATABASE_URL",
             "postgresql://cerebro:cerebro_db_pass_CHANGE_ME@localhost:5432/cerebro_brain"
         )
         self.pool = None
+
+    async def _get_user_audit_policy(self, tenant_id: str) -> dict[str, str]:
+        """Devuelve la policy de auditoría del tenant como dict con 6 keys.
+        Cachea 60s en memoria del proceso. Fail-safe: si la consulta falla
+        o el JSON está malformado, devuelve DEFAULT_AUDIT_POLICY (equivale
+        al preset Equilibrado)."""
+        import time
+        now = time.monotonic()
+        cached = self._policy_cache.get(tenant_id)
+        if cached and cached[1] > now:
+            return cached[0]
+        if not self.pool:
+            await self.connect()
+        policy = dict(DEFAULT_AUDIT_POLICY)
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT audit_policy FROM usuarios WHERE tenant_id = $1",
+                    tenant_id,
+                )
+            raw = row["audit_policy"] if row else None
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if isinstance(raw, dict):
+                # Solo aceptamos keys y values conocidos; el resto se ignora
+                # para no propagar configuraciones rotas a la decisión.
+                for k in POLICY_KEYS:
+                    v = raw.get(k)
+                    if v in POLICY_VALUES:
+                        policy[k] = v
+        except Exception as exc:
+            logger.warning(f"_get_user_audit_policy fallback (default): {exc}")
+        self._policy_cache[tenant_id] = (policy, now + self._POLICY_TTL_SEC)
+        return policy
+
+    @classmethod
+    def invalidate_policy_cache(cls, tenant_id: str | None = None) -> None:
+        """Llamar tras `PUT /profile/audit-policy`. Si tenant_id=None,
+        purga toda la cache (útil en tests)."""
+        if tenant_id is None:
+            cls._policy_cache.clear()
+        else:
+            cls._policy_cache.pop(tenant_id, None)
 
     async def update_session_context(self, tenant_id: str, session_id: str, new_context: str):
         if not self.pool:
@@ -169,32 +235,86 @@ class DatabaseManager:
 
         useful_life = extracted_data.get("estimated_useful_life_days", 30)
         parsed_exp = _parse_iso_date(extracted_data.get("expiration_date"))
+        parsed_event = _parse_iso_date(extracted_data.get("event_date"))
         today = datetime.utcnow().date()
 
-        if parsed_exp is not None:
-            fecha_caducidad = parsed_exp
-        else:
-            fecha_caducidad = today + timedelta(days=useful_life)
+        # Nuevos campos del LLM (migración 0006). Defaults seguros si el
+        # LLM falló: temporal_class='evento', valor='medio' → comportamiento
+        # equivalente al previo a la migración.
+        temporal_class = extracted_data.get("temporal_class", "evento")
+        if temporal_class not in ("evento", "referencia", "evergreen"):
+            temporal_class = "evento"
+        valor_archivistico = extracted_data.get("valor_archivistico", "medio")
+        if valor_archivistico not in ("alto", "medio", "nulo"):
+            valor_archivistico = "medio"
+        fecha_evento = parsed_event
 
-        already_expired = fecha_caducidad <= today
-        if already_expired:
-            estado = "cuarentena"
-            quarantine_reason = "caducidad"
-            quarantine_grace_until = today + timedelta(days=GRACE_PERIOD_DAYS)
-            quarantined_at = datetime.utcnow()
-            evento_tipo = "recurso.cuarentena"
+        # Policy de auditoría del tenant (6 keys, valores activo|cuarentena|expirado).
+        # Reemplaza al strictness enum: ahora cada celda (class × valor)
+        # se decide individualmente. Ver migración 0007.
+        policy = await self._get_user_audit_policy(tenant_id)
+
+        # fecha_caducidad: solo aplica a temporal_class='evento' futuro.
+        # Para 'referencia' y 'evergreen', o cualquier 'evento' con fecha
+        # pasada, queda NULL (los recursos pasados se gestionan vía policy,
+        # no por cron de caducidad).
+        if temporal_class == "evento":
+            if parsed_exp is not None:
+                fecha_caducidad = parsed_exp
+            else:
+                fecha_caducidad = today + timedelta(days=useful_life)
         else:
-            estado = "procesando"
-            quarantine_reason = None
-            quarantine_grace_until = None
-            quarantined_at = None
-            evento_tipo = "recurso.procesado"
+            fecha_caducidad = None
+
+        event_past = fecha_evento is not None and fecha_evento <= today
+        caducidad_past = fecha_caducidad is not None and fecha_caducidad <= today
+        pasado = event_past or caducidad_past
+
+        # Decisión policy-driven. Solo aplica a contenido pasado no-evergreen.
+        # Casos triviales (evergreen, evento futuro, referencia futura) caen
+        # al default: estado='procesando' → activo tras embedder.
+        estado = "procesando"
+        quarantine_reason = None
+        quarantine_grace_until = None
+        quarantined_at = None
+        auto_archive_pending = False
+        evento_tipo = "recurso.procesado"
+
+        if temporal_class != "evergreen" and pasado:
+            # Componer la key según la clase. Las 6 keys del JSONB siguen
+            # un esquema {evento_pasado|referencia_pasada}_{alto|medio|nulo}.
+            if temporal_class == "evento":
+                key = f"evento_pasado_{valor_archivistico}"
+            else:  # referencia
+                key = f"referencia_pasada_{valor_archivistico}"
+            # Si el LLM produjo un valor archivístico inesperado, key no
+            # existirá en la policy; default conservador = cuarentena.
+            decision = policy.get(key, "cuarentena")
+            # Las decisiones sobre "pasado" siempre limpian fecha_caducidad
+            # — el ciclo de caducidad ya no aplica una vez se categoriza
+            # el recurso como histórico/archivable.
+            fecha_caducidad = None
+            if decision == "cuarentena":
+                estado = "cuarentena"
+                quarantine_reason = "evento_pasado"
+                quarantine_grace_until = today + timedelta(days=GRACE_PERIOD_DAYS)
+                quarantined_at = datetime.utcnow()
+                evento_tipo = "recurso.cuarentena"
+            elif decision == "expirado":
+                # Auto-archive: el recurso pasa por el embedder igualmente
+                # (para tener chunks indexados en Qdrant, accesibles vía
+                # Archivo ON en chat) pero al terminar el embedder lo
+                # transiciona a 'expirado' en lugar de 'activo'.
+                auto_archive_pending = True
+            # decision == "activo" → no-op, queda procesando→activo
 
         recurso_id = None
 
         logger.info(
             f"Guardando recurso global + link tenant + outbox. Tenant={tenant_id} "
-            f"estado={estado} caducidad={fecha_caducidad}"
+            f"estado={estado} caducidad={fecha_caducidad} class={temporal_class} "
+            f"valor={valor_archivistico} fecha_evento={fecha_evento} "
+            f"auto_archive={auto_archive_pending}"
         )
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -203,10 +323,12 @@ class DatabaseManager:
                     INSERT INTO recursos (
                         url, url_hash, titulo, resumen, contenido, categoria, tags,
                         volatilidad, fecha_caducidad, estado,
-                        quarantined_at, quarantine_reason, quarantine_grace_until
+                        quarantined_at, quarantine_reason, quarantine_grace_until,
+                        temporal_class, valor_archivistico, fecha_evento,
+                        auto_archive_pending
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
-                        $11, $12, $13
+                        $11, $12, $13, $14, $15, $16, $17
                     )
                     ON CONFLICT (url_hash)
                     DO UPDATE SET
@@ -221,12 +343,18 @@ class DatabaseManager:
                         quarantined_at = EXCLUDED.quarantined_at,
                         quarantine_reason = EXCLUDED.quarantine_reason,
                         quarantine_grace_until = EXCLUDED.quarantine_grace_until,
+                        temporal_class = EXCLUDED.temporal_class,
+                        valor_archivistico = EXCLUDED.valor_archivistico,
+                        fecha_evento = EXCLUDED.fecha_evento,
+                        auto_archive_pending = EXCLUDED.auto_archive_pending,
                         updated_at = NOW()
                     RETURNING id
                     """,
                     url, url_hash, titulo, resumen, contenido, categoria, tags,
                     volatilidad, fecha_caducidad, estado,
                     quarantined_at, quarantine_reason, quarantine_grace_until,
+                    temporal_class, valor_archivistico, fecha_evento,
+                    auto_archive_pending,
                 )
 
                 recurso_id = row['id']
@@ -251,8 +379,13 @@ class DatabaseManager:
                     # fuente de verdad para re-embedding/backfill futuros.
                     "contenido": contenido or "",
                 }
-                if already_expired:
-                    outbox_payload["motivo"] = "caducidad"
+                if estado == "cuarentena":
+                    outbox_payload["motivo"] = quarantine_reason
+                elif auto_archive_pending:
+                    # Pista al embedder: tras vectorizar, transicionar a
+                    # 'expirado' en lugar de 'activo'. Lectura redundante
+                    # con la columna en BD, pero ahorra una query.
+                    outbox_payload["auto_archive_pending"] = True
 
                 await conn.execute(
                     """
@@ -297,22 +430,61 @@ class DatabaseManager:
         """`estado` es global (recurso.activo/procesando/expirado/cuarentena).
         No filtra por tenant.
 
-        Defensa en profundidad: si el nuevo estado es 'activo', solo
-        aceptamos la transición desde 'procesando'. Sin este guard, el
-        embedder (u otro consumidor con sesgo de 'finalizar = activo')
-        revertía recursos ya transicionados a 'cuarentena' / 'expirado'
-        por el ciclo de obsolescencia (audit_cron, colisión semántica,
-        rescate manual)."""
+        Defensa en profundidad para transiciones del embedder:
+        - 'activo' solo se acepta desde 'procesando' Y solo cuando el flag
+          auto_archive_pending es FALSE. Si está TRUE, el embedder debería
+          haber llamado con estado='expirado' (caso auto-archive).
+        - 'expirado' desde 'procesando' solo se acepta si auto_archive_pending
+          es TRUE. Cualquier otra transición a 'expirado' (cron, manual)
+          pasa por la rama 'else' (sin condiciones).
+
+        Sin este guard, el embedder (con sesgo de 'finalizar = activo')
+        revertía recursos ya transicionados a 'cuarentena'/'expirado' por
+        el ciclo de obsolescencia (audit_cron, colisión semántica, rescate
+        manual) o ignoraría la decisión de auto-archive del scraper."""
         if not self.pool:
             await self.connect()
         async with self.pool.acquire() as conn:
             if estado == "activo":
+                # El embedder marca como activo: requiere estar en procesando
+                # y NO tener auto_archive_pending (si lo tiene, debió pedir
+                # estado='expirado' en su lugar). El flag se limpia al
+                # transicionar a estado final.
                 await conn.execute(
                     """UPDATE recursos
-                       SET estado = 'activo', updated_at = NOW()
-                       WHERE id = $1::uuid AND estado = 'procesando'""",
+                       SET estado = 'activo',
+                           auto_archive_pending = false,
+                           updated_at = NOW()
+                       WHERE id = $1::uuid
+                         AND estado = 'procesando'
+                         AND auto_archive_pending = false""",
                     recurso_id,
                 )
+            elif estado == "expirado":
+                # Transición del embedder cuando auto_archive_pending=true:
+                # solo válida desde 'procesando'. Si el recurso ya está en
+                # 'cuarentena' o 'activo', el embedder llega tarde y la
+                # decisión del cron/manual gana — esta query no afecta filas.
+                # Otras transiciones a 'expirado' (cron, manual desde
+                # /quarantine) van por el catch-all del else.
+                result = await conn.execute(
+                    """UPDATE recursos
+                       SET estado = 'expirado',
+                           auto_archive_pending = false,
+                           updated_at = NOW()
+                       WHERE id = $1::uuid
+                         AND estado = 'procesando'
+                         AND auto_archive_pending = true""",
+                    recurso_id,
+                )
+                # Si no afectó filas, no es un caso auto-archive; aplicamos
+                # transición libre (cron expira por gracia, manual desde
+                # cuarentena, etc.).
+                if result and result.endswith("0"):
+                    await conn.execute(
+                        "UPDATE recursos SET estado = 'expirado', updated_at = NOW() WHERE id = $1::uuid",
+                        recurso_id,
+                    )
             else:
                 await conn.execute(
                     "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid",

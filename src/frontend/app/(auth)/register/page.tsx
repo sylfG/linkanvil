@@ -35,7 +35,7 @@ export default function RegisterPage() {
       );
       const me = await apiCall<any>("/auth/me", {}, res.access_token);
       setAuth(res.access_token, me);
-      router.push("/");
+      router.push("/chat");
     } catch (err: any) {
       setError(err.message);
     } finally {

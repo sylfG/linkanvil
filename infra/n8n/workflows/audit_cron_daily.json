@@ -22,7 +22,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://api:8000/admin/audit-cron",
+        "url": "http://cerebro-api:8001/admin/audit-cron",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

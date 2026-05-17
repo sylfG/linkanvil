@@ -11,6 +11,7 @@ import {
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
+import { copyToClipboard } from "@/lib/clipboard";
 import { ResourceStreamProvider, useResourceStream } from "@/lib/resource_stream";
 import { NotificationsBell } from "./_NotificationsBell";
 
@@ -94,7 +95,7 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
                   {user?.tenant_id}
                 </code>
                 <button
-                  onClick={() => { navigator.clipboard.writeText(user?.tenant_id ?? ""); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                  onClick={async () => { const done = await copyToClipboard(user?.tenant_id ?? ""); if (done) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }}
                   className="p-1.5 rounded-lg bg-surface border border-border hover:border-accent/40 transition-colors"
                 >
                   {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-muted" />}

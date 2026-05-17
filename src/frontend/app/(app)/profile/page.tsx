@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export default function ProfilePage() {
   const { token, user, setAuth } = useAuthStore();
@@ -44,9 +45,10 @@ export default function ProfilePage() {
     }
   }
 
-  function copyTenantId() {
+  async function copyTenantId() {
     if (!user?.tenant_id) return;
-    navigator.clipboard.writeText(user.tenant_id);
+    const done = await copyToClipboard(user.tenant_id);
+    if (!done) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }

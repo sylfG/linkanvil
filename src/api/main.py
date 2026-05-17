@@ -14,12 +14,18 @@ from fastapi.responses import StreamingResponse
 
 from src.api import database as db
 from src.api.auth import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
     CSRF_COOKIE,
     CSRF_HEADER,
+    REFRESH_COOKIE,
+    REFRESH_TOKEN_EXPIRE_DAYS,
     SESSION_COOKIE,
+    TokenExpired,
     create_access_token,
     generate_csrf_token,
+    generate_refresh_token,
     get_password_hash,
+    hash_refresh_token,
     verify_password,
     verify_token,
 )
@@ -96,6 +102,9 @@ async def get_current_user(
     """
     Read the session token from either an httpOnly cookie (preferred for
     browser flows) or the Authorization: Bearer header (legacy / Telegram).
+
+    Emits a distinct 401 code for expired tokens so the frontend can
+    transparently try /auth/refresh before forcing the user back to login.
     """
     token: str | None = None
     if cerebro_session:
@@ -103,30 +112,37 @@ async def get_current_user(
     elif authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
     if not token:
-        raise HTTPException(401, "Token requerido")
+        raise HTTPException(401, "Token requerido", headers={"X-Auth-Reason": "missing"})
     try:
         payload = verify_token(token)
+    except TokenExpired:
+        raise HTTPException(401, "Token expirado", headers={"X-Auth-Reason": "expired"})
     except ValueError:
-        raise HTTPException(401, "Token inválido")
+        raise HTTPException(401, "Token inválido", headers={"X-Auth-Reason": "invalid"})
     user = await db.get_user_by_id(payload["sub"])
     if not user:
-        raise HTTPException(401, "Usuario no encontrado")
+        raise HTTPException(401, "Usuario no encontrado", headers={"X-Auth-Reason": "no_user"})
     return user
 
 
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
-COOKIE_MAX_AGE_SEC = 24 * 3600
+ACCESS_COOKIE_MAX_AGE_SEC = ACCESS_TOKEN_EXPIRE_MINUTES * 60
+REFRESH_COOKIE_MAX_AGE_SEC = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+
+# Redis key prefix for refresh-token storage. Value = JSON with user_id,
+# tenant_id, email; TTL = REFRESH_COOKIE_MAX_AGE_SEC so Redis enforces expiry.
+REFRESH_REDIS_PREFIX = "refresh:"
 
 
-def _set_session_cookies(response: Response, token: str) -> str:
-    """Set the httpOnly session cookie + a non-httpOnly CSRF cookie. Returns the CSRF token."""
+def _set_session_cookies(response: Response, access_token: str) -> str:
+    """Set the httpOnly access-token cookie + non-httpOnly CSRF cookie. Returns the CSRF token."""
     csrf = generate_csrf_token()
     response.set_cookie(
         SESSION_COOKIE,
-        token,
-        max_age=COOKIE_MAX_AGE_SEC,
+        access_token,
+        max_age=ACCESS_COOKIE_MAX_AGE_SEC,
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
@@ -136,7 +152,9 @@ def _set_session_cookies(response: Response, token: str) -> str:
     response.set_cookie(
         CSRF_COOKIE,
         csrf,
-        max_age=COOKIE_MAX_AGE_SEC,
+        # CSRF cookie outlives access cookie so the JS layer still has it
+        # when /auth/refresh is being called.
+        max_age=REFRESH_COOKIE_MAX_AGE_SEC,
         httponly=False,  # the JS needs to read it
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
@@ -144,6 +162,55 @@ def _set_session_cookies(response: Response, token: str) -> str:
         path="/",
     )
     return csrf
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    # path="/" so the cookie travels on any request from the same origin —
+    # the browser sees URLs as /api/auth/... (Next.js proxies to FastAPI),
+    # and we don't want to couple the cookie path to that rewrite.
+    response.set_cookie(
+        REFRESH_COOKIE,
+        refresh_token,
+        max_age=REFRESH_COOKIE_MAX_AGE_SEC,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie(CSRF_COOKIE, path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie(REFRESH_COOKIE, path="/", domain=COOKIE_DOMAIN)
+
+
+async def _issue_refresh_token(user: dict) -> str:
+    """Mint a new opaque refresh token, persist its hash in Redis, return the raw value."""
+    raw = generate_refresh_token()
+    if _redis is None:
+        # Redis-less mode is only legitimate in tests; without it the
+        # refresh token is unverifiable later, so we just return the raw
+        # value and the next refresh call will fail back to login.
+        return raw
+    payload = json.dumps({
+        "user_id": str(user["id"]),
+        "tenant_id": user["tenant_id"],
+        "email": user["email"],
+    })
+    await _redis.set(
+        f"{REFRESH_REDIS_PREFIX}{hash_refresh_token(raw)}",
+        payload,
+        ex=REFRESH_COOKIE_MAX_AGE_SEC,
+    )
+    return raw
+
+
+async def _revoke_refresh_token(raw: str | None) -> None:
+    if not raw or _redis is None:
+        return
+    await _redis.delete(f"{REFRESH_REDIS_PREFIX}{hash_refresh_token(raw)}")
 
 
 async def verify_csrf(
@@ -199,9 +266,23 @@ async def rate_limit_chat(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+async def rate_limit_audit(user: dict = Depends(get_current_user)) -> dict:
+    # 5 disparos por minuto y tenant es generoso: la lógica de audit_cron
+    # es idempotente, pero cada run abre un pool nuevo de asyncpg y emite
+    # eventos outbox. No queremos que la UI se spamee el endpoint.
+    await _rate_limit(f"rl:audit:{user['tenant_id']}", limit=5, window_seconds=60)
+    return user
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+
+def _access_token_for(user: dict) -> str:
+    return create_access_token(
+        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
+    )
+
 
 @app.post("/auth/register")
 async def register(req: RegisterRequest, response: Response, _=Depends(rate_limit_register)):
@@ -209,10 +290,10 @@ async def register(req: RegisterRequest, response: Response, _=Depends(rate_limi
         raise HTTPException(409, "Email ya registrado")
     hashed = get_password_hash(req.password)
     user = await db.create_user(req.email, hashed)
-    token = create_access_token(
-        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
-    )
+    token = _access_token_for(user)
     csrf = _set_session_cookies(response, token)
+    refresh = await _issue_refresh_token(user)
+    _set_refresh_cookie(response, refresh)
     # The access_token is still in the body so the legacy Authorization
     # header path keeps working until the frontend fully migrates.
     return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
@@ -223,17 +304,57 @@ async def login(req: LoginRequest, response: Response, _=Depends(rate_limit_logi
     user = await db.get_user_by_email(req.email)
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Credenciales incorrectas")
-    token = create_access_token(
-        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
-    )
+    token = _access_token_for(user)
     csrf = _set_session_cookies(response, token)
+    refresh = await _issue_refresh_token(user)
+    _set_refresh_cookie(response, refresh)
+    return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
+
+
+@app.post("/auth/refresh")
+async def refresh_session(
+    response: Response,
+    cerebro_refresh: str | None = Cookie(None),
+):
+    """
+    Validate the refresh cookie, rotate it (delete-old + issue-new),
+    and emit a fresh access JWT + CSRF cookie. The frontend interceptor
+    calls this transparently on 401(X-Auth-Reason=expired).
+    """
+    if not cerebro_refresh:
+        raise HTTPException(401, "Refresh token requerido", headers={"X-Auth-Reason": "no_refresh"})
+    if _redis is None:
+        raise HTTPException(503, "Refresh store no disponible")
+
+    key = f"{REFRESH_REDIS_PREFIX}{hash_refresh_token(cerebro_refresh)}"
+    raw_payload = await _redis.get(key)
+    if not raw_payload:
+        raise HTTPException(401, "Refresh token inválido o expirado", headers={"X-Auth-Reason": "refresh_invalid"})
+
+    # Rotate immediately to invalidate the presented refresh; if anything
+    # downstream fails the user can re-login.
+    await _redis.delete(key)
+
+    try:
+        meta = json.loads(raw_payload)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(401, "Refresh token corrupto", headers={"X-Auth-Reason": "refresh_invalid"})
+
+    user = await db.get_user_by_id(meta["user_id"])
+    if not user:
+        raise HTTPException(401, "Usuario inexistente", headers={"X-Auth-Reason": "no_user"})
+
+    token = _access_token_for(user)
+    csrf = _set_session_cookies(response, token)
+    new_refresh = await _issue_refresh_token(user)
+    _set_refresh_cookie(response, new_refresh)
     return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
 
 
 @app.post("/auth/logout")
-async def logout(response: Response):
-    response.delete_cookie(SESSION_COOKIE, path="/", domain=COOKIE_DOMAIN)
-    response.delete_cookie(CSRF_COOKIE, path="/", domain=COOKIE_DOMAIN)
+async def logout(response: Response, cerebro_refresh: str | None = Cookie(None)):
+    await _revoke_refresh_token(cerebro_refresh)
+    _clear_auth_cookies(response)
     return {"status": "ok"}
 
 
@@ -362,6 +483,28 @@ async def mark_all_read_endpoint(
 ):
     count = await db.mark_all_notifications_read(user["tenant_id"])
     return {"status": "ok", "marked": count}
+
+
+@app.post("/resources/audit-now")
+async def audit_now(
+    user=Depends(rate_limit_audit),
+    _csrf=Depends(verify_csrf),
+):
+    """Dispara la misma auditoría temporal que el cron diario, pero a
+    petición del usuario. Reusa `run_audit_cron()` tal cual: las dos
+    fases (caducidad → cuarentena → expirado) ya filtran por estado, así
+    que un disparo manual es idempotente y bounded por SQL.
+
+    Sin token administrativo — la autenticación es la del usuario. El
+    rate-limit (5/min por tenant) evita abuso desde la UI."""
+    from src.data.audit_cron import run_audit_cron
+    result = await run_audit_cron()
+    logger.info(
+        "MANUAL_AUDIT tenant=%s trace=%s cuarentenados=%d expirados=%d",
+        user["tenant_id"], result["trace_id"],
+        result["cuarentenados"], result["expirados"],
+    )
+    return {"status": "ok", **result}
 
 
 @app.post("/resources/{recurso_id}/rescue")
@@ -653,19 +796,19 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
         req.model, req.use_rag, len(hits), len(context_block), len(llm_msgs),
     )
 
-    h = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+    litellm_headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
 
     rag_sources = []
     if req.use_rag and hits:
         # Dedupe por recurso: con chunks, varios hits pueden pertenecer al mismo
         # documento; nos quedamos con el score máximo por recurso para la UI.
         best_by_recurso: dict[str, dict] = {}
-        for h in hits:
-            p = h.get("payload") or {}
+        for hit in hits:
+            p = hit.get("payload") or {}
             rid = str(p.get("recurso_id") or "")
             if not rid:
                 continue
-            score = round(h["score"], 3)
+            score = round(hit["score"], 3)
             prev = best_by_recurso.get(rid)
             if prev is None or score > prev["score"]:
                 best_by_recurso[rid] = {
@@ -678,15 +821,21 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
     async def _stream() -> AsyncGenerator[str, None]:
         if rag_sources:
             yield f"data: {json.dumps({'type': 'sources', 'sources': rag_sources})}\n\n"
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST",
-                f"{LITELLM_URL}/v1/chat/completions",
-                headers=h,
-                json={"model": req.model, "messages": llm_msgs, "stream": True},
-            ) as resp:
-                async for chunk in resp.aiter_text():
-                    yield chunk
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{LITELLM_URL}/v1/chat/completions",
+                    headers=litellm_headers,
+                    json={"model": req.model, "messages": llm_msgs, "stream": True},
+                ) as resp:
+                    async for chunk in resp.aiter_text():
+                        yield chunk
+        except Exception as exc:
+            logger.exception("CHAT stream failed: %s", exc)
+            err_payload = json.dumps({"type": "error", "message": "Error generando respuesta del modelo."})
+            yield f"data: {err_payload}\n\n"
+            yield "data: [DONE]\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 

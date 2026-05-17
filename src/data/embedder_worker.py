@@ -340,11 +340,33 @@ class EmbedderWorker:
         logger.info(f"[{trace_id}] Encontradas {len(collisions)} colisiones semánticas para {recurso_id}")
         await self.db.save_semantic_collisions(tenant_id, recurso_id, collisions)
 
+    # Únicos eventos del fanout `cerebro.procesamiento` que el embedder
+    # debe procesar. Cualquier otro (recurso.cuarentena/expirado/rescatado,
+    # emitidos por audit_cron, rescue endpoints, colisión semántica…) debe
+    # ack-earse en silencio para no re-embeber ni revertir transiciones
+    # del ciclo de obsolescencia.
+    EMBEDDER_EVENT_TYPES = frozenset({"recurso.procesado", "recurso.reusado"})
+
     @trace_operation("process_embedder_message")
     async def process_message(self, message: aio_pika.IncomingMessage):
         async with message.process(requeue=False, ignore_processed=True):
             payload = json.loads(message.body.decode())
             trace_id = payload.get("trace_id") or ("-".join(dict(message.headers).get("traceparent", "00-unknown-00-00").split("-")[1:3]) if "traceparent" in (message.headers or {}) else (message.headers.get("trace_id", "unknown-trace") if message.headers else "unknown-trace"))
+
+            # El exchange `cerebro.procesamiento` es fanout: cada queue bound
+            # recibe todos los eventos. Filtramos por tipo para no procesar
+            # eventos del ciclo de obsolescencia (audit_cron emite
+            # `recurso.cuarentena` y el embedder, sin filtro, los trataba
+            # como una nueva ingesta y forzaba estado='activo' de vuelta).
+            evento_tipo = payload.get("evento_tipo") or (
+                (message.headers or {}).get("evento_tipo") if message.headers else None
+            )
+            if evento_tipo and evento_tipo not in self.EMBEDDER_EVENT_TYPES:
+                logger.debug(
+                    f"[{trace_id}] Embedder ignora evento_tipo={evento_tipo}"
+                )
+                return
+
             tenant_id = payload.get("tenant_id", "default_tenant")
             recurso_id = payload.get("recurso_id")
             url = payload.get("url", "")

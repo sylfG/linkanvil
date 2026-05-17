@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { API_URL } from "@/lib/api";
+import { API_URL, handleAuthFailure } from "@/lib/api";
+import { copyToClipboard } from "@/lib/clipboard";
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore, type ChatMessage, type RagSource } from "@/lib/chats";
 
@@ -17,7 +18,7 @@ function CopyBtn({ text }: { text: string }) {
   const [ok, setOk] = useState(false);
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(text); setOk(true); setTimeout(() => setOk(false), 1800); }}
+      onClick={async (e) => { e.stopPropagation(); const done = await copyToClipboard(text); if (done) { setOk(true); setTimeout(() => setOk(false), 1800); } }}
       className="p-1 rounded hover:bg-white/10 text-muted hover:text-slate-300 transition-colors"
       title="Copiar"
     >
@@ -218,21 +219,35 @@ export default function ChatPage() {
     let aborted = false;
 
     try {
-      const csrf = (typeof document !== "undefined")
-        ? ([...document.cookie.matchAll(/(?:^|; )cerebro_csrf=([^;]*)/g)].pop()?.[1] ?? "")
-        : "";
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}),
+      const buildHeaders = (bearer: string | null | undefined): Record<string, string> => {
+        const csrf = (typeof document !== "undefined")
+          ? ([...document.cookie.matchAll(/(?:^|; )cerebro_csrf=([^;]*)/g)].pop()?.[1] ?? "")
+          : "";
+        return {
+          "Content-Type": "application/json",
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+          ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}),
+        };
       };
-      const res = await fetch(`${API_URL}/chat`, {
-        method: "POST",
-        headers,
-        credentials: "include",
-        body: JSON.stringify({ messages: newMessages, model, use_rag: useRag }),
-        signal: ac.signal,
-      });
+      const fireChat = (bearer: string | null | undefined) =>
+        fetch(`${API_URL}/chat`, {
+          method: "POST",
+          headers: buildHeaders(bearer),
+          credentials: "include",
+          body: JSON.stringify({ messages: newMessages, model, use_rag: useRag }),
+          signal: ac.signal,
+        });
+
+      let res = await fireChat(token);
+
+      if (res.status === 401) {
+        const outcome = await handleAuthFailure(res);
+        if (outcome === "logout") throw new Error("Sesión expirada");
+        // Refresh succeeded — re-read the rotated token from the store
+        // and retry the streaming request once.
+        const rotated = useAuthStore.getState().token;
+        res = await fireChat(rotated);
+      }
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body!.getReader();
@@ -260,6 +275,11 @@ export default function ChatPage() {
                 return updated;
               });
               continue;
+            }
+            if (parsed.type === "error") {
+              // Backend signalled an error mid-stream (e.g. upstream LLM
+              // failure). Surface it instead of letting the bubble look empty.
+              throw new Error(parsed.message || "Error en el stream del modelo.");
             }
             const delta = parsed?.choices?.[0]?.delta?.content ?? "";
             if (delta) {

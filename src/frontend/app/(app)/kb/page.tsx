@@ -11,6 +11,10 @@ import {
   AlertTriangle,
   CalendarX,
   Trash2,
+  ShieldCheck,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
@@ -82,6 +86,40 @@ export default function KBPage() {
 
   // SSE: cualquier transición de recurso refresca la lista en vivo.
   useResourceStream(token, () => { load(); });
+
+  // Manual audit trigger — same logic as the daily cron, scoped to the
+  // caller's identity for auth/rate-limit but globally idempotent.
+  const [auditing, setAuditing] = useState(false);
+  const [auditResult, setAuditResult] = useState<
+    | { ok: true; cuarentenados: number; expirados: number }
+    | { ok: false; msg: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    if (!auditResult) return;
+    const t = setTimeout(() => setAuditResult(null), 5000);
+    return () => clearTimeout(t);
+  }, [auditResult]);
+
+  async function runManualAudit() {
+    if (auditing) return;
+    setAuditing(true);
+    setAuditResult(null);
+    try {
+      const res = await apiCall<{ cuarentenados: number; expirados: number }>(
+        "/resources/audit-now",
+        { method: "POST" },
+        token,
+      );
+      setAuditResult({ ok: true, cuarentenados: res.cuarentenados, expirados: res.expirados });
+      await load();
+    } catch (e: any) {
+      setAuditResult({ ok: false, msg: e?.message ?? "Auditoría fallida" });
+    } finally {
+      setAuditing(false);
+    }
+  }
 
   async function runAction(action: "quarantine" | "expire" | "delete") {
     if (!selected) return;
@@ -163,7 +201,52 @@ export default function KBPage() {
         >
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
         </button>
+
+        <button
+          onClick={runManualAudit}
+          disabled={auditing}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-card border border-border text-slate-200 hover:border-accent/40 hover:text-accent-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm"
+          title="Mueve los recursos vencidos a cuarentena y expira los que ya agotaron su período de gracia."
+        >
+          {auditing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+          <span className="hidden sm:inline">Revisar caducidades</span>
+        </button>
       </div>
+
+      {/* Toast del audit manual */}
+      <AnimatePresence>
+        {auditResult && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className={`mb-4 p-3 rounded-lg flex items-center gap-2 text-sm border ${
+              auditResult.ok
+                ? "bg-green-900/15 border-green-700/30 text-green-200"
+                : "bg-red-900/15 border-red-700/30 text-red-200"
+            }`}
+          >
+            {auditResult.ok ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  Auditoría completada:{" "}
+                  <b>{auditResult.cuarentenados}</b> recurso(s) movido(s) a cuarentena,{" "}
+                  <b>{auditResult.expirados}</b> expirado(s).
+                  {auditResult.cuarentenados === 0 && auditResult.expirados === 0 && (
+                    <span className="text-muted"> — Todo al día.</span>
+                  )}
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{auditResult.msg}</span>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Grid */}
       {loading ? (

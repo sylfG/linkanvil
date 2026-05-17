@@ -294,14 +294,30 @@ class DatabaseManager:
             )
 
     async def update_recurso_estado(self, recurso_id: str, estado: str):
-        """`estado` es global (recurso.activo/procesando/expirado). No filtra por tenant."""
+        """`estado` es global (recurso.activo/procesando/expirado/cuarentena).
+        No filtra por tenant.
+
+        Defensa en profundidad: si el nuevo estado es 'activo', solo
+        aceptamos la transición desde 'procesando'. Sin este guard, el
+        embedder (u otro consumidor con sesgo de 'finalizar = activo')
+        revertía recursos ya transicionados a 'cuarentena' / 'expirado'
+        por el ciclo de obsolescencia (audit_cron, colisión semántica,
+        rescate manual)."""
         if not self.pool:
             await self.connect()
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid",
-                estado, recurso_id,
-            )
+            if estado == "activo":
+                await conn.execute(
+                    """UPDATE recursos
+                       SET estado = 'activo', updated_at = NOW()
+                       WHERE id = $1::uuid AND estado = 'procesando'""",
+                    recurso_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE recursos SET estado = $1, updated_at = NOW() WHERE id = $2::uuid",
+                    estado, recurso_id,
+                )
 
     async def quarantine_recurso_blocked(self, recurso_id: str):
         """Mueve un recurso a cuarentena porque el scraper recibió una página

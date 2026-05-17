@@ -112,12 +112,15 @@ def call(
     timeout: int = 30,
     litellm_url: Optional[str] = None,
     model: Optional[str] = None,
+    temperature: float = 0,
 ) -> Optional[str]:
     """
     Send a prompt to LiteLLM and return the response text.
 
     Returns None if LiteLLM is unreachable or returns an error.
     Never raises — callers should treat None as fail-open.
+
+    temperature: 0 for deterministic audit output; higher values for exploration.
     """
     raw_url = litellm_url or os.getenv("LITELLM_URL", _DEFAULT_URL)
     try:
@@ -133,7 +136,7 @@ def call(
             "model": resolved_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
-            "temperature": 0,
+            "temperature": temperature,
         }
     ).encode()
 

@@ -10,7 +10,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Locate repo root via git, then add ops/cron to path for litellm_client
 try:
     _repo_root = Path(
         subprocess.check_output(
@@ -23,29 +22,11 @@ except subprocess.CalledProcessError:
 
 sys.path.insert(0, str(_repo_root / "ops" / "cron"))
 
-import litellm_client  # noqa: E402  (path set above)
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-# Maximum diff characters sent to the model.
-# Derived from cerebro-lite context budget (~8k chars leaves room for the prompt).
-MAX_DIFF_CHARS = 8_000
-
-WATCH_PATHS = [
-    "src/api/",
-    "src/data/",
-    "src/scraper/",
-    "src/ingestion/",
-]
+import litellm_client  # noqa: E402
+from config import MAX_DIFF_CHARS, WATCH_PATHS  # noqa: E402
 
 _PROMPT_FILE = _repo_root / "ops" / "prompts" / "pre-push.txt"
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def get_diff() -> str:
     """
@@ -59,16 +40,17 @@ def get_diff() -> str:
             ["git", "diff", "HEAD~1..HEAD", "--", *WATCH_PATHS],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             diff = result.stdout.strip()
             if diff:
                 return diff
-        # HEAD~1 doesn't exist (initial commit) — compare staged files instead
         result = subprocess.run(
             ["git", "diff", "--cached", "--", *WATCH_PATHS],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         return result.stdout.strip()
     except Exception:
@@ -78,7 +60,7 @@ def get_diff() -> str:
 def load_prompt(diff: str) -> str:
     """
     Load prompt template from ops/prompts/pre-push.txt and inject the diff.
-    Exits with error if the prompt file is missing — no silent fallback.
+    Exits with error if the prompt file is missing.
     """
     try:
         template = _PROMPT_FILE.read_text(encoding="utf-8")
@@ -91,14 +73,15 @@ def load_prompt(diff: str) -> str:
         )
         sys.exit(1)
 
+    if len(diff) > MAX_DIFF_CHARS:
+        print(
+            f"⚠️  Diff truncado a {MAX_DIFF_CHARS} chars — el analisis sera parcial",
+            file=sys.stderr,
+        )
     truncated = diff[:MAX_DIFF_CHARS]
-    suffix = "\n... [TRUNCADO — diff demasiado grande para análisis completo]\n" if len(diff) > MAX_DIFF_CHARS else ""
+    suffix = "\n... [TRUNCADO — diff demasiado grande para analisis completo]\n" if len(diff) > MAX_DIFF_CHARS else ""
     return template.replace("{diff}", truncated + suffix)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     diff = get_diff()
@@ -109,7 +92,6 @@ def main() -> None:
     response = litellm_client.call(load_prompt(diff))
 
     if response is None:
-        # fail-open: LiteLLM unavailable, warning already printed by client
         sys.exit(0)
 
     findings = litellm_client.parse_findings(response)

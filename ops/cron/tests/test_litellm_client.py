@@ -218,3 +218,28 @@ class TestCallLitellm(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# temperature parameter
+# ---------------------------------------------------------------------------
+
+class TestTemperatureParameter(unittest.TestCase):
+
+    @patch("litellm_client.urllib.request.urlopen")
+    def test_default_temperature_is_zero(self, mock_urlopen):
+        """Default temperature must be 0 in the sent payload."""
+        mock_urlopen.return_value = _make_response("CLEAN")
+        call("test prompt", litellm_url="http://localhost:4000")
+        req = mock_urlopen.call_args[0][0]
+        payload = json.loads(req.data.decode())
+        self.assertEqual(payload["temperature"], 0)
+
+    @patch("litellm_client.urllib.request.urlopen")
+    def test_custom_temperature_sent_in_payload(self, mock_urlopen):
+        """Custom temperature value must be forwarded to LiteLLM."""
+        mock_urlopen.return_value = _make_response("CLEAN")
+        call("test prompt", litellm_url="http://localhost:4000", temperature=0.7)
+        req = mock_urlopen.call_args[0][0]
+        payload = json.loads(req.data.decode())
+        self.assertAlmostEqual(payload["temperature"], 0.7)

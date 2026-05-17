@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-weekly-audit.py: auditoría semanal de seguridad vía LiteLLM.
+weekly-audit.py: auditoria semanal de seguridad via LiteLLM.
 
 Guarda el resultado en ops/sessions/audit-YYYY-MM-DD.md.
 Usa hash cache para saltar la llamada a LiteLLM si los archivos no cambiaron.
@@ -12,105 +12,59 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-# Add ops/cron to path for litellm_client
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
+
 import litellm_client  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Maximum characters read per audit file.
-# Derived from cerebro-lite context budget (4 files × 4k = 16k chars + prompt).
-MAX_CHARS_PER_FILE = 4_000
-
-AUDIT_FILES = [
-    "src/api/main.py",
-    "src/api/auth.py",
-    "src/ingestion/main.py",
-    "src/scraper/worker.py",
-]
+from config import AUDIT_FILES, MAX_CHARS_PER_FILE  # noqa: E402
+from utils import find_repo_root  # noqa: E402
 
 _PROMPT_FILE_NAME = "weekly-audit.txt"
 
 
-# ---------------------------------------------------------------------------
-# Repo root discovery
-# ---------------------------------------------------------------------------
-
-def find_repo_root() -> Path:
+def read_audit_files(repo_root: Path) -> dict[str, str | None]:
     """
-    Return the git repository root via git rev-parse.
+    Read AUDIT_FILES and return {relative_path: content | None}.
 
-    Works in both normal repos and git worktrees.
-    Raises RuntimeError if not inside a git repo.
+    Files exceeding MAX_CHARS_PER_FILE are truncated with a visible marker.
+    Missing files are recorded as None.
     """
-    try:
-        root = Path(
-            subprocess.check_output(
-                ["git", "rev-parse", "--show-toplevel"],
-                stderr=subprocess.DEVNULL,
-            ).decode().strip()
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError("No se encontró un repositorio git") from exc
-    return root
-
-
-# ---------------------------------------------------------------------------
-# File reading
-# ---------------------------------------------------------------------------
-
-def read_audit_files(repo_root: Path) -> dict[str, str]:
-    """
-    Read AUDIT_FILES and return {relative_path: content}.
-
-    Files exceeding MAX_CHARS_PER_FILE are truncated with a visible marker
-    so the model knows it received partial content.
-    Missing files are recorded as '*archivo no encontrado*'.
-    """
-    result: dict[str, str] = {}
+    result: dict[str, str | None] = {}
     for rel_path in AUDIT_FILES:
         full = repo_root / rel_path
         if full.exists():
-            raw = full.read_text(encoding="utf-8", errors="replace")
-            if len(raw) > MAX_CHARS_PER_FILE:
-                content = raw[:MAX_CHARS_PER_FILE] + "\n... [TRUNCADO]\n"
-            else:
-                content = raw
+            with full.open(encoding="utf-8", errors="replace") as fh:
+                content = fh.read(MAX_CHARS_PER_FILE + 1)
+            if len(content) > MAX_CHARS_PER_FILE:
+                content = content[:MAX_CHARS_PER_FILE] + "\n... [TRUNCADO]\n"
+                print(f"⚠️  {rel_path} truncado a {MAX_CHARS_PER_FILE} chars", file=sys.stderr)
             result[rel_path] = content
         else:
-            result[rel_path] = "*archivo no encontrado*"
+            result[rel_path] = None
     return result
 
 
-def format_code_block(files: dict[str, str]) -> str:
+def format_code_block(files: dict[str, str | None]) -> str:
     """Format file contents as fenced markdown code blocks."""
     parts = []
     for path, content in files.items():
-        if content == "*archivo no encontrado*":
+        if content is None:
             parts.append(f"### {path}\n*archivo no encontrado*")
         else:
             parts.append(f"### {path}\n```python\n{content}\n```")
     return "\n\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# Hash cache (skip LiteLLM if files unchanged)
-# ---------------------------------------------------------------------------
-
-def _compute_hash(files: dict[str, str]) -> str:
+def _compute_hash(files: dict[str, str | None]) -> str:
     """SHA-256 of all file paths and contents (sorted for determinism)."""
     h = hashlib.sha256()
     for path in sorted(files):
         h.update(path.encode())
-        h.update(files[path].encode())
+        h.update((files[path] or "").encode())
     return h.hexdigest()
 
 
@@ -134,8 +88,6 @@ def load_cache_if_hit(cache_path: Path, file_hash: str) -> dict | None:
     """
     Return the cache dict if the stored hash matches file_hash (cache hit).
     Returns None on cache miss or read error.
-
-    Single disk read — callers reuse the returned dict directly.
     """
     cache = _load_cache(cache_path)
     if cache.get("hash") == file_hash:
@@ -143,14 +95,10 @@ def load_cache_if_hit(cache_path: Path, file_hash: str) -> dict | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Prompt loading
-# ---------------------------------------------------------------------------
-
 def load_prompt(prompts_dir: Path, code_block: str) -> str:
     """
     Load prompt template from ops/prompts/weekly-audit.txt and inject code.
-    Exits with error if the prompt file is missing — no silent fallback.
+    Exits with error if the prompt file is missing.
     """
     prompt_file = prompts_dir / _PROMPT_FILE_NAME
     try:
@@ -165,22 +113,14 @@ def load_prompt(prompts_dir: Path, code_block: str) -> str:
     return template.replace("{code}", code_block)
 
 
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
 def write_report(sessions_dir: Path, content: str) -> Path:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     today = date.today().isoformat()
     out_path = sessions_dir / f"audit-{today}.md"
-    report = f"# Auditoría semanal — {today}\n\n{content}\n"
+    report = f"# Auditoria semanal — {today}\n\n{content}\n"
     out_path.write_text(report, encoding="utf-8")
     return out_path
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     try:
@@ -193,22 +133,19 @@ def main() -> None:
     cache_path = sessions_dir / ".audit-cache.json"
     prompts_dir = repo_root / "ops" / "prompts"
 
-    # Read source files and compute hash
     files = read_audit_files(repo_root)
     file_hash = _compute_hash(files)
 
-    # Single disk read — reuse cache dict if hit
     cached = load_cache_if_hit(cache_path, file_hash)
     if cached is not None:
-        print("⏭️  Sin cambios desde el último análisis — omitiendo LiteLLM")
-        print(f"   Último reporte: {cached.get('last_report', 'desconocido')}")
+        print("⏭️  Sin cambios desde el ultimo analisis — omitiendo LiteLLM")
+        print(f"   Ultimo reporte: {cached.get('last_report', 'desconocido')}")
         sys.exit(0)
 
-    # Build prompt and call LiteLLM
     code_block = format_code_block(files)
     prompt = load_prompt(prompts_dir, code_block)
 
-    print("🔍 Llamando a LiteLLM para auditoría semanal...")
+    print("🔍 Llamando a LiteLLM para auditoria semanal...")
     result = litellm_client.call(prompt, max_tokens=1_200, timeout=60)
 
     if result is None:
@@ -217,7 +154,6 @@ def main() -> None:
         print(f"⚠️  Reporte de error guardado en {out_path}")
         sys.exit(1)
 
-    # Write report and update cache
     out_path = write_report(sessions_dir, result)
     _save_cache(cache_path, file_hash, str(out_path))
 

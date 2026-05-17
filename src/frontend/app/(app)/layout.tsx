@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -7,8 +7,19 @@ import {
   Brain, MessageSquare, Link2, BookOpen, AlertTriangle, CalendarX,
   LogOut, Menu, X, Plus, Trash2,
   User, Bot, CheckCircle2, AlertCircle, Loader2, Key, Copy, Check,
+  ShieldCheck, ShieldAlert, Shield, ShieldOff,
 } from "lucide-react";
-import { useAuthStore } from "@/lib/auth";
+import {
+  useAuthStore,
+  AUDIT_PRESETS,
+  AUDIT_POLICY_KEYS,
+  DEFAULT_AUDIT_POLICY,
+  matchPreset,
+  type AuditPolicy,
+  type AuditPolicyKey,
+  type AuditDecision,
+  type AuditPresetName,
+} from "@/lib/auth";
 import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -31,12 +42,73 @@ const NAV: NavItem[] = [
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
 
+// Etiquetas humanas para las 6 celdas. Usamos copy compacto para que la
+// card entre cómoda en el ancho del modal lateral (420px en md+).
+const CELL_SHORT_LABELS: Record<AuditPolicyKey, string> = {
+  evento_pasado_alto: "Valor alto",
+  evento_pasado_medio: "Valor medio",
+  evento_pasado_nulo: "Valor nulo",
+  referencia_pasada_alto: "Valor alto",
+  referencia_pasada_medio: "Valor medio",
+  referencia_pasada_nulo: "Valor nulo",
+};
+
+const PRESET_SHORT: Record<AuditPresetName, { label: string; icon: typeof ShieldAlert }> = {
+  estricto: { label: "Estricto", icon: ShieldAlert },
+  equilibrado: { label: "Equilibrado", icon: Shield },
+  permisivo: { label: "Permisivo", icon: ShieldOff },
+};
+
 function ProfileModal({ onClose }: { onClose: () => void }) {
   const { token, user, setAuth } = useAuthStore();
   const [botToken, setBotToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Audit policy (migración 0007): 6 celdas configurables + presets.
+  const [policy, setPolicy] = useState<AuditPolicy>(
+    user?.audit_policy ?? DEFAULT_AUDIT_POLICY,
+  );
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  const [policyOk, setPolicyOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (user?.audit_policy) setPolicy(user.audit_policy);
+  }, [user?.audit_policy]);
+
+  const currentPreset = useMemo(() => matchPreset(policy), [policy]);
+
+  async function savePolicy(next: AuditPolicy) {
+    if (!token || savingPolicy) return;
+    setSavingPolicy(true);
+    setPolicyOk(null);
+    try {
+      await apiCall(
+        "/profile/audit-policy",
+        { method: "PUT", body: JSON.stringify({ policy: next }) },
+        token,
+      );
+      setPolicy(next);
+      const me = await apiCall<any>("/auth/me", {}, token);
+      if (token) setAuth(token, me);
+      setPolicyOk(true);
+      setTimeout(() => setPolicyOk(null), 2500);
+    } catch {
+      setPolicyOk(false);
+      setTimeout(() => setPolicyOk(null), 4000);
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
+  function applyPreset(name: AuditPresetName) {
+    void savePolicy({ ...AUDIT_PRESETS[name] });
+  }
+
+  function setCell(key: AuditPolicyKey, value: AuditDecision) {
+    void savePolicy({ ...policy, [key]: value });
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -145,9 +217,119 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
               </button>
             </form>
           </div>
+
+          {/* Auditoría de recursos (migración 0007) */}
+          <div className="bg-card border border-border rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <ShieldCheck className="w-4 h-4 text-accent-light" />
+              <span className="font-semibold text-sm">Auditoría de recursos</span>
+              {policyOk === true && (
+                <span className="ml-auto text-[10px] bg-green-800/30 text-green-300 border border-green-700/30 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <CheckCircle2 className="w-2.5 h-2.5" /> Guardado
+                </span>
+              )}
+              {policyOk === false && (
+                <span className="ml-auto text-[10px] bg-red-800/30 text-red-300 border border-red-700/30 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <AlertCircle className="w-2.5 h-2.5" /> Error
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted mb-3">
+              Qué hace LinkAnvil al ingerir URLs con fecha pasada (artículos
+              retrospectivos, noticias antiguas, eventos cerrados).
+            </p>
+
+            <p className="text-[11px] text-muted mb-2">
+              {currentPreset ? (
+                <>Configuración: <span className="text-accent-light font-medium">{PRESET_SHORT[currentPreset].label}</span></>
+              ) : (
+                <span className="text-accent-light font-medium">Personalizada</span>
+              )}
+            </p>
+
+            <div className="grid grid-cols-3 gap-1.5 mb-3">
+              {(Object.keys(AUDIT_PRESETS) as AuditPresetName[]).map((name) => {
+                const meta = PRESET_SHORT[name];
+                const Icon = meta.icon;
+                const isActive = currentPreset === name;
+                return (
+                  <button
+                    key={name}
+                    onClick={() => applyPreset(name)}
+                    disabled={savingPolicy}
+                    className={`p-1.5 rounded-lg border transition-colors flex items-center justify-center gap-1 text-[11px] ${
+                      isActive
+                        ? "bg-accent/15 border-accent/40 text-slate-100"
+                        : "bg-surface border-border hover:border-accent/30 text-slate-300"
+                    } ${savingPolicy ? "opacity-60 cursor-wait" : ""}`}
+                  >
+                    <Icon className={`w-3 h-3 ${isActive ? "text-accent-light" : "text-muted"}`} />
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <ModalPolicyGroup
+              title="Eventos pasados"
+              cells={["evento_pasado_alto", "evento_pasado_medio", "evento_pasado_nulo"]}
+              policy={policy}
+              disabled={savingPolicy}
+              onChange={setCell}
+            />
+            <div className="mt-3">
+              <ModalPolicyGroup
+                title="Referencias pasadas"
+                cells={["referencia_pasada_alto", "referencia_pasada_medio", "referencia_pasada_nulo"]}
+                policy={policy}
+                disabled={savingPolicy}
+                onChange={setCell}
+              />
+            </div>
+          </div>
         </div>
       </motion.div>
     </>
+  );
+}
+
+// Componente compacto para el modal lateral (3 selects por grupo).
+function ModalPolicyGroup({
+  title,
+  cells,
+  policy,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  cells: AuditPolicyKey[];
+  policy: AuditPolicy;
+  disabled: boolean;
+  onChange: (key: AuditPolicyKey, value: AuditDecision) => void;
+}) {
+  return (
+    <div className="bg-surface/40 border border-border rounded-lg p-2.5">
+      <p className="text-[11px] text-slate-200 font-medium mb-1.5">{title}</p>
+      <div className="space-y-1.5">
+        {cells.map((cell) => (
+          <div key={cell} className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted flex-1 truncate">
+              {CELL_SHORT_LABELS[cell]}
+            </span>
+            <select
+              value={policy[cell]}
+              onChange={(e) => onChange(cell, e.target.value as AuditDecision)}
+              disabled={disabled}
+              className="bg-card border border-border rounded-md text-[11px] text-slate-100 px-1.5 py-1 outline-none focus:border-accent-light transition-colors disabled:opacity-60 disabled:cursor-wait"
+            >
+              <option value="activo">Activo</option>
+              <option value="cuarentena">Cuarentena</option>
+              <option value="expirado">Archivo</option>
+            </select>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

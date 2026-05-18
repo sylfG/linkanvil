@@ -2,16 +2,33 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuthStore } from "@/lib/auth";
+import { apiCall } from "@/lib/api";
 import Logo from "@/components/Logo";
 
 // Nav translúcido fijo. Solo se vuelve opaco al hacer scroll > 16px,
-// efecto similar al de Linear/Vercel. La detección del token decide si
-// mostrar "Iniciar sesión" o "Abrir tu cerebro" — un único CTA en el
-// nav (eliminamos la duplicidad "Iniciar sesión" + "Probar demo": apuntan
-// al mismo /login, así que basta con un botón).
+// efecto similar al de Linear/Vercel. La detección del token decide
+// si mostrar el flujo anónimo (Iniciar sesión + Probar demo) o el
+// flujo autenticado (Abrir tu cerebro + Cerrar sesión).
 export default function Nav() {
   const [scrolled, setScrolled] = useState(false);
-  const token = useAuthStore((s) => s.token);
+  const { token, clearAuth } = useAuthStore();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      // Llama al backend para invalidar el refresh token y limpiar
+      // las cookies httpOnly. Si falla, igual limpiamos el store
+      // local para que el usuario quede des-autenticado en cliente.
+      await apiCall("/auth/logout", { method: "POST" }).catch(() => {});
+    } finally {
+      clearAuth();
+      // Recargar la página fuerza al landing a re-renderizar con el
+      // estado anónimo (sin tener que esperar a la próxima nav).
+      if (typeof window !== "undefined") window.location.assign("/");
+    }
+  }
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 16);
@@ -54,12 +71,21 @@ export default function Nav() {
 
         <div className="flex items-center gap-2">
           {token ? (
-            <Link
-              href="/chat"
-              className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
-            >
-              Abrir tu cerebro
-            </Link>
+            <>
+              <button
+                onClick={handleLogout}
+                disabled={loggingOut}
+                className="hidden sm:inline-block text-sm text-muted hover:text-slate-200 px-3 py-2 transition-colors disabled:opacity-60"
+              >
+                {loggingOut ? "Saliendo..." : "Cerrar sesión"}
+              </button>
+              <Link
+                href="/chat"
+                className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Abrir tu cerebro
+              </Link>
+            </>
           ) : (
             <>
               {/* Login: link discreto a la izquierda. Demo: CTA principal. */}

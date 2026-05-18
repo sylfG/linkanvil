@@ -23,35 +23,62 @@ interface DemoStartResponse {
   redirect: string;     // "/demo" — el backend dicta el destino canónico
   tenant_id: string;
   expires_at: string;   // ISO timestamptz
+  /** Slice 6.3: true si la IP ya tenía una sesión viva y se ha
+   *  reutilizado (no se ha creado una nueva). */
+  resumed?: boolean;
+  seconds_remaining?: number;
 }
 
 /**
  * Arranca una sesión demo nueva. Lanza Error con un mensaje legible si
  * el backend rechaza (503 demo_unavailable, 429 rate limit, etc).
- * El caller debe hacer el `router.push(response.redirect)` tras
- * resolverse — este helper NO navega para no acoplar redirects a Next.js.
+ *
+ * Slice 6.3 — el backend impone "1 demo por IP por día UTC":
+ *   - Si esta IP ya tiene una sesión viva → re-emite cookies y devuelve
+ *     `resumed: true` con los segundos que quedan.
+ *   - Si esta IP gastó su demo hoy (sesión expirada) → 429 con el
+ *     mensaje `demo_already_used_today`, que propagamos como Error
+ *     legible para que la landing lo muestre directamente.
+ *
+ * El caller decide el redirect (típicamente `router.push(response.redirect)`).
  */
 export async function startDemoSession(): Promise<{
   user: User;
   redirect: string;
   expires_at: string;
+  resumed: boolean;
 }> {
-  const res = await apiCall<DemoStartResponse>("/auth/demo-start", {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+  let res: DemoStartResponse;
+  try {
+    res = await apiCall<DemoStartResponse>("/auth/demo-start", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch (err: any) {
+    // apiCall vuelca `detail` en err.message como JSON cuando el
+    // backend usa HTTPException con cuerpo estructurado. Lo
+    // desempaquetamos para que el visitante vea el copy del backend
+    // sin ruido de JSON crudo.
+    const raw = err?.message ?? "";
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed?.message) throw new Error(parsed.message);
+      if (parsed?.error) throw new Error(parsed.error);
+    } catch (parseErr: any) {
+      // Si el throw nuestro es lo que cayó aquí, propágalo tal cual.
+      if (parseErr instanceof Error && parseErr !== err) throw parseErr;
+      // Si no parseaba, devuelve el message original.
+    }
+    throw err;
+  }
 
-  // Tras /demo-start el backend ya seteó la cookie cerebro-session;
-  // /auth/me valida y devuelve el user con tenant_id efímero +
-  // demo_session_expires_at relleno (el countdown banner lo lee
-  // directamente del store).
   const me = await apiCall<User>("/auth/me", {}, res.access_token);
-
   useAuthStore.getState().setAuth(res.access_token, me);
 
   return {
     user: me,
     redirect: res.redirect || "/demo",
     expires_at: res.expires_at,
+    resumed: !!res.resumed,
   };
 }

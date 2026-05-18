@@ -723,6 +723,19 @@ async def demo_start(
     diaria por IP (5 ingests, 20 chats) más el global cap protegen
     contra abuso.
 
+    Slice 6.3 — **una sola sesión demo por IP por día UTC**. Sin este
+    límite, un visitante podía hacer logout y volver a pulsar "Probar
+    demo" indefinidamente, agarrando 15 min fresquitos cada vez y
+    saltándose las cuotas de la jornada. Ahora:
+
+      - Si la sesión asociada a esta IP sigue viva → re-emitimos JWT y
+        cookies para esa misma sesión (resumes con los minutos que le
+        quedaban).
+      - Si la sesión ya expiró pero la IP la consumió hoy → 429 con
+        copy claro de "regístrate o vuelve mañana".
+      - Si la IP no tiene marca para hoy → creamos sesión nueva y la
+        marcamos con TTL 24h.
+
     Si el seed demo no existe (despliegue mal configurado) → 503.
     """
     user = await db.get_user_by_email(DEMO_EMAIL)
@@ -743,12 +756,73 @@ async def demo_start(
         )
 
     ip = _client_ip(request)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_key = f"demo_session_started:{ip}:{today}"
+
+    # ── Gate per-IP por día UTC ───────────────────────────────────
+    if _redis is not None:
+        existing_tenant = await _redis.get(daily_key)
+        if existing_tenant:
+            session = await db.get_demo_session(existing_tenant)
+            now = datetime.now(timezone.utc)
+            if session:
+                expires_at = session["expires_at"]
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at > now:
+                    # Sesión sigue viva — resume con cookies frescas
+                    # SIN crear otra sesión nueva (la cuenta atrás
+                    # continúa desde donde estaba).
+                    token = _access_token_for(user, tenant_id=existing_tenant)
+                    csrf = _set_session_cookies(response, token)
+                    refresh = await _issue_refresh_token(
+                        user, session_tenant=existing_tenant,
+                    )
+                    _set_refresh_cookie(response, refresh)
+                    remaining = int((expires_at - now).total_seconds())
+                    logger.info(
+                        "demo session resumed: tenant=%s ip=%s remaining=%ds",
+                        existing_tenant, ip, remaining,
+                    )
+                    return {
+                        "access_token": token,
+                        "token_type": "bearer",
+                        "csrf_token": csrf,
+                        "redirect": "/demo",
+                        "tenant_id": existing_tenant,
+                        "expires_at": expires_at.isoformat(),
+                        "resumed": True,
+                        "seconds_remaining": remaining,
+                    }
+            # Sesión ya expiró (o la fila se borró por cleanup):
+            # la IP ya gastó su cupo demo de hoy.
+            raise HTTPException(
+                429,
+                {
+                    "error": "demo_already_used_today",
+                    "message": (
+                        "Ya disfrutaste tu sesión demo de 15 minutos hoy. "
+                        "Vuelve mañana o regístrate para uso ilimitado "
+                        "con tus propias claves."
+                    ),
+                    "register_url": "/register",
+                },
+            )
+
+    # ── Sesión nueva ──────────────────────────────────────────────
     session = await db.create_demo_session(str(user["id"]), ip=ip)
     effective_tenant = session["tenant_id"]
     logger.info(
         "demo session created via demo-start: tenant=%s ip=%s expires=%s",
         effective_tenant, ip, session["expires_at"].isoformat(),
     )
+
+    # Marca per-IP por día UTC. TTL 24h cubre cualquier zona horaria
+    # razonable; el día siguiente la IP queda libre. La clave guarda
+    # el tenant_id para que el branch "session viva" de arriba pueda
+    # resolverlo sin un query extra a demo_sessions.
+    if _redis is not None:
+        await _redis.set(daily_key, effective_tenant, ex=86400)
 
     token = _access_token_for(user, tenant_id=effective_tenant)
     csrf = _set_session_cookies(response, token)
@@ -761,6 +835,7 @@ async def demo_start(
         "redirect": "/demo",
         "tenant_id": effective_tenant,
         "expires_at": session["expires_at"].isoformat(),
+        "resumed": False,
     }
 
 

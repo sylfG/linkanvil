@@ -83,26 +83,31 @@ def _qdrant_chunk_point_id(recurso_id: str, tenant_id: str, chunk_idx: int) -> s
 
 
 async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
-    """Slice 6.4 — Indexa en Qdrant los 3 recursos sintéticos staged
-    al crear una sesión demo.
+    """Slice 6.4/6.5 — Indexa en Qdrant los 3 recursos staged al crear
+    una sesión demo, para que el RAG los encuentre.
 
     Sin esto, los staged viven solo en `cerebro.recursos` + `usuario_recursos`
-    pero el RAG no encuentra chunks para ellos en `cerebro_chunks`. El
-    visitante ve "Conferencia DevOps Barcelona 2026" en su KB pero al
-    preguntar en el chat el modelo responde "no tengo información"
-    porque no había nada que vectorizar.
+    y el RAG responde "no tengo información" cuando se pregunta por
+    ellos. Schema de payload idéntico al embedder real (recurso_id,
+    tenant_id, url, title, chunk_idx, chunk_text) para que Qdrant los
+    trate como cualquier otro chunk.
 
-    Pipeline:
-      1. Selecciona los recursos linkeados al sub-tenant demo.
-      2. Para cada uno, construye un chunk con título + resumen.
-      3. Pide embedding a LiteLLM con la virtual-key del demo user.
-      4. Upsert al collection `cerebro_chunks` con el mismo schema de
-         payload que usa el embedder real (recurso_id, tenant_id, url,
-         title, chunk_idx, chunk_text).
+    Slice 6.5 — Estrategia híbrida con cache:
 
-    Best-effort: cualquier fallo (LiteLLM, Qdrant) se loguea y devuelve
-    el contador parcial. La sesión demo sigue siendo usable incluso si
-    el RAG queda incompleto.
+      1. **Cache-first**: si `cerebro.staged_embeddings_cache` tiene
+         entradas (rellenada por `ops/build_staged_embeddings.py`),
+         reusamos los vectores pre-computados. Cero llamadas a LiteLLM,
+         latencia ~5ms por chunk.
+
+      2. **Fallback live**: si la cache está vacía (cluster nuevo sin
+         el script de seed corrido), calculamos los embeddings vía
+         LiteLLM con la key del demo user. Gasta tokens y ~400ms por
+         chunk, pero funciona out-of-the-box.
+
+    Cache hits y misses se loguean para que el operador detecte si la
+    cache se quedó atrás (p.ej. tras cambiar `_STAGED_RECURSOS`).
+    Best-effort en todos los caminos: si algo falla, devolvemos el
+    contador parcial y la sesión sigue siendo válida.
     """
     if _http is None:
         return 0
@@ -111,11 +116,19 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
         )
+        # Join con la cache por título (es el identificador estable
+        # entre _STAGED_RECURSOS y la fila insertada). Si una entrada
+        # no está cacheada, c.* viene NULL y aplicamos fallback live.
         rows = await conn.fetch(
             """
-            SELECT r.id::text AS id, r.titulo, r.resumen, r.url
+            SELECT r.id::text AS id, r.titulo, r.resumen, r.url,
+                   c.chunk_text  AS cached_chunk_text,
+                   c.embedding   AS cached_embedding,
+                   c.idx         AS cached_idx
               FROM recursos r
               JOIN usuario_recursos ur ON ur.recurso_id = r.id
+              LEFT JOIN cerebro.staged_embeddings_cache c
+                     ON c.titulo = r.titulo
              WHERE ur.tenant_id = $1
             """,
             tenant_id,
@@ -123,70 +136,100 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
     if not rows:
         return 0
 
+    points: list[dict] = []
+    cache_hits = 0
+    live_hits = 0
+    live_failed = 0
+    emb_key: Optional[str] = None  # resolvemos solo si hace falta fallback
+
+    for r in rows:
+        if r["cached_embedding"] is not None:
+            chunk_text = r["cached_chunk_text"]
+            vector = list(r["cached_embedding"])
+            cache_hits += 1
+        else:
+            # Fallback: live embedding contra LiteLLM con la key del demo.
+            chunk_text = f"{r['titulo']}\n\n{r['resumen'] or ''}".strip()
+            if emb_key is None:
+                try:
+                    emb_key = await _resolve_user_key(user_id, "embeddings")
+                except Exception as exc:
+                    logger.warning(
+                        "demo staging RAG: no embeddings key disponible "
+                        "para fallback live: %s", exc,
+                    )
+                    live_failed += 1
+                    continue
+            try:
+                er = await _http.post(
+                    f"{LITELLM_URL}/v1/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {emb_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "cerebro-embeddings",
+                        "input": chunk_text,
+                        "input_type": "passage",
+                    },
+                    timeout=15.0,
+                )
+                if er.status_code != 200:
+                    logger.warning(
+                        "demo staging RAG live: embedding %s falló %d",
+                        r["id"], er.status_code,
+                    )
+                    live_failed += 1
+                    continue
+                vector = er.json()["data"][0]["embedding"]
+                live_hits += 1
+            except Exception as exc:
+                logger.warning(
+                    "demo staging RAG live: error embedding %s: %s",
+                    r["id"], exc,
+                )
+                live_failed += 1
+                continue
+
+        points.append({
+            "id": _qdrant_chunk_point_id(r["id"], tenant_id, 0),
+            "vector": vector,
+            "payload": {
+                "tenant_id": tenant_id,
+                "recurso_id": r["id"],
+                "url": r["url"],
+                "title": r["titulo"],
+                "chunk_idx": 0,
+                "chunk_text": chunk_text,
+            },
+        })
+
+    if not points:
+        return 0
+
     try:
-        emb_key = await _resolve_user_key(user_id, "embeddings")
+        qr = await _http.put(
+            f"{QDRANT_URL}/collections/cerebro_chunks/points?wait=true",
+            json={"points": points},
+            timeout=10.0,
+        )
+        if qr.status_code not in (200, 201):
+            logger.warning(
+                "demo staging RAG: qdrant upsert falló %d", qr.status_code,
+            )
+            return 0
     except Exception as exc:
         logger.warning(
-            "demo staging RAG: no se pudo resolver embeddings key: %s", exc,
+            "demo staging RAG: qdrant upsert error: %s", exc,
         )
         return 0
 
-    indexed = 0
-    for r in rows:
-        chunk_text = f"{r['titulo']}\n\n{r['resumen'] or ''}".strip()
-        try:
-            er = await _http.post(
-                f"{LITELLM_URL}/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {emb_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "cerebro-embeddings",
-                    "input": chunk_text,
-                    "input_type": "passage",
-                },
-                timeout=15.0,
-            )
-            if er.status_code != 200:
-                logger.warning(
-                    "demo staging RAG: embedding %s falló %d",
-                    r["id"], er.status_code,
-                )
-                continue
-            vector = er.json()["data"][0]["embedding"]
-            point = {
-                "id": _qdrant_chunk_point_id(r["id"], tenant_id, 0),
-                "vector": vector,
-                "payload": {
-                    "tenant_id": tenant_id,
-                    "recurso_id": r["id"],
-                    "url": r["url"],
-                    "title": r["titulo"],
-                    "chunk_idx": 0,
-                    "chunk_text": chunk_text,
-                },
-            }
-            qr = await _http.put(
-                f"{QDRANT_URL}/collections/cerebro_chunks/points?wait=true",
-                json={"points": [point]},
-                timeout=10.0,
-            )
-            if qr.status_code in (200, 201):
-                indexed += 1
-            else:
-                logger.warning(
-                    "demo staging RAG: qdrant upsert falló %d", qr.status_code,
-                )
-        except Exception as exc:
-            logger.warning(
-                "demo staging RAG: error indexando %s: %s", r["id"], exc,
-            )
     logger.info(
-        "demo staging RAG: %d/%d chunks indexados (tenant=%s)",
-        indexed, len(rows), tenant_id,
+        "demo staging RAG: tenant=%s indexed=%d (cache=%d live=%d failed=%d) "
+        "of %d staged",
+        tenant_id, len(points), cache_hits, live_hits, live_failed, len(rows),
     )
-    return indexed
+    return len(points)
 
 
 def _model_kind(model: str) -> str:

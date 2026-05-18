@@ -40,6 +40,7 @@ type NavItem = {
 // cuando `user.is_demo`, dentro de `SidebarContent`. La forma del array
 // no cambia entre usuarios; lo único distinto es 1 entry extra para demo.
 const NAV: NavItem[] = [
+  { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
@@ -589,12 +590,12 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
     });
     if (emptyExisting) {
       setActive(emptyExisting.id);
-      router.push("/");
+      router.push("/chat");
       onNavClick?.();
       return;
     }
     await createSession(token);
-    router.push("/");
+    router.push("/chat");
     onNavClick?.();
   }
 
@@ -679,7 +680,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
                   className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                     s.id === activeId ? "bg-accent/15 text-slate-200" : "text-muted hover:text-slate-200 hover:bg-white/5"
                   }`}
-                  onClick={() => { setActive(s.id); router.push("/"); onNavClick?.(); }}
+                  onClick={() => { setActive(s.id); router.push("/chat"); onNavClick?.(); }}
                 >
                   <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 opacity-60" />
                   <span className="text-xs truncate flex-1">{s.title}</span>

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Zap, Cpu, RefreshCw,
-  Copy, Check, Download, ExternalLink, ChevronLeft, Archive,
+  Copy, Check, Download, ExternalLink, ChevronLeft, Archive, Info,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -374,9 +374,16 @@ export default function ChatPage() {
           variant="sparkle"
           hint="Las virtual-keys del demo vienen pre-configuradas con un free-tier limitado. Cuota: 20 chats/día por IP. Las conversaciones se borran al expirar la sesión."
         />
+        <label
+          className="text-[10px] uppercase tracking-wider text-muted hidden md:inline"
+          title="Modelo a usar para la respuesta"
+        >
+          Modelo
+        </label>
         <select
           value={model}
           onChange={(e) => setModel(e.target.value)}
+          title="Lite es rápido y suficiente para preguntas cortas. Pro razona mejor preguntas complejas a cambio de latencia."
           className="bg-card border border-border rounded-lg px-3 py-1.5 text-sm text-slate-200 outline-none"
         >
           <option value="cerebro-lite">🚀 Lite — rápido</option>
@@ -385,20 +392,32 @@ export default function ChatPage() {
 
         <button
           onClick={() => setUseRag(!useRag)}
+          aria-pressed={useRag}
+          title={
+            useRag
+              ? "RAG activado: cada pregunta busca primero en tu base de conocimiento (Qdrant) y el modelo responde citando las fuentes. Apágalo para chatear solo con conocimiento general del LLM."
+              : "RAG desactivado: el modelo responde con su conocimiento general SIN consultar tu KB. Útil para preguntas genéricas o cuando no necesitas citas."
+          }
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
             useRag ? "bg-accent/20 border-accent/40 text-accent-light" : "bg-transparent border-border text-muted"
           }`}
         >
           <Zap className="w-3.5 h-3.5" />
           RAG {useRag ? "ON" : "OFF"}
+          <Info className="w-3 h-3 opacity-60" />
         </button>
 
         <button
           onClick={() => setUseArchive(!useArchive)}
           disabled={!useRag}
-          title={useRag
-            ? "Incluir recursos del archivo histórico (estado expirado) en el RAG"
-            : "Archivo requiere RAG activado"}
+          aria-pressed={useArchive && useRag}
+          title={
+            useRag
+              ? useArchive
+                ? "Archivo activado: el RAG también consulta recursos en estado 'expirado' (archivo histórico). Útil cuando necesitas datos de eventos pasados, post-mortems o referencias antiguas."
+                : "Archivo desactivado: el RAG ignora el archivo histórico y solo cita recursos activos. Encendido lo incluye sin tener que rescatarlos."
+              : "Archivo requiere RAG activado. Enciende RAG primero."
+          }
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
             useArchive && useRag
               ? "bg-amber-500/15 border-amber-400/40 text-amber-300"
@@ -407,6 +426,7 @@ export default function ChatPage() {
         >
           <Archive className="w-3.5 h-3.5" />
           Archivo {useArchive && useRag ? "ON" : "OFF"}
+          <Info className="w-3 h-3 opacity-60" />
         </button>
 
         {messages.length > 0 && (
@@ -432,12 +452,49 @@ export default function ChatPage() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-3 opacity-40">
-            <Cpu className="w-12 h-12" />
-            <p className="text-lg font-medium">Pregunta a tu segundo cerebro</p>
-            <p className="text-sm text-muted max-w-xs">
-              Tus URLs ingestadas se usan como contexto cuando RAG está activado.
+          <div className="flex flex-col items-center justify-center h-full text-center gap-4 max-w-md mx-auto">
+            <div className="opacity-40">
+              <Cpu className="w-12 h-12" />
+            </div>
+            <p className="text-lg font-medium opacity-80">
+              Pregunta a tu segundo cerebro
             </p>
+            <p className="text-sm text-muted leading-relaxed">
+              Escribe tu pregunta abajo. Las respuestas se generan con el
+              modelo seleccionado, y cuando RAG está activado se citan las
+              fuentes de tu base de conocimiento.
+            </p>
+
+            {/* Mini-leyenda de los toggles, visible siempre que el chat
+                esté vacío. Refuerza la idea de "modelos × fuentes" y
+                desactiva la sensación de "¿qué hacen estos botones?". */}
+            <div className="w-full text-left bg-card border border-border rounded-xl p-4 space-y-2 mt-2">
+              <p className="text-[11px] uppercase tracking-wider text-muted font-medium mb-2">
+                Toggles arriba — qué hacen
+              </p>
+              <div className="flex items-start gap-2">
+                <Zap className="w-3.5 h-3.5 text-accent-light flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-slate-200 leading-relaxed">
+                  <strong className="text-accent-light">RAG ON</strong>:
+                  cada pregunta busca primero en tu KB (chunks vectoriales
+                  en Qdrant) y el modelo cita las fuentes encontradas.
+                  Apágalo para chatear solo con el conocimiento general
+                  del LLM.
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <Archive className="w-3.5 h-3.5 text-amber-300 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-slate-200 leading-relaxed">
+                  <strong className="text-amber-300">Archivo ON</strong>:
+                  el RAG también incluye recursos en estado{" "}
+                  <code className="text-[10px] bg-bg/60 px-1 rounded">
+                    expirado
+                  </code>{" "}
+                  (archivo histórico — post-mortems, eventos pasados, etc.).
+                  Requiere RAG activado.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 

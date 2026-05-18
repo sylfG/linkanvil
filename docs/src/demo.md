@@ -232,31 +232,112 @@ en los 5s siguientes — el visitante ve el punto cambiar de pendiente
 
 ---
 
-## 🪟 La ruta `/demo` y la separación con `/chat`
+## 🪟 La UI del demo — clon del registered con hints inline
 
-Slice 6 también limpió la deuda visual del Slice 5: el banner de
-countdown ya no se renderiza globalmente condicionado a `is_demo`
-en cada ruta de `(app)/`. En su lugar:
+> **Slice 6.2 — Pivot importante**: las primeras iteraciones del Slice 6
+> aislaban el demo en una ruta única `/demo` con tabs propios, mostrando
+> un cromo visual distinto al usuario registrado. El usuario detectó
+> que eso creaba la sensación de "dos apps diferentes" y dificultaba
+> la pedagogía. El modelo actual es el opuesto: **misma app, mismas
+> pantallas, mismos componentes — solo cambia un chip y unos tooltips
+> contextuales**.
 
-- **`/demo`** es la única ruta donde el demo opera. Tabs internas
-  (Timeline / KB / Cuarentena / Archivo / Chat) — todo el demo cabe
-  en una sola URL.
-- **Route guards client-side** en `(app)/layout.tsx`:
-  - Demo session en `/chat`, `/kb`, `/quarantine`, `/expired` → redirect
-    a `/demo`.
-  - Registered session en `/demo` → redirect a `/chat`.
-- **El sidebar habitual** (Ingestar / KB / Cuarentena / Expirados) NO
-  se renderiza en `/demo` — esta vista trae su propio chrome con
-  tabs y header sticky.
-- **`ProfileModal`** (telegram bot, BYOK, audit policy) sigue
-  accesible solo desde el sidebar `(app)/`, así que los demo users
-  nunca llegan a él — perfecto, porque sus claves vienen
-  pre-configuradas y no se pueden cambiar (defendido a nivel
-  backend con `403 demo_account_locked` en `PUT /profile/llm-keys`).
+### El principio
 
-Resultado: las vistas reales de `/chat`, `/kb`, `/quarantine`, `/expired`
-ya **no tienen ningún condicional `is_demo`** ni instrumentación
-demo-específica. Quedan idénticas a antes, solo para registered.
+Demo y registered comparten **todo** el cromo:
+
+- Mismo `(app)/layout.tsx` (sidebar + nav + countdown banner top).
+- Mismas rutas reales: `/chat`, `/kb`, `/quarantine`, `/expired`,
+  `/ingest`.
+- Mismos componentes de página — ni un solo `if (user.is_demo)` en
+  la lógica de negocio del frontend.
+
+Lo único que se añade al demo es **información**, no estructura:
+
+| Lugar | Solo para demo |
+|---|---|
+| Top del layout | `DemoCountdownBanner` con TTL 15:00 → 00:00 |
+| Logo del sidebar | Chip `✨ Demo` con tooltip "se borra al expirar" |
+| Sidebar nav | Entrada extra al inicio: `Línea temporal → /demo` |
+| Headers de `/ingest`, `/kb`, `/quarantine`, `/expired` | `<DemoHint>` inline con copy contextual |
+| Toolbar del chat | Chip `✨ Demo` con cuota y tooltip |
+
+### El componente `<DemoHint>`
+
+`components/DemoHint.tsx` es un tooltip auto-condicional:
+
+```tsx
+import { DemoHint } from "@/components/DemoHint";
+
+<h1>
+  Bandeja de cuarentena
+  <DemoHint hint="Antes del minuto 5: solo ExpoJove seed. Después: +2 efímeros con motivo 'caducidad'." />
+</h1>
+```
+
+- Si `user.is_demo === true` → renderiza un icono `Info` con tooltip
+  on hover/focus/tap.
+- Si `user.is_demo === false` → renderiza `null`. Cero footprint
+  visual para registered.
+
+Variantes:
+- `variant="info"` (defecto) → icono pequeño discreto.
+- `variant="sparkle"` + `label="Demo"` → chip completo con badge.
+- `align="right"` → tooltip a la derecha cuando el componente está
+  cerca del borde.
+
+Esto permite **sembrar el componente en cualquier sitio** sin tocar la
+lógica de la página. Si más tarde decides añadir un hint a la página
+`/ingest` cuando se alcance el 80 % de la cuota, basta con añadir un
+`<DemoHint hint="..." />` donde corresponda.
+
+### La ruta `/demo` — solo timeline
+
+`/demo` ya **no** es un dashboard con tabs. Es una vista pedagógica
+con:
+
+1. Header explicativo + chip "Próximo evento" con countdown relativo.
+2. **Línea horizontal SVG** con marcador móvil (now) y los 4 eventos
+   posicionados proporcionalmente entre login y expiración.
+3. **Tabla cronológica** con hora, evento, motivo, descripción y
+   estado (Pendiente / Disparado).
+4. **Atajos cards** a `/chat`, `/kb`, `/quarantine`, `/expired` para
+   que el visitante salte a ver el efecto real del audit.
+
+Polling cada 5s a `GET /demo/timeline` para actualizar `fired_at` en
+vivo cuando el cleanup loop dispara los eventos.
+
+### El único route guard que queda
+
+```tsx
+// (app)/layout.tsx
+const isDemo = !!user?.is_demo;
+const inDemoRoute = pathname?.startsWith("/demo") ?? false;
+useEffect(() => {
+  // Registered NO debe ver la línea temporal — no le aporta nada.
+  if (!isDemo && inDemoRoute) router.replace("/chat");
+}, [isDemo, inDemoRoute]);
+```
+
+Demo accede libremente a TODAS las rutas. La separación radical de
+ediciones anteriores quedó atrás.
+
+### Lo que el demo NO puede hacer
+
+Las limitaciones del demo viven en el **backend**, no en el frontend:
+
+- `PUT /profile/llm-keys` → 403 `demo_account_locked` (claves
+  pre-configuradas).
+- `POST /ingest` / `POST /chat` → 429 cuando se alcanzan los topes
+  diarios per-IP (5 ingests, 20 chats).
+- Audit policy editable en el `ProfileModal` — el demo SÍ la puede
+  cambiar (es solo configuración del tenant), pero al expirar la
+  sesión la fila se borra junto con el sub-tenant, así que es un
+  cambio efímero. No daña ningún seed.
+
+El frontend NO oculta ni desactiva nada visualmente — todo se
+intenta, y si el backend rechaza, los componentes ya manejan los 403
+y 429 con mensajes legibles (Slice 4 + 6).
 
 ---
 
@@ -339,16 +420,35 @@ cuenta real, **estos estados aparecerían con el paso del tiempo**:
 
 ### Lo que NO podrás ver en 15 min
 
-- El cron nocturno de auditoría (transición automática
-  `activo → cuarentena → expirado` por `fecha_caducidad`).
-- Notificaciones del lifecycle propias (las del seed pertenecen a
-  `user_demo_landing` y no a tu sub-tenant; en tu sub-tenant la
-  bandeja arranca vacía).
+- El cron nocturno de auditoría real (`run_audit_cron`) que opera sobre
+  `fecha_caducidad` con precisión DATE. El demo te enseña **una versión
+  comprimida y scoped** vía `demo_session_events` + `run_demo_audit_for_session`,
+  pero el cron de prod global (todos los tenants, una vez al día) no
+  corre dentro de la sesión.
 - Re-ingesta del mismo recurso tras corrección de scrape.
 - Auditoría exhaustiva semanal (`ops/cron/weekly_audit.py`).
+- El ciclo de vida largo (caducidad real → gracia 30 días → archivo)
+  con días entre cada paso. El demo comprime las transiciones del
+  minuto 5 sintetizándolas con `transition_cuarentena` y
+  `transition_expirado`, pero un usuario real las verá repartidas en
+  semanas.
 
-Si quieres ver esto en directo: regístrate con tu email, configura
-tus claves de LLM (BYOK) en `/profile` y úsalo durante varios días.
+### Lo que SÍ ves del lifecycle (gracias a Slice 6)
+
+- **Tus 3 recursos efímeros** sembrados al login pasarán por
+  transiciones reales en vivo al minuto 5 — verás cómo aparecen en
+  `/quarantine` y `/expired`.
+- **Tres notificaciones in-app** en el bell (icono notif del sidebar)
+  con `evento_tipo = recurso.cuarentena | recurso.expirado` — el
+  mismo formato que recibe un tenant registered cuando su cron
+  diario corre. Las emite el `notifier-worker` consumiendo el outbox
+  que escribió `run_demo_audit_for_session`.
+- **El timeline en `/demo`** te muestra cuándo va a pasar y, tras el
+  audit, refleja `fired_at` en vivo (polling 5s).
+
+Si quieres ver el ciclo natural sin compresión: regístrate con tu email,
+configura tus claves de LLM (BYOK) en `/profile` y úsalo durante varios
+días.
 
 ---
 
@@ -389,7 +489,10 @@ detecta sesiones con `expires_at < NOW()`. Por cada una hace cascada:
 5. **`recursos`** huérfanos — los que quedan sin asociaciones en
    `usuario_recursos`, EXCEPTO si comparten `url_hash` con un recurso
    del seed canónico (salvaguarda anti-borrado accidental).
-6. **`demo_sessions`** — la fila del sub-tenant.
+6. **`demo_sessions`** — la fila del sub-tenant. Su borrado dispara
+   un `ON DELETE CASCADE` sobre `demo_session_events` (Slice 6,
+   migración 0010), así que los 4 eventos programados desaparecen
+   solos. Cero limpieza manual de la tabla de eventos.
 
 Lo que **NO se borra nunca**: los 18 recursos del seed
 (`user_demo_landing`), ni sus chunks en Qdrant, ni la fila del usuario
@@ -452,18 +555,33 @@ pero recomendable cambiarlas a virtual-keys reales de free-tier
 │                       DEMO                                     │
 │  (sub-tenant demo_xxx efímero TTL 15min + UNION con seed)      │
 │                                                                │
-│   Login → crea demo_xxx con expires_at = NOW + 15min           │
+│   Landing CTA → POST /auth/demo-start (sin password)           │
 │       ↓                                                        │
-│   /kb muestra UNION(demo_xxx, user_demo_landing) = 18 + tuyos  │
+│   create_demo_session():                                       │
+│     · INSERT demo_sessions (expires_at = NOW + 15min)          │
+│     · stagea 3 recursos efímeros (URLs sintéticas)             │
+│     · programa 4 eventos en demo_session_events                │
 │       ↓                                                        │
-│   Ingest URL → va a demo_xxx (sub-tenant aislado)              │
-│   Chat → resuelve key del USER demo, RAG sobre UNION           │
+│   Frontend redirige a /demo (timeline pedagógica)              │
 │       ↓                                                        │
-│   Cuota diaria per-IP enforced (5 ingests, 20 chats)           │
+│   Visitante navega libremente: /chat /kb /ingest /quarantine   │
+│   /expired (MISMA app que registered) + /demo (extra)          │
 │       ↓                                                        │
-│   A los 15min: cleanup task borra demo_xxx y todo su contenido │
+│   /kb muestra UNION(demo_xxx, user_demo_landing) = 18+3 staged │
+│   Ingest URL → va a demo_xxx aislado                           │
+│   Chat → keys pre-configuradas del demo, RAG sobre UNION       │
+│       ↓                                                        │
+│   ⏱️ +5min — cleanup loop dispara run_demo_audit_for_session:  │
+│     · 2 staged → cuarentena (motivo caducidad)                 │
+│     · 1 staged → expirado    (motivo auto_archive)             │
+│     · 3 notificaciones via outbox → notifier → bell del UI     │
+│   ⏱️ +10min — banner reminder "quedan 5min"                    │
+│       ↓                                                        │
+│   Cuota diaria per-IP (5 ingests, 20 chats) + cap global       │
+│       ↓                                                        │
+│   ⏱️ +15min — cleanup task borra demo_xxx en cascada           │
 │   (Qdrant + sesiones_chat + notificaciones + usuario_recursos  │
-│   + recursos huérfanos + fila demo_sessions)                   │
+│   + recursos huérfanos + demo_sessions → demo_session_events)  │
 │       ↓                                                        │
 │   user_demo_landing (los 18 seed) queda intacto                │
 └────────────────────────────────────────────────────────────────┘
@@ -492,15 +610,56 @@ pero recomendable cambiarlas a virtual-keys reales de free-tier
   visitante (5 ingests + 20 chats / día UTC).
 - **Cap global**: tope diario sumado de todos los visitantes del
   demo (50 ingests + 200 chats / día UTC) como red de seguridad.
+- **Recursos efímeros / staged**: 3 URLs sintéticas
+  (`https://demo.linkanvil.local/staged-<tenant>-<n>`) sembradas al
+  login del demo. Solo viven dentro del sub-tenant; sirven de
+  "actores" para las transiciones del minuto 5.
+- **Eventos programados**: 4 filas en `demo_session_events` con
+  `fires_at` calculado a partir del `created_at` de la sesión.
+  Tres `transition_*` al +5min + un `reminder_expiry_5min` al +10min.
+- **Audit intra-sesión**: `run_demo_audit_for_session(tenant_id, conn)`
+  en `src/data/audit_cron.py`. Paralelo al cron de producción pero
+  con precisión `TIMESTAMPTZ` y scoped por tenant.
+- **DemoHint**: componente React (`components/DemoHint.tsx`) que
+  renderiza un tooltip inline solo cuando `user.is_demo`. Sembrado en
+  headers de las vistas reales para añadir contexto sin tocar la
+  lógica.
+- **Línea temporal**: entrada de sidebar exclusiva del demo que
+  apunta a `/demo` — la vista pedagógica con SVG + tabla cronológica
+  + atajos.
 
 ---
 
 ## 🔍 Para investigar más
 
-- Migración SQL del schema: `infra/postgres/migrations/0009_demo_sessions.sql`
-- Lógica del sub-tenant: `src/api/database.py::create_demo_session`
+### Backend (Slice 5 + 6)
+
+- Schemas SQL:
+  - `infra/postgres/migrations/0009_demo_sessions.sql` (Slice 5 — tabla del sub-tenant)
+  - `infra/postgres/migrations/0010_demo_session_events.sql` (Slice 6 — eventos programados)
+- Lógica del sub-tenant + staging: `src/api/database.py::create_demo_session`
+- Helpers nuevos: `get_demo_session_events`, `get_sessions_with_due_events`
 - Validación TTL en cada request: `src/api/main.py::get_current_user`
+- Endpoints:
+  - `POST /auth/demo-start` (Slice 6 — entrada sin password)
+  - `GET /demo/timeline` (Slice 6 — payload del timeline para el frontend)
+  - `POST /admin/cleanup-demo-sessions` (cron externo de respaldo)
 - Cleanup background task: `src/api/main.py::_cleanup_demo_sessions_loop`
-- Endpoint admin: `POST /admin/cleanup-demo-sessions`
-- Banner countdown frontend: `src/frontend/app/(app)/layout.tsx::DemoCountdownBanner`
-- Catálogo de los 18 seed: `ops/seed_demo_user.py::SEED_RESOURCES`
+- Audit intra-sesión: `src/data/audit_cron.py::run_demo_audit_for_session`
+- Helper outbox extraído: `src/data/audit_cron.py::_emit_outbox_for_tenant`
+
+### Frontend (Slice 6.2)
+
+- Banner countdown: `src/frontend/components/DemoCountdownBanner.tsx`
+- Tooltip inline auto-condicional: `src/frontend/components/DemoHint.tsx`
+- Helper de arranque desde la landing: `src/frontend/lib/demo.ts::startDemoSession`
+- Vista pedagógica timeline: `src/frontend/app/(app)/demo/page.tsx`
+- Sidebar con NAV dinámico + chip "DEMO": `src/frontend/app/(app)/layout.tsx`
+- Headers de páginas con `<DemoHint>` sembrado:
+  `(app)/{chat,kb,quarantine,expired,ingest}/page.tsx`
+- CTAs de la landing: `(marketing)/_components/{Hero,CTABanner,Nav}.tsx`
+
+### Datos
+
+- Catálogo de los 18 seed canónicos: `ops/seed_demo_user.py::SEED_RESOURCES`
+- Configuración de los 3 recursos efímeros: `src/api/database.py::_STAGED_RECURSOS`

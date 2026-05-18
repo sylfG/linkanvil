@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
 import httpx
@@ -29,12 +30,15 @@ from src.api.auth import (
     verify_password,
     verify_token,
 )
+from src.api.crypto import encrypt_llm_key
+from src.api.llm_keys import invalidate_llm_key_cache, resolve_llm_key
 from src.observability.logging import configure_json_logging
 from src.api.models import (
     AuditPolicyRequest,
     ChatRequest,
     CfCookiesRequest,
     IngestRequest,
+    LLMKeysRequest,
     LoginRequest,
     MessageIn,
     MessageOut,
@@ -63,6 +67,28 @@ _QDRANT_POINT_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 def _qdrant_point_id(recurso_id: str, tenant_id: str) -> str:
     return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}"))
+
+
+def _model_kind(model: str) -> str:
+    """Mapea el alias del modelo del request (``cerebro-lite|pro|...``)
+    a la kind de virtual key (``lite``/``pro``). Cualquier alias que
+    contenga 'pro' va a la pro-key; el resto (incluyendo embeddings,
+    lite, custom aliases) cae a 'lite'. Las embeddings tienen su
+    propia kind y se resuelven directamente — no pasa por aquí."""
+    return "pro" if "pro" in model.lower() else "lite"
+
+
+async def _resolve_tenant_key(tenant_id: str, kind: str) -> str:
+    """Wrapper que abre conn del pool y delega a resolve_llm_key.
+
+    Levanta HTTPException 402 si el tenant no es demo y no tiene
+    keys configuradas. El cache TTL 60s vive dentro del módulo
+    ``llm_keys`` — sucesivas llamadas para el mismo tenant no
+    repegan a BD.
+    """
+    p = await db.get_pool()
+    async with p.acquire() as conn:
+        return await resolve_llm_key(conn, tenant_id, kind)
 
 _redis: Optional[aioredis.Redis] = None
 _http: Optional[httpx.AsyncClient] = None
@@ -267,6 +293,39 @@ async def _rate_limit(key: str, limit: int, window_seconds: int) -> None:
         raise HTTPException(429, "Too Many Requests")
 
 
+async def _demo_daily_quota(user: dict, op: str, limit: int) -> None:
+    """Cuota diaria adicional para el tenant demo (migración 0008).
+
+    Aplica solo si ``user["is_demo"]``. La clave Redis incluye la fecha
+    UTC (YYYY-MM-DD) para que la cuota se resetee a medianoche. El TTL
+    de 86400s + 60s de margen asegura que un día queda cubierto incluso
+    si la primera request del día llega justo a las 23:59.
+
+    El mensaje del 429 es específico para que el frontend pueda
+    distinguir cuota-diaria-de-demo de los rate-limits por minuto.
+    """
+    if not user.get("is_demo") or _redis is None:
+        return
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"rl:demo:{op}:{today}"
+    count = await _redis.incr(key)
+    if count == 1:
+        # 86460s = 24h + 1 minuto de margen.
+        await _redis.expire(key, 86460)
+    if count > limit:
+        raise HTTPException(
+            429,
+            {
+                "error": "demo_daily_quota_exceeded",
+                "op": op,
+                "message": (
+                    "El demo público alcanzó su límite diario. "
+                    "Regístrate y configura tus claves para uso ilimitado."
+                ),
+            },
+        )
+
+
 async def rate_limit_login(request: Request) -> None:
     await _rate_limit(f"rl:login:{_client_ip(request)}", limit=5, window_seconds=60)
 
@@ -275,8 +334,34 @@ async def rate_limit_register(request: Request) -> None:
     await _rate_limit(f"rl:register:{_client_ip(request)}", limit=3, window_seconds=3600)
 
 
-async def rate_limit_chat(user: dict = Depends(get_current_user)) -> dict:
+async def requires_byok(user: dict = Depends(get_current_user)) -> dict:
+    """Guard para endpoints que consumen tokens de LLM (migración 0008).
+
+    - Demo (``is_demo=true``): pasa siempre — usa las virtual-keys
+      pre-configuradas por el owner en el seed. Quien acota su gasto
+      son las cuotas diarias en ``_demo_daily_quota``.
+    - Registrado con ``llm_keys_configured=true``: pasa.
+    - Registrado sin keys: 402 con CTA al modal de configuración.
+    """
+    if user.get("is_demo"):
+        return user
+    if not user.get("llm_keys_configured"):
+        raise HTTPException(
+            402,
+            {
+                "error": "byok_required",
+                "message": (
+                    "Configura tus claves de LLM en el perfil para usar "
+                    "el chat o ingestar URLs."
+                ),
+            },
+        )
+    return user
+
+
+async def rate_limit_chat(user: dict = Depends(requires_byok)) -> dict:
     await _rate_limit(f"rl:chat:{user['tenant_id']}", limit=30, window_seconds=60)
+    await _demo_daily_quota(user, op="chat", limit=20)
     return user
 
 
@@ -391,6 +476,10 @@ async def me(user=Depends(get_current_user)):
         "tenant_id": user["tenant_id"],
         "telegram_bot_active": user["telegram_bot_active"],
         "created_at": user["created_at"],
+        # Migración 0008: el frontend usa estos dos campos para decidir
+        # qué mostrar en el ProfileModal (card BYOK + banner de fricción).
+        "is_demo": bool(user.get("is_demo", False)),
+        "llm_keys_configured": bool(user.get("llm_keys_configured", False)),
     }
     if raw_policy is not None:
         kwargs["audit_policy"] = raw_policy
@@ -466,6 +555,88 @@ async def update_audit_policy(
     except Exception:
         pass
     return {"status": "ok", "policy": req.policy}
+
+
+@app.put("/profile/llm-keys")
+async def update_llm_keys_endpoint(
+    req: LLMKeysRequest,
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
+):
+    """BYOK per-tenant (migración 0008).
+
+    Acepta hasta 3 virtual-keys de LiteLLM (lite/embeddings/pro). Cada
+    key se valida pegándole un ``GET /v1/models`` antes de cifrar y
+    guardar — si LiteLLM la rechaza con 401/403, devolvemos 400 con
+    ``kind`` indicando qué key falló.
+
+    PATCH semántico: campos ``None`` o vacíos NO tocan la columna
+    correspondiente en BD (permite editar una sola key sin reenviar
+    las otras dos).
+
+    El demo (is_demo=true) no puede modificar sus claves — vienen
+    pre-configuradas por el owner y son la garantía de free-tier
+    para los visitantes. Devolvemos 403 con ``demo_account_locked``.
+    """
+    if user.get("is_demo"):
+        raise HTTPException(
+            403,
+            {
+                "error": "demo_account_locked",
+                "message": (
+                    "Esta es una cuenta demo compartida. Las claves "
+                    "vienen pre-configuradas y no pueden cambiarse."
+                ),
+            },
+        )
+
+    # Validar cada key NO-None contra LiteLLM antes de cifrar.
+    plaintexts = {
+        "lite": req.key_lite,
+        "embeddings": req.key_embeddings,
+        "pro": req.key_pro,
+    }
+    encrypted: dict[str, Optional[str]] = {"lite": None, "embeddings": None, "pro": None}
+    for kind, plaintext in plaintexts.items():
+        if plaintext is None:
+            continue
+        try:
+            r = await _http.get(
+                f"{LITELLM_URL}/v1/models",
+                headers={"Authorization": f"Bearer {plaintext}"},
+                timeout=5.0,
+            )
+        except Exception as exc:
+            logger.warning("LiteLLM /v1/models unreachable validating %s: %s", kind, exc)
+            raise HTTPException(
+                400,
+                {"error": "litellm_unreachable", "kind": kind},
+            )
+        if r.status_code != 200:
+            raise HTTPException(
+                400,
+                {
+                    "error": "invalid_key",
+                    "kind": kind,
+                    "litellm_status": r.status_code,
+                },
+            )
+        encrypted[kind] = encrypt_llm_key(plaintext)
+
+    await db.update_llm_keys(
+        str(user["id"]),
+        encrypted["lite"],
+        encrypted["embeddings"],
+        encrypted["pro"],
+    )
+    # Forzar relectura en el cache de resolve_llm_key (TTL 60s podría
+    # devolver datos viejos sin esto, frustrando el "guardar y probar").
+    invalidate_llm_key_cache(user["tenant_id"])
+
+    return {
+        "status": "ok",
+        "updated": [kind for kind, v in plaintexts.items() if v is not None],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +838,11 @@ async def delete_resource(
 # ---------------------------------------------------------------------------
 
 @app.post("/ingest")
-async def ingest(req: IngestRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
+async def ingest(req: IngestRequest, user=Depends(requires_byok), _csrf=Depends(verify_csrf)):
+    # Migración 0008: cuota diaria adicional para el demo. El registered
+    # ya pasó el guard de requires_byok — si llegó aquí tiene BYOK.
+    await _demo_daily_quota(user, op="ingest", limit=5)
+
     payload = {
         "url": req.url,
         "tenant_id": user["tenant_id"],
@@ -754,8 +929,14 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
         )
         if last_user:
             try:
+                # Migración 0008: resolvemos la virtual-key del tenant
+                # para embeddings (kind="embeddings"). Demo usa sus keys
+                # pre-configuradas; registered con BYOK usa las suyas.
+                tenant_emb_key = await _resolve_tenant_key(
+                    user["tenant_id"], "embeddings"
+                )
                 headers = {
-                    "Authorization": f"Bearer {LITELLM_KEY}",
+                    "Authorization": f"Bearer {tenant_emb_key}",
                     "Content-Type": "application/json",
                 }
                 er = await _http.post(
@@ -859,7 +1040,12 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
         req.model, req.use_rag, len(hits), len(context_block), len(llm_msgs),
     )
 
-    litellm_headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+    # Migración 0008: resolvemos la virtual-key per-tenant según el alias
+    # del modelo del request (cerebro-pro → kind=pro, resto → lite).
+    tenant_chat_key = await _resolve_tenant_key(
+        user["tenant_id"], _model_kind(req.model)
+    )
+    litellm_headers = {"Authorization": f"Bearer {tenant_chat_key}", "Content-Type": "application/json"}
 
     rag_sources = []
     if req.use_rag and hits:

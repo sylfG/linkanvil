@@ -77,6 +77,39 @@ async def update_telegram_bot(user_id: str, bot_token: str, token_hash: str) -> 
     return dict(row)
 
 
+async def update_llm_keys(
+    user_id: str,
+    encrypted_lite: Optional[str],
+    encrypted_embeddings: Optional[str],
+    encrypted_pro: Optional[str],
+) -> None:
+    """Actualiza las virtual-keys LiteLLM cifradas del usuario (migración
+    0008). Aplica PATCH semántico: cada parámetro None deja la columna
+    intacta; el llm_keys_configured se recalcula en función del estado
+    final tras el merge.
+
+    El cifrado lo hace el caller (``encrypt_llm_key`` en ``crypto.py``);
+    aquí solo guardamos el ciphertext en BD.
+    """
+    p = await get_pool()
+    await p.execute(
+        """
+        UPDATE usuarios
+           SET llm_key_lite       = COALESCE($2, llm_key_lite),
+               llm_key_embeddings = COALESCE($3, llm_key_embeddings),
+               llm_key_pro        = COALESCE($4, llm_key_pro),
+               llm_keys_configured = (
+                   COALESCE($2, llm_key_lite)       IS NOT NULL
+                OR COALESCE($3, llm_key_embeddings) IS NOT NULL
+                OR COALESCE($4, llm_key_pro)        IS NOT NULL
+               ),
+               updated_at = NOW()
+         WHERE id = $1::uuid
+        """,
+        user_id, encrypted_lite, encrypted_embeddings, encrypted_pro,
+    )
+
+
 # ── recursos (KB) ─────────────────────────────────────────────────────────────
 
 async def get_resources(

@@ -64,10 +64,45 @@ class UserResponse(BaseModel):
     # recursos pasados según class × valor_archivistico. Default = preset
     # Equilibrado. 6 keys: {evento_pasado|referencia_pasada}_{alto|medio|nulo}.
     audit_policy: dict[str, str] = Field(default_factory=lambda: dict(_DEFAULT_POLICY))
+    # Migración 0008: BYOK + cuenta demo.
+    # `is_demo=true` desactiva el PUT /profile/llm-keys y activa cuotas
+    # diarias. `llm_keys_configured=true` cuando hay al menos una virtual
+    # key cifrada en BD — el frontend lo usa para decidir si mostrar el
+    # banner "Sin claves, no puedes ingestar/chatear" o no.
+    is_demo: bool = False
+    llm_keys_configured: bool = False
 
 
 class TelegramBotRequest(BaseModel):
     bot_token: str
+
+
+class LLMKeysRequest(BaseModel):
+    """Payload de PUT /profile/llm-keys (migración 0008).
+
+    Cada campo es opcional — el endpoint aplica PATCH semántico, sólo
+    actualiza los keys no-None. Esto permite editar una key sin tener
+    que reenviar las otras dos. Si los tres llegan None, no hay efecto.
+
+    Las keys son virtual-keys emitidas por el LiteLLM proxy del owner
+    (no API keys de OpenAI/Anthropic). El validador rechaza strings
+    vacíos y trims whitespace.
+    """
+    key_lite: Optional[str] = None
+    key_embeddings: Optional[str] = None
+    key_pro: Optional[str] = None
+
+    @field_validator("key_lite", "key_embeddings", "key_pro")
+    @classmethod
+    def _trim_or_none(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 256:
+            raise ValueError("LLM key demasiado larga (máx 256 chars)")
+        return v
 
 
 class AuditPolicyRequest(BaseModel):

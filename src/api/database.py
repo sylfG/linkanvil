@@ -41,24 +41,48 @@ _STAGED_RECURSOS = [
     {
         "titulo": "Conferencia DevOps Barcelona 2026",
         "resumen": (
-            "Programa de la conferencia DevOps Barcelona 2026 con sesiones "
-            "técnicas sobre observabilidad, GitOps y plataformas internas."
+            "Programa oficial de la Conferencia DevOps Barcelona 2026, "
+            "celebrada los días 18 y 19 de junio de 2026 en el Palau de "
+            "Congressos de Catalunya. Tres tracks paralelos: "
+            "Observabilidad (OpenTelemetry, eBPF, métricas de SRE), "
+            "Plataformas Internas (backstage, golden paths, IDP) y "
+            "Seguridad de la cadena de suministro (SLSA, sigstore, SBOM). "
+            "Keynotes: Charity Majors (Honeycomb), Kelsey Hightower (ex-Google) "
+            "y Liz Fong-Jones (Honeycomb). Más de 60 ponencias y 8 talleres "
+            "prácticos. Entrada: 450€ early-bird hasta el 1 de marzo. "
+            "Coorganizada por la AETIC y la comunidad DevOps Barcelona."
         ),
         "categoria": "evento",
     },
     {
         "titulo": "Webinar: Patrones RAG en producción",
         "resumen": (
-            "Webinar sobre patrones de Retrieval-Augmented Generation en "
-            "producción: chunking semántico, evaluación, observabilidad."
+            "Webinar técnico de 90 minutos sobre cómo desplegar pipelines "
+            "de Retrieval-Augmented Generation en producción sin quemar "
+            "presupuesto en LLM. Cubre: chunking semántico vs naive "
+            "splitting, estrategias de re-ranking (Cohere rerank-3, "
+            "ColBERT), evaluación con Ragas y TruLens, observabilidad de "
+            "embeddings con Arize Phoenix, y el patrón de fallback a "
+            "conocimiento general cuando el RAG no encuentra hits relevantes. "
+            "Ponente: Jerry Liu (LlamaIndex). 14 de febrero 2026 a las "
+            "17:00 CET, retransmisión gratuita en YouTube y registro "
+            "previo para Q&A en vivo."
         ),
-        "categoria": "evento",
+        "categoria": "webinar",
     },
     {
         "titulo": "Hackathon LinkAnvil — edición invierno",
         "resumen": (
-            "Crónica del hackathon interno de LinkAnvil con retrospectiva, "
-            "métricas y aprendizajes. Material de archivo de alto valor."
+            "Crónica del hackathon interno de LinkAnvil celebrado en diciembre "
+            "de 2025. 48 horas continuas, 12 equipos, premio al mejor proyecto "
+            "para 'Smart Quarantine': un sistema que predice qué recursos "
+            "irán a cuarentena en los próximos 7 días usando features "
+            "temporales (fecha_caducidad, último acceso, score del LLM). "
+            "Métricas: 850 commits, 47 PRs mergeados, reducción del 30% en "
+            "el tiempo de auditoría manual. Lecciones aprendidas: prototipar "
+            "con datos reales (no synthetic seed), tests de regresión sobre "
+            "el cron desde el día 1, y comunicar las transiciones del "
+            "lifecycle con copy menos técnico para el usuario final."
         ),
         "categoria": "hackathon",
     },

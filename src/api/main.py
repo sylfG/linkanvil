@@ -73,6 +73,122 @@ def _qdrant_point_id(recurso_id: str, tenant_id: str) -> str:
     return str(uuid.uuid5(_QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}"))
 
 
+def _qdrant_chunk_point_id(recurso_id: str, tenant_id: str, chunk_idx: int) -> str:
+    """Mismo derivado que `src/data/embedder_worker.py::_qdrant_chunk_point_id`.
+    Necesario para que los chunks inyectados desde el staging del demo
+    convivan con los que pueda generar el embedder normal sin colisión."""
+    return str(uuid.uuid5(
+        _QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}:chunk:{chunk_idx}",
+    ))
+
+
+async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
+    """Slice 6.4 — Indexa en Qdrant los 3 recursos sintéticos staged
+    al crear una sesión demo.
+
+    Sin esto, los staged viven solo en `cerebro.recursos` + `usuario_recursos`
+    pero el RAG no encuentra chunks para ellos en `cerebro_chunks`. El
+    visitante ve "Conferencia DevOps Barcelona 2026" en su KB pero al
+    preguntar en el chat el modelo responde "no tengo información"
+    porque no había nada que vectorizar.
+
+    Pipeline:
+      1. Selecciona los recursos linkeados al sub-tenant demo.
+      2. Para cada uno, construye un chunk con título + resumen.
+      3. Pide embedding a LiteLLM con la virtual-key del demo user.
+      4. Upsert al collection `cerebro_chunks` con el mismo schema de
+         payload que usa el embedder real (recurso_id, tenant_id, url,
+         title, chunk_idx, chunk_text).
+
+    Best-effort: cualquier fallo (LiteLLM, Qdrant) se loguea y devuelve
+    el contador parcial. La sesión demo sigue siendo usable incluso si
+    el RAG queda incompleto.
+    """
+    if _http is None:
+        return 0
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+        )
+        rows = await conn.fetch(
+            """
+            SELECT r.id::text AS id, r.titulo, r.resumen, r.url
+              FROM recursos r
+              JOIN usuario_recursos ur ON ur.recurso_id = r.id
+             WHERE ur.tenant_id = $1
+            """,
+            tenant_id,
+        )
+    if not rows:
+        return 0
+
+    try:
+        emb_key = await _resolve_user_key(user_id, "embeddings")
+    except Exception as exc:
+        logger.warning(
+            "demo staging RAG: no se pudo resolver embeddings key: %s", exc,
+        )
+        return 0
+
+    indexed = 0
+    for r in rows:
+        chunk_text = f"{r['titulo']}\n\n{r['resumen'] or ''}".strip()
+        try:
+            er = await _http.post(
+                f"{LITELLM_URL}/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {emb_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "cerebro-embeddings",
+                    "input": chunk_text,
+                    "input_type": "passage",
+                },
+                timeout=15.0,
+            )
+            if er.status_code != 200:
+                logger.warning(
+                    "demo staging RAG: embedding %s falló %d",
+                    r["id"], er.status_code,
+                )
+                continue
+            vector = er.json()["data"][0]["embedding"]
+            point = {
+                "id": _qdrant_chunk_point_id(r["id"], tenant_id, 0),
+                "vector": vector,
+                "payload": {
+                    "tenant_id": tenant_id,
+                    "recurso_id": r["id"],
+                    "url": r["url"],
+                    "title": r["titulo"],
+                    "chunk_idx": 0,
+                    "chunk_text": chunk_text,
+                },
+            }
+            qr = await _http.put(
+                f"{QDRANT_URL}/collections/cerebro_chunks/points?wait=true",
+                json={"points": [point]},
+                timeout=10.0,
+            )
+            if qr.status_code in (200, 201):
+                indexed += 1
+            else:
+                logger.warning(
+                    "demo staging RAG: qdrant upsert falló %d", qr.status_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "demo staging RAG: error indexando %s: %s", r["id"], exc,
+            )
+    logger.info(
+        "demo staging RAG: %d/%d chunks indexados (tenant=%s)",
+        indexed, len(rows), tenant_id,
+    )
+    return indexed
+
+
 def _model_kind(model: str) -> str:
     """Mapea el alias del modelo del request (``cerebro-lite|pro|...``)
     a la kind de virtual key (``lite``/``pro``). Cualquier alias que
@@ -817,6 +933,16 @@ async def demo_start(
         effective_tenant, ip, session["expires_at"].isoformat(),
     )
 
+    # Slice 6.4 — indexa los 3 recursos staged en Qdrant cerebro_chunks
+    # para que sean buscables vía RAG. Best-effort: si falla, la sesión
+    # sigue siendo válida pero el chat no encontrará info sobre estos
+    # recursos específicos.
+    try:
+        indexed = await _index_staged_for_rag(str(user["id"]), effective_tenant)
+        logger.info("demo staged indexed for RAG: %d/3 (tenant=%s)", indexed, effective_tenant)
+    except Exception:
+        logger.exception("demo staging RAG: indexing failed (continuing)")
+
     # Marca per-IP por día UTC. TTL 24h cubre cualquier zona horaria
     # razonable; el día siguiente la IP queda libre. La clave guarda
     # el tenant_id para que el branch "session viva" de arriba pueda
@@ -1356,6 +1482,41 @@ async def delete_resource(
 ):
     result = await db.delete_recurso_for_tenant(user["tenant_id"], recurso_id)
     if not result:
+        # Slice 6.4 — diagnóstico amable: si el recurso existe pero
+        # pertenece al seed compartido (`user_demo_landing`) y el caller
+        # es una sesión demo, devolvemos 403 con un copy específico que
+        # el frontend puede pintar como toast — mucho más útil que el
+        # 404 genérico que sugiere "no existe".
+        pool = await db.get_pool()
+        owner_tenant: Optional[str] = None
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT tenant_id
+                      FROM usuario_recursos
+                     WHERE recurso_id = $1::uuid
+                     LIMIT 1
+                    """,
+                    recurso_id,
+                )
+                if row:
+                    owner_tenant = row["tenant_id"]
+        except Exception:
+            owner_tenant = None
+        if owner_tenant == db.DEMO_SEED_TENANT_ID and _is_demo_session(user):
+            raise HTTPException(
+                403,
+                {
+                    "error": "demo_seed_immutable",
+                    "message": (
+                        "Este recurso forma parte del catálogo seed compartido "
+                        "del demo y no se puede eliminar desde una sesión "
+                        "efímera. Sí puedes eliminar los 3 recursos sintéticos "
+                        "que se crean al iniciar tu sesión."
+                    ),
+                },
+            )
         raise HTTPException(404, "Recurso no encontrado")
     # Si la fila global desapareció, limpiamos también el punto en Qdrant.
     # Esto vive fuera de la transacción SQL para no acoplar el commit a un

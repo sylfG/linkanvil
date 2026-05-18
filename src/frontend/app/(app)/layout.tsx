@@ -6,8 +6,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   MessageSquare, Link2, BookOpen, AlertTriangle, CalendarX,
   LogOut, Menu, X, Plus, Trash2,
-  User, Bot, CheckCircle2, AlertCircle, Loader2, Key, Copy, Check,
-  ShieldCheck, ShieldAlert, Shield, ShieldOff,
+  User, Bot, CheckCircle2, AlertCircle, Loader2, Key, KeyRound, Copy, Check,
+  ShieldCheck, ShieldAlert, Shield, ShieldOff, Lock, Sparkles,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import {
@@ -129,6 +129,51 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // BYOK (migración 0008): 3 virtual-keys de LiteLLM por tenant.
+  // PATCH semántico — los campos vacíos al guardar no tocan la columna en BD.
+  const [keyLite, setKeyLite] = useState("");
+  const [keyEmbeddings, setKeyEmbeddings] = useState("");
+  const [keyPro, setKeyPro] = useState("");
+  const [savingKeys, setSavingKeys] = useState(false);
+  const [keysResult, setKeysResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  async function handleSaveLLMKeys(e: React.FormEvent) {
+    e.preventDefault();
+    if (savingKeys) return;
+    const payload: Record<string, string> = {};
+    if (keyLite.trim()) payload.key_lite = keyLite.trim();
+    if (keyEmbeddings.trim()) payload.key_embeddings = keyEmbeddings.trim();
+    if (keyPro.trim()) payload.key_pro = keyPro.trim();
+    if (Object.keys(payload).length === 0) {
+      setKeysResult({ ok: false, msg: "Rellena al menos una clave." });
+      return;
+    }
+    setSavingKeys(true);
+    setKeysResult(null);
+    try {
+      const res = await apiCall<any>(
+        "/profile/llm-keys",
+        { method: "PUT", body: JSON.stringify(payload) },
+        token,
+      );
+      setKeysResult({
+        ok: true,
+        msg: `Claves guardadas (${(res.updated ?? []).join(", ")}).`,
+      });
+      const me = await apiCall<any>("/auth/me", {}, token);
+      if (token) setAuth(token, me);
+      setKeyLite("");
+      setKeyEmbeddings("");
+      setKeyPro("");
+    } catch (err: any) {
+      // err.message viene del apiCall — intentamos detallar si es 402/400/403.
+      setKeysResult({ ok: false, msg: err.message ?? "Error guardando las claves." });
+    } finally {
+      setSavingKeys(false);
+      setTimeout(() => setKeysResult(null), 5000);
+    }
+  }
+
   return (
     <>
       {/* backdrop */}
@@ -219,6 +264,106 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
             </form>
           </div>
 
+          {/* Claves de LLM — BYOK (migración 0008) */}
+          <div className="bg-card border border-border rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <KeyRound className="w-4 h-4 text-accent-light" />
+              <span className="font-semibold text-sm">Claves de LLM</span>
+              {user?.is_demo ? (
+                <span className="ml-auto text-[10px] bg-accent/15 text-accent-light border border-accent/30 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <Lock className="w-2.5 h-2.5" /> Demo
+                </span>
+              ) : user?.llm_keys_configured ? (
+                <span className="ml-auto text-[10px] bg-green-800/30 text-green-300 border border-green-700/30 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <CheckCircle2 className="w-2.5 h-2.5" /> Configurada
+                </span>
+              ) : (
+                <span className="ml-auto text-[10px] bg-amber-900/30 text-amber-300 border border-amber-700/40 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <AlertCircle className="w-2.5 h-2.5" /> Sin configurar
+                </span>
+              )}
+            </div>
+
+            {user?.is_demo ? (
+              <div className="bg-accent/8 border border-accent/20 rounded-lg p-3 flex gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-accent-light flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-slate-200 leading-relaxed">
+                  Cuenta demo compartida. Las virtual-keys vienen pre-configuradas
+                  con free-tier limitado y no pueden modificarse desde aquí.
+                  Hay cuota diaria: 20 chats + 5 ingests / día.
+                  <br />
+                  <span className="text-muted">
+                    Regístrate para usar tus propias claves sin límite.
+                  </span>
+                </p>
+              </div>
+            ) : (
+              <>
+                <p className="text-xs text-muted mb-3 leading-relaxed">
+                  Virtual-keys emitidas por tu LiteLLM proxy. Una basta —
+                  se reusa como fallback para los otros aliases. Las claves
+                  se cifran con Fernet antes de guardarse en la BD.
+                </p>
+
+                {!user?.llm_keys_configured && (
+                  <div className="mb-3 p-2.5 rounded-lg bg-amber-900/20 border border-amber-700/40 flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-300 flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-amber-200 leading-relaxed">
+                      Sin claves configuradas no puedes ingestar URLs ni
+                      chatear. Configura al menos una para empezar.
+                    </p>
+                  </div>
+                )}
+
+                {keysResult && (
+                  <div
+                    className={`mb-3 p-2.5 rounded-lg flex items-center gap-2 text-xs ${
+                      keysResult.ok
+                        ? "bg-green-900/20 border border-green-700/30 text-green-300"
+                        : "bg-red-900/20 border border-red-700/30 text-red-300"
+                    }`}
+                  >
+                    {keysResult.ok ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    )}
+                    {keysResult.msg}
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveLLMKeys} className="space-y-2">
+                  <LLMKeyInput
+                    label="cerebro-lite"
+                    value={keyLite}
+                    onChange={setKeyLite}
+                    placeholder="sk-litellm-virtual-..."
+                  />
+                  <LLMKeyInput
+                    label="cerebro-embeddings"
+                    value={keyEmbeddings}
+                    onChange={setKeyEmbeddings}
+                    placeholder="(opcional — reusa la de lite si vacío)"
+                  />
+                  <LLMKeyInput
+                    label="cerebro-pro"
+                    value={keyPro}
+                    onChange={setKeyPro}
+                    placeholder="(opcional — reusa la de lite si vacío)"
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingKeys}
+                    className="w-full flex items-center justify-center gap-1.5 bg-accent hover:bg-accent-hover disabled:opacity-40 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                  >
+                    {savingKeys ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                    {savingKeys ? "Validando con LiteLLM..." : "Guardar claves"}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+
           {/* Auditoría de recursos (migración 0007) */}
           <div className="bg-card border border-border rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1">
@@ -293,6 +438,42 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
     </>
   );
 }
+
+// Input compacto para una virtual-key. type=password para que no se
+// vea en pantalla; el usuario la pega y olvida. La key real solo se
+// muestra cuando el server confirma que se guardó (via toast verde).
+function LLMKeyInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-[11px] text-muted mb-1 font-mono">
+        {label}
+      </label>
+      <div className="relative">
+        <Key className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted pointer-events-none" />
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="off"
+          spellCheck={false}
+          className="w-full bg-surface border border-border rounded-lg pl-7 pr-3 py-1.5 text-xs text-slate-100 placeholder-muted outline-none focus:border-accent-light transition-colors font-mono"
+        />
+      </div>
+    </div>
+  );
+}
+
 
 // Componente compacto para el modal lateral (3 selects por grupo).
 function ModalPolicyGroup({

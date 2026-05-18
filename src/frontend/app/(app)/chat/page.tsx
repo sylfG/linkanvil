@@ -253,6 +253,29 @@ export default function ChatPage() {
         res = await fireChat(rotated);
       }
 
+      // Migración 0008: 402 BYOK required (usuario registrado sin keys
+      // configuradas) y 429 demo_daily_quota_exceeded — los dos llegan
+      // como JSON con { detail: { error, message } }. Surface user-friendly.
+      if (res.status === 402 || res.status === 429) {
+        let detail: any = null;
+        try {
+          detail = (await res.json())?.detail ?? null;
+        } catch {
+          /* response body wasn't JSON */
+        }
+        if (detail?.error === "byok_required") {
+          throw new Error(
+            "Necesitas configurar tus claves de LLM en Perfil → Claves de LLM antes de chatear.",
+          );
+        }
+        if (detail?.error === "demo_daily_quota_exceeded") {
+          throw new Error(
+            "El demo público alcanzó su límite diario (20 chats). Regístrate para uso ilimitado con tus propias claves.",
+          );
+        }
+        throw new Error(detail?.message || `HTTP ${res.status}`);
+      }
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body!.getReader();
       const dec = new TextDecoder();
@@ -307,11 +330,17 @@ export default function ChatPage() {
       if (err.name === "AbortError") {
         aborted = true;
       } else {
+        // Si el error trae mensaje propio (BYOK/cuota/etc.) lo respetamos.
+        // Si no, fallback genérico apuntando al stack LiteLLM.
+        const friendlyMsg =
+          typeof err?.message === "string" && err.message.length > 0
+            ? `⚠️ ${err.message}`
+            : "⚠️ Error al conectar con el modelo. Comprueba que LiteLLM esté activo.";
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
             role: "assistant",
-            content: "⚠️ Error al conectar con el modelo. Comprueba que LiteLLM esté activo.",
+            content: friendlyMsg,
           };
           return updated;
         });

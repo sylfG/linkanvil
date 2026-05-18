@@ -77,7 +77,20 @@ export interface User {
   // devuelve las 6 keys, pero lo marcamos opcional para tolerar sesiones
   // de antes del deploy.
   audit_policy?: AuditPolicy;
+  // Migración 0008: BYOK + flag demo.
+  // - is_demo=true → ProfileModal oculta el formulario BYOK y muestra
+  //   un info-box "cuenta compartida".
+  // - llm_keys_configured=false → banner rojo "Sin claves no puedes
+  //   ingestar/chatear". El chat además mapea 402 a este banner.
+  is_demo?: boolean;
+  llm_keys_configured?: boolean;
 }
+
+// Las 3 kinds de virtual-key que el backend espera en PUT /profile/llm-keys.
+// Cualquier subset es válido (PATCH semántico). Si solo configuras `lite`,
+// el backend la reusa para embeddings y pro vía fallback en resolve_llm_key.
+export const LLM_KEY_KINDS = ["lite", "embeddings", "pro"] as const;
+export type LLMKeyKind = (typeof LLM_KEY_KINDS)[number];
 
 interface AuthState {
   token: string | null;

@@ -3,10 +3,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Brain, LogIn, Copy, Check, Sparkles } from "lucide-react";
+import { LogIn, Copy, Check, Sparkles } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { copyToClipboard } from "@/lib/clipboard";
+import Logo from "@/components/Logo";
 
 // Credenciales del demo público. Coinciden con el seed inicial
 // (ops/seed_demo_user.py). Cualquiera puede usarlas para probar el
@@ -61,8 +62,8 @@ export default function LoginPage() {
       className="w-full max-w-md"
     >
       <div className="flex flex-col items-center mb-8 gap-2">
-        <Link href="/" className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center hover:bg-accent/30 transition-colors">
-          <Brain className="w-7 h-7 text-accent-light" />
+        <Link href="/" className="rounded-xl overflow-hidden hover:opacity-90 transition-opacity">
+          <Logo size={56} priority className="rounded-xl" />
         </Link>
         <h1 className="text-2xl font-bold text-slate-100">LinkAnvil</h1>
         <p className="text-muted text-sm">Tu segundo cerebro autónomo</p>

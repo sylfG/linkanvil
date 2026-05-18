@@ -5,7 +5,9 @@ import Problem from "./_components/Problem";
 import Solution from "./_components/Solution";
 import HowItWorks from "./_components/HowItWorks";
 import Features from "./_components/Features";
+import NightlyAudit from "./_components/NightlyAudit";
 import UseCases from "./_components/UseCases";
+import RealExamples from "./_components/RealExamples";
 import CTABanner from "./_components/CTABanner";
 import FAQ from "./_components/FAQ";
 import Footer from "./_components/Footer";
@@ -19,12 +21,15 @@ export const metadata: Metadata = {
     description:
       "Tu base de conocimiento personal, navegable por significado. Prueba el demo gratis.",
     type: "website",
+    images: ["/logo-dark.png"],
   },
 };
 
-// La landing es la cara pública de LinkAnvil. Ensambla 8 secciones más
-// nav fijo y footer. Cada sección es server-renderable salvo donde un
-// hook cliente (framer-motion, useEmblaCarousel, useAuthStore) lo
+// La landing es la cara pública de LinkAnvil. Ensambla 10 secciones:
+//   Hero → Problem → Solution → HowItWorks → Features → NightlyAudit
+//   → UseCases → RealExamples → CTABanner → FAQ
+// más nav fijo y footer. Cada sección es server-renderable salvo donde
+// un hook cliente (framer-motion, useEmblaCarousel, useAuthStore) lo
 // requiere — ahí los componentes hijos llevan "use client".
 export default function MarketingPage() {
   return (
@@ -36,7 +41,9 @@ export default function MarketingPage() {
         <Solution />
         <HowItWorks />
         <Features />
+        <NightlyAudit />
         <UseCases />
+        <RealExamples />
         <CTABanner />
         <FAQ />
       </main>

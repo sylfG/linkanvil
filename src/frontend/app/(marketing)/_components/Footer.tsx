@@ -35,7 +35,7 @@ export default function Footer() {
                   href="/login"
                   className="text-muted hover:text-slate-200 transition-colors"
                 >
-                  Probar demo
+                  Iniciar sesión
                 </Link>
               </li>
               <li>

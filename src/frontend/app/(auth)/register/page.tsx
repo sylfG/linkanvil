@@ -3,9 +3,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Brain, UserPlus } from "lucide-react";
+import { UserPlus } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import Logo from "@/components/Logo";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -51,9 +52,9 @@ export default function RegisterPage() {
       className="w-full max-w-md"
     >
       <div className="flex flex-col items-center mb-8 gap-2">
-        <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
-          <Brain className="w-7 h-7 text-accent-light" />
-        </div>
+        <Link href="/" className="rounded-xl overflow-hidden hover:opacity-90 transition-opacity">
+          <Logo size={56} priority className="rounded-xl" />
+        </Link>
         <h1 className="text-2xl font-bold text-slate-100">LinkAnvil</h1>
         <p className="text-muted text-sm">Crea tu cuenta gratuita</p>
       </div>

@@ -4,11 +4,12 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Brain, MessageSquare, Link2, BookOpen, AlertTriangle, CalendarX,
+  MessageSquare, Link2, BookOpen, AlertTriangle, CalendarX,
   LogOut, Menu, X, Plus, Trash2,
   User, Bot, CheckCircle2, AlertCircle, Loader2, Key, Copy, Check,
   ShieldCheck, ShieldAlert, Shield, ShieldOff,
 } from "lucide-react";
+import Logo from "@/components/Logo";
 import {
   useAuthStore,
   AUDIT_PRESETS,
@@ -402,9 +403,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-5 py-5 border-b border-border flex-shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-accent/20 flex items-center justify-center flex-shrink-0">
-          <Brain className="w-5 h-5 text-accent-light" />
-        </div>
+        <Logo size={32} className="rounded-md flex-shrink-0" />
         <span className="font-bold text-slate-100 flex-1">LinkAnvil</span>
         <NotificationsBell token={token} />
       </div>
@@ -561,7 +560,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Mobile header */}
       <div className="md:hidden fixed top-0 inset-x-0 z-40 bg-surface border-b border-border flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <Brain className="w-5 h-5 text-accent-light" />
+          <Logo size={24} className="rounded-md" />
           <span className="font-bold text-sm">LinkAnvil</span>
         </div>
         <button onClick={() => setMobileOpen(!mobileOpen)} className="p-1.5 rounded-lg hover:bg-white/5 transition-colors">

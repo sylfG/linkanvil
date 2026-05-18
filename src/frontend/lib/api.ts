@@ -151,7 +151,25 @@ export async function apiCall<T>(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    // FastAPI `HTTPException(status, dict)` devuelve detail como objeto
+    // (ej: { error, op, message } en 402/429 BYOK/quota). Si lo pasamos
+    // tal cual a `new Error()` el message acaba siendo "[object Object]".
+    // Extraemos .message del detail estructurado y exponemos el objeto
+    // crudo en error.detail por si el caller quiere ramificar por
+    // error.detail.error (ej: "byok_required" vs "demo_daily_quota_exceeded").
+    const detail = err.detail;
+    let msg: string;
+    if (typeof detail === "string") {
+      msg = detail;
+    } else if (detail && typeof detail === "object" && typeof detail.message === "string") {
+      msg = detail.message;
+    } else {
+      msg = `HTTP ${res.status}`;
+    }
+    const error = new Error(msg) as Error & { detail?: unknown; status?: number };
+    error.detail = detail;
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }

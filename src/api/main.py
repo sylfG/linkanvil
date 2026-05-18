@@ -293,34 +293,83 @@ async def _rate_limit(key: str, limit: int, window_seconds: int) -> None:
         raise HTTPException(429, "Too Many Requests")
 
 
-async def _demo_daily_quota(user: dict, op: str, limit: int) -> None:
-    """Cuota diaria adicional para el tenant demo (migración 0008).
+# Slice 4: cuotas diarias del demo en dos capas (per-IP + global cap).
+# Per-IP es la cuota natural del visitante individual. La global protege
+# contra abuso distribuido cuando los IPs cambian (Tor, VPN rotativa, etc).
+# El frontend lee estos límites vía GET /profile/quota para pintar el
+# contador y desactivar el form cuando se alcanzan.
+DEMO_QUOTAS = {
+    "ingest": {"per_ip": 5, "global": 50},
+    "chat":   {"per_ip": 20, "global": 200},
+}
 
-    Aplica solo si ``user["is_demo"]``. La clave Redis incluye la fecha
-    UTC (YYYY-MM-DD) para que la cuota se resetee a medianoche. El TTL
-    de 86400s + 60s de margen asegura que un día queda cubierto incluso
-    si la primera request del día llega justo a las 23:59.
 
-    El mensaje del 429 es específico para que el frontend pueda
-    distinguir cuota-diaria-de-demo de los rate-limits por minuto.
+def _demo_quota_keys(op: str, ip: str) -> tuple[str, str]:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return (
+        f"rl:demo:{op}:ip:{ip}:{today}",
+        f"rl:demo:{op}:global:{today}",
+    )
+
+
+async def _demo_daily_quota(user: dict, ip: str, op: str) -> None:
+    """Cuota diaria del tenant demo en dos capas (Slice 4).
+
+    Antes (Slice 2a) era una sola clave compartida — 5 visitantes
+    distintos podían agotar el cupo del demo entre todos. Ahora cada
+    IP tiene su propio cupo razonable + un techo global como red de
+    seguridad.
+
+    Si el demo se topa con per-IP: ``scope=ip`` (mensaje "tu IP alcanzó").
+    Si se topa con global: ``scope=global`` (mensaje "todos los visitantes").
     """
     if not user.get("is_demo") or _redis is None:
         return
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    key = f"rl:demo:{op}:{today}"
-    count = await _redis.incr(key)
-    if count == 1:
-        # 86460s = 24h + 1 minuto de margen.
-        await _redis.expire(key, 86460)
-    if count > limit:
+
+    cfg = DEMO_QUOTAS.get(op)
+    if not cfg:
+        return  # operación sin cuota declarada
+
+    ip_key, global_key = _demo_quota_keys(op, ip)
+    per_ip_limit, global_limit = cfg["per_ip"], cfg["global"]
+
+    # 1. Per-IP (cuota natural del visitante).
+    ip_count = await _redis.incr(ip_key)
+    if ip_count == 1:
+        await _redis.expire(ip_key, 86460)  # 24h + 1min margen
+    if ip_count > per_ip_limit:
         raise HTTPException(
             429,
             {
                 "error": "demo_daily_quota_exceeded",
                 "op": op,
+                "scope": "ip",
+                "limit": per_ip_limit,
+                "used": ip_count - 1,
                 "message": (
-                    "El demo público alcanzó su límite diario. "
-                    "Regístrate y configura tus claves para uso ilimitado."
+                    f"Tu IP alcanzó el límite diario del demo "
+                    f"({per_ip_limit} {op}s). Regístrate y configura "
+                    "tus claves para uso ilimitado."
+                ),
+            },
+        )
+
+    # 2. Global cap (sanity net).
+    global_count = await _redis.incr(global_key)
+    if global_count == 1:
+        await _redis.expire(global_key, 86460)
+    if global_count > global_limit:
+        raise HTTPException(
+            429,
+            {
+                "error": "demo_daily_quota_exceeded",
+                "op": op,
+                "scope": "global",
+                "limit": global_limit,
+                "message": (
+                    "El demo público alcanzó su límite global diario "
+                    "(suma de todos los visitantes). Regístrate para "
+                    "uso ilimitado con tus propias claves."
                 ),
             },
         )
@@ -359,9 +408,12 @@ async def requires_byok(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
-async def rate_limit_chat(user: dict = Depends(requires_byok)) -> dict:
+async def rate_limit_chat(
+    request: Request,
+    user: dict = Depends(requires_byok),
+) -> dict:
     await _rate_limit(f"rl:chat:{user['tenant_id']}", limit=30, window_seconds=60)
-    await _demo_daily_quota(user, op="chat", limit=20)
+    await _demo_daily_quota(user, ip=_client_ip(request), op="chat")
     return user
 
 
@@ -639,6 +691,54 @@ async def update_llm_keys_endpoint(
     }
 
 
+@app.get("/profile/quota")
+async def get_profile_quota(
+    request: Request,
+    user=Depends(get_current_user),
+):
+    """Devuelve el estado de la cuota diaria del visitante (Slice 4).
+
+    Endpoint barato — leer dos claves Redis. El frontend lo llama al
+    montar la página de Ingest o el modal de perfil para pintar
+    "3 / 5 ingests usados hoy" y desactivar el form cuando se topa.
+
+    Para usuarios registrados no aplica cuota diaria (sólo rate-limit
+    por minuto), así que devolvemos los campos a 0 con limit alto y
+    el frontend simplemente no pinta el contador.
+
+    Las claves de Redis incluyen la IP del visitante, así que si dos
+    personas detrás de NAT comparten IP, comparten cuota — pero es
+    raro en un demo público abierto a internet.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ip = _client_ip(request)
+    is_demo = bool(user.get("is_demo", False))
+
+    async def _used(op: str) -> int:
+        if not is_demo or _redis is None:
+            return 0
+        ip_key, _ = _demo_quota_keys(op, ip)
+        val = await _redis.get(ip_key)
+        return int(val) if val else 0
+
+    ingest_used = await _used("ingest")
+    chat_used = await _used("chat")
+
+    return {
+        "is_demo": is_demo,
+        "today": today,
+        "ip": ip if is_demo else None,
+        "ingest": {
+            "used": ingest_used,
+            "limit": DEMO_QUOTAS["ingest"]["per_ip"] if is_demo else None,
+        },
+        "chat": {
+            "used": chat_used,
+            "limit": DEMO_QUOTAS["chat"]["per_ip"] if is_demo else None,
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Resources (KB)
 # ---------------------------------------------------------------------------
@@ -838,10 +938,16 @@ async def delete_resource(
 # ---------------------------------------------------------------------------
 
 @app.post("/ingest")
-async def ingest(req: IngestRequest, user=Depends(requires_byok), _csrf=Depends(verify_csrf)):
+async def ingest(
+    req: IngestRequest,
+    request: Request,
+    user=Depends(requires_byok),
+    _csrf=Depends(verify_csrf),
+):
     # Migración 0008: cuota diaria adicional para el demo. El registered
     # ya pasó el guard de requires_byok — si llegó aquí tiene BYOK.
-    await _demo_daily_quota(user, op="ingest", limit=5)
+    # Slice 4: la cuota es per-IP (5/día) + cap global (50/día).
+    await _demo_daily_quota(user, ip=_client_ip(request), op="ingest")
 
     payload = {
         "url": req.url,

@@ -17,6 +17,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 import { Pagination, PAGE_SIZE } from "@/components/Pagination";
@@ -178,6 +179,9 @@ export default function KBPage() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-accent-light" />
           Base de Conocimiento
+          <DemoHint
+            hint="Ves 18 recursos seed compartidos por todos los visitantes + 3 efímeros que se stagearon al iniciar tu sesión. Al minuto 5, el audit moverá 2 de tus efímeros a Cuarentena y archivará 1."
+          />
         </h1>
         <p className="text-sm text-muted mt-1">{filtered.length} recurso(s)</p>
       </div>

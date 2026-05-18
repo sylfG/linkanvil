@@ -10,6 +10,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 import { Pagination, PAGE_SIZE } from "@/components/Pagination";
@@ -123,6 +124,9 @@ export default function ExpiredPage() {
           <h1 className="text-xl font-bold flex items-center gap-2">
             <CalendarX className="w-5 h-5 text-amber-400" />
             Archivo histórico
+            <DemoHint
+              hint="Antes del audit del minuto 5 verás aquí 2 ejemplos seed (AEMET 2020, WWDC 2023). Después del minuto 5 sumará 1 de tus efímeros archivado con motivo 'auto_archive'."
+            />
           </h1>
           <p className="text-sm text-muted mt-1">
             {items.length} recurso(s) fuera del KB activo. Consultables en chat

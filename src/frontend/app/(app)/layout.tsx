@@ -35,12 +35,22 @@ type NavItem = {
   badge?: "quarantine" | "expired";
 };
 
+// NAV base — compartido por demo y registered. Slice 6.2 añade
+// dinámicamente una entrada "Línea temporal" al inicio del array
+// cuando `user.is_demo`, dentro de `SidebarContent`. La forma del array
+// no cambia entre usuarios; lo único distinto es 1 entry extra para demo.
 const NAV: NavItem[] = [
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
   { href: "/expired", icon: CalendarX, label: "Expirados", badge: "expired" },
 ];
+
+const DEMO_NAV_ENTRY: NavItem = {
+  href: "/demo",
+  icon: Clock,           // Clock ya está importado para el countdown
+  label: "Línea temporal",
+};
 
 // ── Profile modal ─────────────────────────────────────────────────────────────
 
@@ -559,6 +569,13 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   // SSE: cualquier transición recalcula los badges al instante.
   useResourceStream(token, () => { refreshCounts(); });
 
+  // Slice 6.2 — Demo y registered comparten la misma navegación.
+  // Para el demo añadimos "Línea temporal" arriba del todo (es el
+  // diferencial pedagógico) y dejamos el resto intacto.
+  const navItems: NavItem[] = user?.is_demo
+    ? [DEMO_NAV_ENTRY, ...NAV]
+    : NAV;
+
   async function newChat() {
     if (!token) return;
     // Reusa una sesión vacía existente si la hay: o (a) ya tenemos sus
@@ -583,17 +600,28 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Logo */}
+      {/* Logo + (si demo) chip identificativo */}
       <div className="flex items-center gap-2.5 px-5 py-5 border-b border-border flex-shrink-0">
         <Logo size={32} className="rounded-md flex-shrink-0" />
-        <span className="font-bold text-slate-100 flex-1">LinkAnvil</span>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-slate-100 leading-tight">LinkAnvil</div>
+          {user?.is_demo && (
+            <div
+              className="inline-flex items-center gap-1 mt-1 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent/15 text-accent-light border border-accent/30"
+              title="Estás en una sesión demo de 15 minutos. Lo que añadas se borra al expirar."
+            >
+              <Sparkles className="w-2.5 h-2.5" />
+              Demo
+            </div>
+          )}
+        </div>
         <NotificationsBell token={token} />
       </div>
 
       {/* Scrollable nav + history */}
       <div className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
         {/* Main nav */}
-        {NAV.map(({ href, icon: Icon, label, badge }) => {
+        {navItems.map(({ href, icon: Icon, label, badge }) => {
           const active = pathname === href;
           const badgeCount =
             badge === "quarantine" ? quarantineCount :
@@ -728,21 +756,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => { if (hydrated && !token) router.push("/login"); }, [hydrated, token, router]);
   useEffect(() => { if (hydrated && token) init(token).catch(() => {}); }, [hydrated, token]);
 
-  // Slice 6 — Route guards: separación total demo ↔ registered.
-  // - Demo session intentando entrar en /chat, /kb, /quarantine, etc →
-  //   redirect a /demo (ruta única con tabs).
-  // - Registered intentando entrar en /demo → redirect a /chat (la
-  //   landing del usuario logueado).
-  // Hace el redirect en client después de hydration; el backend
-  // refuerza la separación devolviendo 403 en /auth/login con demo email
-  // y 404 en /demo/timeline si el visitante no tiene sesión demo.
+  // Slice 6.2 — Demo y registered comparten chrome (sidebar + nav).
+  // Solo blindamos la ruta `/demo` (timeline pedagógica) para que un
+  // usuario registrado no la vea (no le aporta nada). Demo NO se
+  // bloquea de /chat, /kb, etc — vive la misma app que el registrado
+  // con el banner de countdown + chip "DEMO" como diferenciales.
   const isDemo = !!user?.is_demo;
   const inDemoRoute = pathname?.startsWith("/demo") ?? false;
   useEffect(() => {
     if (!hydrated || !token || !user) return;
-    if (isDemo && !inDemoRoute) {
-      router.replace("/demo");
-    } else if (!isDemo && inDemoRoute) {
+    if (!isDemo && inDemoRoute) {
       router.replace("/chat");
     }
   }, [hydrated, token, user, isDemo, inDemoRoute, router]);
@@ -755,29 +778,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Slice 6: la vista /demo trae su propio chrome (header con countdown
-  // global + tabs internas), así que ocultamos el sidebar de la app
-  // para no mezclar dos sistemas de navegación. El children es la
-  // página completa que se renderiza full-width.
-  if (inDemoRoute && isDemo) {
-    return (
-      <ResourceStreamProvider token={token}>
-        <div className="flex flex-col h-screen overflow-hidden bg-bg">
-          <main className="flex-1 overflow-hidden flex flex-col">
-            {children}
-          </main>
-        </div>
-      </ResourceStreamProvider>
-    );
-  }
-
   return (
     <ResourceStreamProvider token={token}>
     <div className="flex flex-col h-screen overflow-hidden bg-bg">
-      {/* Slice 5: countdown banner para sesiones demo. Slice 6 lo limita
-          al route /demo via el guard de arriba, así que en este branch
-          (sidebar layout) jamás se ve — pero lo dejamos porque es un
-          render condicional null-safe en caso de race conditions. */}
+      {/* Slice 5: countdown banner para sesiones demo. Renderiza null
+          si no hay sesión demo, así que es seguro montarlo siempre. */}
       <DemoCountdownBanner />
 
     <div className="flex flex-1 overflow-hidden">

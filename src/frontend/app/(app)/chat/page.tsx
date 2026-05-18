@@ -8,6 +8,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { API_URL, handleAuthFailure } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { copyToClipboard } from "@/lib/clipboard";
 import { useAuthStore } from "@/lib/auth";
 import { useChatStore, type ChatMessage, type RagSource } from "@/lib/chats";
@@ -368,6 +369,11 @@ export default function ChatPage() {
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface flex-shrink-0 flex-wrap">
+        <DemoHint
+          label="Demo"
+          variant="sparkle"
+          hint="Las virtual-keys del demo vienen pre-configuradas con un free-tier limitado. Cuota: 20 chats/día por IP. Las conversaciones se borran al expirar la sesión."
+        />
         <select
           value={model}
           onChange={(e) => setModel(e.target.value)}

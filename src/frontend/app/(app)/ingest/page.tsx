@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link2, Plus, CheckCircle2, Loader2, AlertCircle, Trash2, Sparkles } from "lucide-react";
+import { DemoHint } from "@/components/DemoHint";
 import { apiCall, sseUrl } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { useSSE, type IngestEvent } from "@/lib/sse";
@@ -180,6 +181,9 @@ export default function IngestPage() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Link2 className="w-5 h-5 text-accent-light" />
           Ingestar URLs
+          <DemoHint
+            hint="Las URLs que añadas se borran cuando expire tu sesión demo (15 min). Cuota diaria: 5 ingests por IP, con un cap global compartido entre todos los visitantes."
+          />
         </h1>
         <p className="text-sm text-muted mt-1">
           Añade URLs a tu base de conocimiento. Aparecerán aquí cuando terminen de procesarse.

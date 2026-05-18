@@ -42,6 +42,17 @@ interface DemoStartResponse {
  *
  * El caller decide el redirect (típicamente `router.push(response.redirect)`).
  */
+export class DemoStartError extends Error {
+  code: string;
+  registerUrl?: string;
+  constructor(message: string, code: string, registerUrl?: string) {
+    super(message);
+    this.name = "DemoStartError";
+    this.code = code;
+    this.registerUrl = registerUrl;
+  }
+}
+
 export async function startDemoSession(): Promise<{
   user: User;
   redirect: string;
@@ -55,21 +66,25 @@ export async function startDemoSession(): Promise<{
       body: JSON.stringify({}),
     });
   } catch (err: any) {
-    // apiCall vuelca `detail` en err.message como JSON cuando el
-    // backend usa HTTPException con cuerpo estructurado. Lo
-    // desempaquetamos para que el visitante vea el copy del backend
-    // sin ruido de JSON crudo.
-    const raw = err?.message ?? "";
-    try {
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      if (parsed?.message) throw new Error(parsed.message);
-      if (parsed?.error) throw new Error(parsed.error);
-    } catch (parseErr: any) {
-      // Si el throw nuestro es lo que cayó aquí, propágalo tal cual.
-      if (parseErr instanceof Error && parseErr !== err) throw parseErr;
-      // Si no parseaba, devuelve el message original.
+    // `apiCall` (lib/api.ts) ya hace el trabajo de desempaquetar
+    // `detail`: deja el texto humano en `err.message` y el objeto
+    // crudo en `err.detail` para los callers que quieran ramificar
+    // por código. La versión anterior intentaba `JSON.parse(err.message)`
+    // y reventaba con "Unexpected token 'Y'..." porque message ya
+    // venía como texto plano. Ahora leemos `err.detail` cuando es un
+    // objeto y caemos a message si no.
+    const detail = err?.detail;
+    if (detail && typeof detail === "object") {
+      throw new DemoStartError(
+        (detail as any).message ?? err?.message ?? "Error iniciando demo",
+        (detail as any).error ?? "demo_error",
+        (detail as any).register_url,
+      );
     }
-    throw err;
+    throw new DemoStartError(
+      err?.message ?? "Error iniciando demo",
+      "demo_error",
+    );
   }
 
   const me = await apiCall<User>("/auth/me", {}, res.access_token);

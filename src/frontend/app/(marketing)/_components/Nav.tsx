@@ -6,9 +6,16 @@ import { apiCall } from "@/lib/api";
 import Logo from "@/components/Logo";
 
 // Nav translúcido fijo. Solo se vuelve opaco al hacer scroll > 16px,
-// efecto similar al de Linear/Vercel. La detección del token decide
-// si mostrar el flujo anónimo (Iniciar sesión + Probar demo) o el
-// flujo autenticado (Abrir tu cerebro + Cerrar sesión).
+// efecto similar al de Linear/Vercel.
+//
+// Estados del CTA del nav:
+//   - Anónimo (sin token)                    → "Iniciar sesión" (botón)
+//   - Autenticado (registered o demo activo) → "Cerrar sesión" + "Abrir tu cerebro"
+//
+// El CTA "Probar demo" vive SOLO en el hero y banners del medio de
+// la landing (no se duplica en el nav). Quien llega a la landing
+// recibe el mensaje de marketing en el hero; el nav guarda
+// "Iniciar sesión" para quien viene a entrar a su cuenta.
 export default function Nav() {
   const [scrolled, setScrolled] = useState(false);
   const { token, clearAuth } = useAuthStore();
@@ -87,21 +94,12 @@ export default function Nav() {
               </Link>
             </>
           ) : (
-            <>
-              {/* Login: link discreto a la izquierda. Demo: CTA principal. */}
-              <Link
-                href="/login"
-                className="hidden sm:inline-block text-sm text-muted hover:text-slate-200 px-3 py-2 transition-colors"
-              >
-                Iniciar sesión
-              </Link>
-              <Link
-                href="/?demo=1#hero"
-                className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
-              >
-                Probar demo
-              </Link>
-            </>
+            <Link
+              href="/login"
+              className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Iniciar sesión
+            </Link>
           )}
         </div>
       </div>

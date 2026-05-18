@@ -188,3 +188,32 @@ class MessageOut(BaseModel):
     content: str
     sources: list[dict]
     created_at: datetime
+
+
+# Slice 6 — Timeline del demo
+# -----------------------------------------------------------------------------
+# El endpoint `GET /demo/timeline` devuelve, para el visitante demo
+# autenticado, la línea temporal completa de la sesión: cuándo empezó,
+# cuándo expira y los eventos programados (disparados o pendientes).
+# El frontend usa este payload para pintar el timeline SVG + la tabla
+# "Qué pasa y cuándo".
+
+class DemoTimelineSession(BaseModel):
+    tenant_id: str
+    created_at: datetime
+    expires_at: datetime
+
+
+class DemoTimelineEvent(BaseModel):
+    id: UUID
+    fires_at: datetime
+    fired_at: Optional[datetime] = None
+    kind: str           # transition_cuarentena | transition_expirado | reminder_expiry_5min
+    recurso_id: Optional[UUID] = None
+    motivo: Optional[str] = None
+    description: Optional[str] = None
+
+
+class DemoTimelineResponse(BaseModel):
+    session: DemoTimelineSession
+    events: list[DemoTimelineEvent]

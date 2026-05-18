@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import secrets
@@ -32,24 +33,220 @@ def _as_tenant_list(tenant_id_or_list) -> list[str]:
 
 # ── demo sessions (Slice 5) ───────────────────────────────────────────────────
 
+# Slice 6: definición canónica de los 3 recursos efímeros que se stagean
+# al login del demo. Cada uno se inserta en `recursos` con un URL único
+# por sesión y se referencia desde `usuario_recursos` para el sub-tenant.
+# El cron de producción los ignora por `fecha_caducidad IS NULL`.
+_STAGED_RECURSOS = [
+    {
+        "titulo": "Conferencia DevOps Barcelona 2026",
+        "resumen": (
+            "Programa de la conferencia DevOps Barcelona 2026 con sesiones "
+            "técnicas sobre observabilidad, GitOps y plataformas internas."
+        ),
+        "categoria": "evento",
+    },
+    {
+        "titulo": "Webinar: Patrones RAG en producción",
+        "resumen": (
+            "Webinar sobre patrones de Retrieval-Augmented Generation en "
+            "producción: chunking semántico, evaluación, observabilidad."
+        ),
+        "categoria": "evento",
+    },
+    {
+        "titulo": "Hackathon LinkAnvil — edición invierno",
+        "resumen": (
+            "Crónica del hackathon interno de LinkAnvil con retrospectiva, "
+            "métricas y aprendizajes. Material de archivo de alto valor."
+        ),
+        "categoria": "hackathon",
+    },
+]
+
+
 async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
     """Crea un sub-tenant efímero (TTL 15min) para una nueva sesión demo.
 
-    Devuelve { tenant_id, created_at, expires_at }. El tenant_id sigue
-    el patrón ``demo_<8hex>`` para que el código pueda detectar sesiones
-    de demo mirando el prefijo (sin segundo query).
+    Slice 6 — además del INSERT en `demo_sessions`, esta función ahora
+    también ``stagea`` 3 recursos sintéticos linkeados al nuevo tenant y
+    programa 4 eventos en `demo_session_events` que dispararán las
+    transiciones intra-sesión:
+
+      - +5min  → 2 recursos a cuarentena (motivo `caducidad`)
+      - +5min  → 1 recurso a expirado    (motivo `auto_archive`)
+      - +10min → reminder pasivo "quedan 5 min"
+
+    Todo va en la misma transacción: si falla el staging, no queda una
+    sesión a medio crear. Devuelve { tenant_id, created_at, expires_at }.
     """
     tenant_id = f"demo_{secrets.token_hex(4)}"
     p = await get_pool()
-    row = await p.fetchrow(
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            # ── 1) sesión demo ────────────────────────────────────────
+            session_row = await conn.fetchrow(
+                """
+                INSERT INTO demo_sessions (tenant_id, user_id, expires_at, ip)
+                VALUES ($1, $2::uuid, NOW() + ($3::int * INTERVAL '1 minute'), $4)
+                RETURNING tenant_id, created_at, expires_at
+                """,
+                tenant_id, user_id, DEMO_SESSION_TTL_MINUTES, ip,
+            )
+
+            # RLS bypass para las tablas con `tenant_isolation` FORCED:
+            # `usuario_recursos` requiere current_setting('app.tenant_id').
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+            )
+
+            # ── 2) 3 recursos efímeros ────────────────────────────────
+            # URL sintética única por sesión + url_hash sha256 hex (la
+            # columna `recursos.url_hash` es UNIQUE; el tenant en la URL
+            # garantiza unicidad sin colisionar con seed ni otras sesiones).
+            #
+            # Importante: `fecha_caducidad = NULL` y `temporal_class = 'evento'`
+            # son defensivos. El cron de PRODUCCIÓN filtra por
+            # `fecha_caducidad IS NOT NULL`, así que no los toca. Solo el
+            # audit del demo (via demo_session_events) los hará transicionar.
+            recurso_ids: list = []
+            for idx, spec in enumerate(_STAGED_RECURSOS, start=1):
+                url = f"https://demo.linkanvil.local/staged-{tenant_id}-{idx}"
+                url_hash = hashlib.sha256(url.encode()).hexdigest()
+                r_row = await conn.fetchrow(
+                    """
+                    INSERT INTO recursos (
+                        url, url_hash, titulo, resumen, categoria,
+                        estado, volatilidad, temporal_class,
+                        fecha_caducidad
+                    ) VALUES (
+                        $1, $2, $3, $4, $5,
+                        'activo', 'media', 'evento',
+                        NULL
+                    )
+                    RETURNING id
+                    """,
+                    url, url_hash, spec["titulo"], spec["resumen"],
+                    spec["categoria"],
+                )
+                recurso_ids.append(r_row["id"])
+                await conn.execute(
+                    """
+                    INSERT INTO usuario_recursos (tenant_id, recurso_id)
+                    VALUES ($1, $2)
+                    """,
+                    tenant_id, r_row["id"],
+                )
+
+            # ── 3) 4 eventos programados ──────────────────────────────
+            # Centralizamos `created_at` como base de los offsets para que
+            # los `fires_at` sean predecibles desde el cliente y desde el
+            # cleanup loop. `NOW()` en una transacción Postgres es estable
+            # durante toda la tx, lo cual nos da consistencia.
+            events_spec = [
+                # +5min — 2 transiciones a cuarentena (motivo `caducidad`)
+                {
+                    "offset_min": 5,
+                    "kind": "transition_cuarentena",
+                    "recurso_id": recurso_ids[0],
+                    "motivo": "caducidad",
+                    "description": (
+                        "Recurso movido a cuarentena por caducidad simulada."
+                    ),
+                },
+                {
+                    "offset_min": 5,
+                    "kind": "transition_cuarentena",
+                    "recurso_id": recurso_ids[1],
+                    "motivo": "caducidad",
+                    "description": (
+                        "Recurso movido a cuarentena por caducidad simulada."
+                    ),
+                },
+                # +5min — 1 transición a expirado (auto-archive)
+                {
+                    "offset_min": 5,
+                    "kind": "transition_expirado",
+                    "recurso_id": recurso_ids[2],
+                    "motivo": "auto_archive",
+                    "description": (
+                        "Recurso archivado directamente por alto valor "
+                        "histórico (no pasa por cuarentena)."
+                    ),
+                },
+                # +10min — reminder pasivo para el banner del demo
+                {
+                    "offset_min": 10,
+                    "kind": "reminder_expiry_5min",
+                    "recurso_id": None,
+                    "motivo": None,
+                    "description": (
+                        "Quedan 5 minutos para que la sesión demo expire."
+                    ),
+                },
+            ]
+            for ev in events_spec:
+                await conn.execute(
+                    """
+                    INSERT INTO demo_session_events (
+                        tenant_id, fires_at, kind, recurso_id,
+                        motivo, description
+                    ) VALUES (
+                        $1,
+                        $2::timestamptz + ($3::int * INTERVAL '1 minute'),
+                        $4, $5, $6, $7
+                    )
+                    """,
+                    tenant_id,
+                    session_row["created_at"],
+                    ev["offset_min"],
+                    ev["kind"],
+                    ev["recurso_id"],
+                    ev["motivo"],
+                    ev["description"],
+                )
+
+    return dict(session_row)
+
+
+async def get_demo_session_events(tenant_id: str) -> list[dict]:
+    """Devuelve los eventos programados de una sesión demo en orden
+    cronológico. Usado por `GET /demo/timeline` para pintar la línea
+    temporal en el frontend."""
+    p = await get_pool()
+    rows = await p.fetch(
         """
-        INSERT INTO demo_sessions (tenant_id, user_id, expires_at, ip)
-        VALUES ($1, $2::uuid, NOW() + ($3::int * INTERVAL '1 minute'), $4)
-        RETURNING tenant_id, created_at, expires_at
+        SELECT id, tenant_id, fires_at, fired_at, kind, recurso_id,
+               motivo, description, created_at
+          FROM demo_session_events
+         WHERE tenant_id = $1
+         ORDER BY fires_at ASC, created_at ASC
         """,
-        tenant_id, user_id, DEMO_SESSION_TTL_MINUTES, ip,
+        tenant_id,
     )
-    return dict(row)
+    return [dict(r) for r in rows]
+
+
+async def get_sessions_with_due_events() -> list[str]:
+    """Devuelve la lista de tenant_ids cuyas sesiones tienen al menos un
+    evento pending (fires_at <= NOW() AND fired_at IS NULL).
+
+    Usado por el cleanup loop para saber a qué sesiones lanzar
+    `run_demo_audit_for_session`. Aprovecha el índice parcial
+    `idx_demo_events_due` (definido en la migración 0010) que indexa
+    solo los eventos no disparados — el scan es barato incluso con
+    cientos de sesiones activas.
+    """
+    p = await get_pool()
+    rows = await p.fetch(
+        """
+        SELECT DISTINCT tenant_id
+          FROM demo_session_events
+         WHERE fires_at <= NOW()
+           AND fired_at IS NULL
+        """,
+    )
+    return [r["tenant_id"] for r in rows]
 
 
 async def get_demo_session(tenant_id: str) -> Optional[dict]:

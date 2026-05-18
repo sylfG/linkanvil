@@ -38,6 +38,9 @@ from src.api.models import (
     AuditPolicyRequest,
     ChatRequest,
     CfCookiesRequest,
+    DemoTimelineEvent,
+    DemoTimelineResponse,
+    DemoTimelineSession,
     IngestRequest,
     LLMKeysRequest,
     LoginRequest,
@@ -143,21 +146,77 @@ async def _qdrant_delete_tenant_points(tenant_id: str) -> None:
             )
 
 
+async def _process_due_demo_audits() -> None:
+    """Slice 6 — Lanza la auditoría intra-sesión para cada sub-tenant
+    demo cuyo evento más antiguo ya cumple `fires_at <= NOW()`.
+
+    Cada sesión se procesa en su propia transacción para que un fallo
+    en una NO contamine a las demás. Se hace `SET LOCAL app.tenant_id`
+    porque las tablas `recursos` / `usuario_recursos` tienen RLS forced
+    con la policy `tenant_isolation` — sin el set_config un UPDATE
+    devolvería 0 filas afectadas (silenciosamente).
+    """
+    from src.data.audit_cron import run_demo_audit_for_session
+
+    try:
+        due_tenants = await db.get_sessions_with_due_events()
+    except Exception:
+        logger.exception("demo audit: get_sessions_with_due_events failed")
+        return
+
+    if not due_tenants:
+        return
+
+    pool = await db.get_pool()
+    for tenant_id in due_tenants:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('app.tenant_id', $1, true)",
+                        tenant_id,
+                    )
+                    result = await run_demo_audit_for_session(tenant_id, conn)
+                    logger.info(
+                        "demo audit fired: tenant=%s processed=%d "
+                        "cuarentena=%d expirado=%d reminder=%d skipped=%d",
+                        result["tenant_id"], result["processed"],
+                        result["cuarentena"], result["expirado"],
+                        result["reminder"], result["skipped"],
+                    )
+        except Exception:
+            logger.exception("demo audit failed for tenant=%s", tenant_id)
+
+
 async def _cleanup_demo_sessions_loop() -> None:
-    """Background task que cada 60s limpia las sesiones demo expiradas.
+    """Background task que cada 60s:
 
-    Orden: Qdrant first (puede fallar y reintentarse en el siguiente
-    tick) → BD cascade (transaccional, una vez OK no se pierde el
-    cleanup). Si Qdrant falla el siguiente tick lo recoge porque la
-    sesión sigue en BD hasta que ambas limpiezas pasan en orden.
+    1. **Procesa audits intra-sesión** — para cada sesión demo con
+       eventos pending (fires_at <= NOW()), aplica las transiciones
+       (activo→cuarentena, activo→expirado) y emite outbox events para
+       que el notifier pinte las notificaciones en el bell. Granularidad
+       de 60s significa que un evento programado a +5min puede dispararse
+       entre 5:00 y 5:59 — aceptable para una demo.
 
-    En realidad: como BD borra siempre tras Qdrant, si Qdrant fallase
-    quedarían points huérfanos (sin tenant válido). Aceptable — un
-    barrido manual semanal los limpia. Lo importante: BD queda
-    consistente.
+    2. **Limpia sesiones expiradas** — Qdrant first (puede fallar y
+       reintentarse en el siguiente tick) → BD cascade (transaccional,
+       una vez OK no se pierde el cleanup). El FK CASCADE de
+       demo_session_events sobre demo_sessions hace que los eventos
+       desaparezcan junto con la sesión.
+
+    Si Qdrant falla quedarían points huérfanos (sin tenant válido). Es
+    aceptable — un barrido manual semanal los limpia. Lo importante:
+    BD queda consistente.
     """
     while True:
         try:
+            # Slice 6: primero los audits intra-sesión, después la
+            # limpieza. Si la sesión está expirando justo en este tick,
+            # queremos que sus eventos hayan disparado al menos una vez
+            # antes de borrarla (los reminders de +10min son inocuos si
+            # llegan tarde, pero los transitions deben ejecutar).
+            await _process_due_demo_audits()
+
             expired = await db.get_expired_demo_sessions()
             for s in expired:
                 tenant_id = s["tenant_id"]
@@ -604,25 +663,105 @@ async def login(
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Credenciales incorrectas")
 
-    # Slice 5: cada login del demo crea un sub-tenant efímero con TTL
-    # 15min. El JWT lleva ese tenant_id, no el del seed. Es lo que
-    # permite que distintos visitantes vean KB aisladas y que el reset
-    # de uno no afecte a los demás.
-    effective_tenant: Optional[str] = None
+    # Slice 6 — Separación total demo ↔ registered.
+    # El usuario demo NO se loguea por el formulario tradicional. Existe
+    # un endpoint dedicado `POST /auth/demo-start` que es lo que llama
+    # el botón "Probar demo" de la landing (sin credenciales visibles).
+    # Aquí rechazamos para que `/login` quede como vista exclusiva de
+    # usuarios registrados y no haya credenciales demo expuestas.
     if user.get("is_demo"):
-        ip = _client_ip(request)
-        session = await db.create_demo_session(str(user["id"]), ip=ip)
-        effective_tenant = session["tenant_id"]
-        logger.info(
-            "demo session created: tenant=%s ip=%s expires=%s",
-            effective_tenant, ip, session["expires_at"].isoformat(),
+        raise HTTPException(
+            403,
+            {
+                "error": "demo_use_dedicated_endpoint",
+                "message": (
+                    "Esta es la cuenta demo. Accede desde el botón "
+                    "'Probar demo' de la landing."
+                ),
+                "redirect": "/demo",
+            },
         )
+
+    token = _access_token_for(user)
+    csrf = _set_session_cookies(response, token)
+    refresh = await _issue_refresh_token(user)
+    _set_refresh_cookie(response, refresh)
+    return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
+
+
+# Email de la cuenta demo seed. Se centraliza aquí como constante para
+# que `/auth/demo-start` no tenga que ir a la BD a buscarla cada vez
+# (es estable a través del lifecycle del owner).
+DEMO_EMAIL = os.getenv("DEMO_EMAIL", "demo@linkanvil.io")
+
+
+async def rate_limit_demo_start(request: Request) -> None:
+    # Más permisivo que login (5/min) porque el botón de la landing
+    # puede ser legítimamente clicado por varios visitantes desde
+    # ASN compartidos (universidades, ISPs grandes). Pero no infinito:
+    # un bot que cree sesiones en masa quemaría el cupo global del seed.
+    await _rate_limit(
+        f"rl:demo_start:{_client_ip(request)}",
+        limit=10, window_seconds=60,
+    )
+
+
+@app.post("/auth/demo-start")
+async def demo_start(
+    request: Request,
+    response: Response,
+    _=Depends(rate_limit_demo_start),
+):
+    """Slice 6 — Entry point del demo sin credenciales.
+
+    Llamado por el botón "Probar demo" de la landing. Crea un sub-tenant
+    efímero (TTL 15min) sobre la cuenta demo del owner, stagea 3 recursos
+    sintéticos y programa 4 eventos (3 transiciones al +5min, 1 reminder
+    al +10min). Devuelve el access token + redirect a `/demo`.
+
+    No usa password — la cuenta demo es compartida y abierta. La cuota
+    diaria por IP (5 ingests, 20 chats) más el global cap protegen
+    contra abuso.
+
+    Si el seed demo no existe (despliegue mal configurado) → 503.
+    """
+    user = await db.get_user_by_email(DEMO_EMAIL)
+    if not user or not user.get("is_demo"):
+        logger.warning(
+            "demo_start: cuenta demo (%s) no encontrada o is_demo=false",
+            DEMO_EMAIL,
+        )
+        raise HTTPException(
+            503,
+            {
+                "error": "demo_unavailable",
+                "message": (
+                    "El demo no está disponible en este momento. "
+                    "Inténtalo más tarde."
+                ),
+            },
+        )
+
+    ip = _client_ip(request)
+    session = await db.create_demo_session(str(user["id"]), ip=ip)
+    effective_tenant = session["tenant_id"]
+    logger.info(
+        "demo session created via demo-start: tenant=%s ip=%s expires=%s",
+        effective_tenant, ip, session["expires_at"].isoformat(),
+    )
 
     token = _access_token_for(user, tenant_id=effective_tenant)
     csrf = _set_session_cookies(response, token)
     refresh = await _issue_refresh_token(user, session_tenant=effective_tenant)
     _set_refresh_cookie(response, refresh)
-    return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "csrf_token": csrf,
+        "redirect": "/demo",
+        "tenant_id": effective_tenant,
+        "expires_at": session["expires_at"].isoformat(),
+    }
 
 
 @app.post("/auth/refresh")
@@ -939,6 +1078,52 @@ async def get_profile_quota(
             "limit": DEMO_QUOTAS["chat"]["per_ip"] if is_demo else None,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Demo timeline (Slice 6) — frontend de la vista /demo
+# ---------------------------------------------------------------------------
+
+@app.get("/demo/timeline", response_model=DemoTimelineResponse)
+async def get_demo_timeline(user=Depends(get_current_user)):
+    """Devuelve la línea temporal completa de la sesión demo del usuario.
+
+    Solo accesible para sesiones demo (tenant_id empieza con `demo_`).
+    El frontend hace polling cada 5s para refrescar el `fired_at` de
+    los eventos y repintar el timeline en vivo.
+
+    Para usuarios registrados → 404 (no exponemos que el endpoint existe).
+    """
+    if not _is_demo_session(user):
+        raise HTTPException(404, "not_found")
+
+    session_row = await db.get_demo_session(user["tenant_id"])
+    if not session_row:
+        # Caso defensivo: get_current_user ya valida, pero por si la
+        # sesión expiró entre el decode del JWT y este query.
+        raise HTTPException(404, "demo_session_not_found")
+
+    event_rows = await db.get_demo_session_events(user["tenant_id"])
+
+    return DemoTimelineResponse(
+        session=DemoTimelineSession(
+            tenant_id=session_row["tenant_id"],
+            created_at=session_row["created_at"],
+            expires_at=session_row["expires_at"],
+        ),
+        events=[
+            DemoTimelineEvent(
+                id=e["id"],
+                fires_at=e["fires_at"],
+                fired_at=e["fired_at"],
+                kind=e["kind"],
+                recurso_id=e["recurso_id"],
+                motivo=e["motivo"],
+                description=e["description"],
+            )
+            for e in event_rows
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

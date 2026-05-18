@@ -25,6 +25,7 @@ import { useChatStore } from "@/lib/chats";
 import { apiCall } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResourceStreamProvider, useResourceStream } from "@/lib/resource_stream";
+import { DemoCountdownBanner } from "@/components/DemoCountdownBanner";
 import { NotificationsBell } from "./_NotificationsBell";
 
 type NavItem = {
@@ -711,82 +712,9 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
 
 // ── layout ────────────────────────────────────────────────────────────────────
 
-// Slice 5: banner sticky en la cabecera para sesiones demo. Lee
-// expires_at del user en el store (ISO string absoluto, sin drift)
-// y recalcula los segundos restantes cada 1s. Cuando llega a 0,
-// llama a /auth/me — el backend devuelve 401 demo_expired y el
-// interceptor de api.ts redirige a /login?demo=expired.
-//
-// Nota: usamos timestamps absolutos del backend (no contadores
-// relativos client-side) para resistir cambios de hora del sistema,
-// pestañas dormidas y reloads.
-function DemoCountdownBanner() {
-  const user = useAuthStore((s) => s.user);
-  const token = useAuthStore((s) => s.token);
-  const [remaining, setRemaining] = useState<number | null>(null);
-
-  const expiresAt = user?.demo_session_expires_at
-    ? new Date(user.demo_session_expires_at).getTime()
-    : null;
-
-  useEffect(() => {
-    if (!user?.is_demo || !expiresAt) {
-      setRemaining(null);
-      return;
-    }
-    const tick = () => {
-      const left = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
-      setRemaining(left);
-      if (left === 0) {
-        // Forzar un request — el backend responderá 401 demo_expired
-        // y api.ts redirigirá a /login?demo=expired automáticamente.
-        // Usamos /auth/me porque es barato y existe siempre.
-        if (token) {
-          fetch(`${typeof window !== "undefined" ? window.location.origin : ""}/auth/me`, {
-            headers: { Authorization: `Bearer ${token}` },
-            credentials: "include",
-          }).catch(() => {});
-        }
-      }
-    };
-    tick();
-    const iv = window.setInterval(tick, 1000);
-    return () => window.clearInterval(iv);
-  }, [user?.is_demo, expiresAt, token]);
-
-  if (!user?.is_demo || remaining === null) return null;
-
-  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
-  const ss = String(remaining % 60).padStart(2, "0");
-  const isUrgent = remaining <= 60;
-  const isCritical = remaining === 0;
-
-  return (
-    <div
-      className={`relative z-30 text-xs px-4 py-1.5 flex items-center justify-center gap-2 border-b ${
-        isCritical
-          ? "bg-red-900/40 border-red-700/50 text-red-100"
-          : isUrgent
-            ? "bg-amber-900/30 border-amber-700/40 text-amber-100"
-            : "bg-accent/10 border-accent/25 text-accent-light"
-      }`}
-    >
-      <Hourglass className={`w-3.5 h-3.5 ${isUrgent ? "animate-pulse" : ""}`} />
-      <span className="font-medium">
-        Sesión demo
-      </span>
-      <span className="font-mono tracking-wider">
-        {isCritical ? "Caducada" : `${mm}:${ss}`}
-      </span>
-      <span className="text-muted hidden sm:inline">
-        {isCritical
-          ? "Recarga para empezar otra"
-          : "· se borrará todo lo que añadas al expirar"}
-      </span>
-    </div>
-  );
-}
-
+// Slice 6: `DemoCountdownBanner` se extrajo a
+// `components/DemoCountdownBanner.tsx` para que tanto este layout como
+// la vista `/demo` importen del mismo origen.
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -899,6 +827,3 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Slice 6: re-export para que la página /demo pueda reusar el mismo
-// componente sin duplicar la lógica del countdown.
-export { DemoCountdownBanner };

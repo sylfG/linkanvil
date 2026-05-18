@@ -34,21 +34,51 @@ esperar 6 semanas a que el sistema "madure".
 
 ## 🛠️ Cómo entrar
 
-1. Abrir `/login`.
-2. Bloque "Probar sin registro" debajo del formulario: copia las
-   credenciales públicas con un click.
-3. Click en "Entrar".
-4. Redirect a `/chat` con la sesión activa.
+> Slice 6 separó por completo la entrada del demo de la entrada de
+> usuarios registrados. Ya **no hay credenciales visibles en `/login`**
+> y la cuenta demo NO acepta password — la entrada es por un endpoint
+> dedicado.
 
-Credenciales públicas (también en `ops/seed_demo_user.py`):
+### Para el visitante
 
+1. Abrir la landing (`/`).
+2. Click en cualquiera de los CTAs **"Probar demo gratis"** /
+   **"Acceder al demo"** / **"Probar demo"** (hero, banner medio, nav).
+3. El navegador llama a `POST /auth/demo-start` (sin password, sin
+   formulario). El backend crea el sub-tenant efímero, stagea 3 recursos
+   sintéticos y programa 4 eventos (ver sección siguiente).
+4. Redirect automático a `/demo` — vista dedicada con tabs:
+   `Timeline · KB · Cuarentena · Archivo · Chat`.
+
+### Para el desarrollador / integraciones
+
+```bash
+# Endpoint público, rate-limited (10/min por IP)
+curl -X POST https://linkanvil.example/api/auth/demo-start
+# → { access_token, csrf_token, redirect: "/demo", tenant_id, expires_at }
 ```
-demo@linkanvil.io
-linkanvil-demo
+
+El endpoint no necesita password porque la cuenta demo es **comunitaria
+por diseño**: cualquiera puede pedir una sesión efímera. La protección
+es el TTL de 15 min + cuotas diarias por IP (5 ingests, 20 chats) y
+la global cap (50 / 200) que evitan que un bot agote el cupo.
+
+### `/login` rechaza el email demo
+
+Si alguien encuentra el email en logs y lo escribe en el formulario
+clásico de `/login`, el backend responde:
+
+```json
+HTTP 403
+{
+  "error": "demo_use_dedicated_endpoint",
+  "message": "Esta es la cuenta demo. Accede desde el botón 'Probar demo' de la landing.",
+  "redirect": "/demo"
+}
 ```
 
-⚠️ Estas credenciales son fijas y públicas. Cualquiera puede usarlas.
-Es deliberado — el visitante curioso quiere probar sin fricción.
+Así garantizamos que el flujo de credenciales reales (registered users)
+queda 100% aislado del demo.
 
 ---
 
@@ -92,6 +122,141 @@ y aparecerían **tres problemas dolorosos**:
 
 Con sub-tenants efímeros cada visitante tiene su propia "fotocopia"
 del demo, vive sus 15 min, y desaparece sin afectar al resto.
+
+---
+
+## ⏱️ Eventos programados intra-sesión (Slice 6)
+
+El demo no se limita a mostrar los recursos en sus **estados finales**.
+También **dispara el ciclo de vida en vivo** dentro de los 15 min de
+sesión para que el visitante VEA transiciones, no solo resultados.
+
+### Qué pasa en cada sesión
+
+| Minuto | Evento | Efecto observable |
+|---|---|---|
+| **+0** | Login vía `POST /auth/demo-start` | Se crean sub-tenant + 3 recursos sintéticos + 4 eventos pending |
+| **+5** | `transition_cuarentena` × 2 | Dos recursos `activo` pasan a `cuarentena` con motivo `caducidad` |
+| **+5** | `transition_expirado` × 1 | Un recurso `activo` pasa directo a `expirado` (motivo `auto_archive`) |
+| **+10** | `reminder_expiry_5min` | Banner pasivo "quedan 5 min" sin modificar recursos |
+| **+15** | Cleanup automático | Sub-tenant + sus recursos + sus eventos se borran en cascada |
+
+Las 3 transiciones del minuto 5 **no son ficticias**: usan los mismos
+helpers de `recursos`, generan eventos reales en `outbox_eventos` y el
+`notifier-worker` crea notificaciones in-app. El visitante ve el bell
+de la UI parpadear con 3 nuevas en directo.
+
+### Cómo está montado
+
+Una tabla nueva `cerebro.demo_session_events` (migración 0010)
+materializa los eventos programados con precisión `TIMESTAMPTZ`:
+
+```sql
+CREATE TABLE cerebro.demo_session_events (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id   TEXT NOT NULL REFERENCES demo_sessions(tenant_id) ON DELETE CASCADE,
+    fires_at    TIMESTAMPTZ NOT NULL,
+    fired_at    TIMESTAMPTZ,
+    kind        VARCHAR(50) NOT NULL,    -- transition_* | reminder_expiry_5min
+    recurso_id  UUID,
+    motivo      VARCHAR(50),
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+Dos detalles importantes del schema:
+
+- **FK CASCADE a `demo_sessions`**: cuando la sesión expira y la fila
+  de `demo_sessions` se borra, los eventos se borran solos. Cero
+  limpieza manual.
+- **Índice parcial `WHERE fired_at IS NULL`**: el cleanup loop hace
+  scans muy baratos buscando solo eventos pending.
+
+### Por qué una tabla aparte y no `fecha_caducidad`
+
+La columna `recursos.fecha_caducidad` es `DATE` (precisión 1 día). El
+cron de producción (`run_audit_cron`) compara con `NOW()::DATE` para
+mover recursos vencidos a cuarentena.
+
+Esto no sirve para el demo:
+- Necesitamos precisión de **minutos** (evento al minuto 5 exacto).
+- Necesitamos **scoping por tenant** (no contaminar otros tenants).
+
+La solución: una función paralela
+`run_demo_audit_for_session(tenant_id, conn)` en `audit_cron.py` que
+trabaja sobre `demo_session_events` con `TIMESTAMPTZ`, scoped al
+tenant, y reutiliza el mismo helper de outbox que el cron de prod —
+así las notificaciones llegan al bell con el mismo `evento_tipo` y
+schema. Quien recibe la notificación no distingue el origen.
+
+### Quién dispara el audit
+
+El mismo background task que ya limpia sesiones expiradas
+(`_cleanup_demo_sessions_loop` en `main.py`, tick cada 60s). Se le
+añadió un paso al inicio del bucle:
+
+```python
+while True:
+    # 1. Audits intra-sesión — procesa eventos con fires_at <= NOW()
+    await _process_due_demo_audits()
+
+    # 2. Cleanup de sesiones expiradas (paso original de Slice 5)
+    expired = await db.get_expired_demo_sessions()
+    for s in expired:
+        await _qdrant_delete_tenant_points(s["tenant_id"])
+        await db.delete_demo_session_cascade(s["tenant_id"])
+
+    await asyncio.sleep(60)
+```
+
+Granularidad de 60s implica que un evento programado a +5:00 puede
+dispararse entre +5:00 y +5:59. Aceptable — el visitante percibe la
+ventana como "alrededor del minuto 5".
+
+### La vista `/demo` — timeline en vivo
+
+El endpoint `GET /demo/timeline` (gated a `is_demo`) devuelve la
+sesión + sus 4 eventos con `fired_at`. La página `/demo` la consume
+con polling cada 5s y pinta:
+
+- **Línea horizontal SVG** con un marcador móvil (now) + puntos por
+  evento, coloreados según kind. Tooltip con descripción al hover.
+- **Tabla cronológica** debajo con hora, evento, motivo, descripción,
+  y estado (Pendiente / Disparado).
+- **Chip "Próximo evento"** en el header con countdown relativo.
+
+Cuando el audit del backend dispara un evento, el polling lo refleja
+en los 5s siguientes — el visitante ve el punto cambiar de pendiente
+(icono `AlertTriangle`) a disparado (icono `CheckCircle2`) en vivo.
+
+---
+
+## 🪟 La ruta `/demo` y la separación con `/chat`
+
+Slice 6 también limpió la deuda visual del Slice 5: el banner de
+countdown ya no se renderiza globalmente condicionado a `is_demo`
+en cada ruta de `(app)/`. En su lugar:
+
+- **`/demo`** es la única ruta donde el demo opera. Tabs internas
+  (Timeline / KB / Cuarentena / Archivo / Chat) — todo el demo cabe
+  en una sola URL.
+- **Route guards client-side** en `(app)/layout.tsx`:
+  - Demo session en `/chat`, `/kb`, `/quarantine`, `/expired` → redirect
+    a `/demo`.
+  - Registered session en `/demo` → redirect a `/chat`.
+- **El sidebar habitual** (Ingestar / KB / Cuarentena / Expirados) NO
+  se renderiza en `/demo` — esta vista trae su propio chrome con
+  tabs y header sticky.
+- **`ProfileModal`** (telegram bot, BYOK, audit policy) sigue
+  accesible solo desde el sidebar `(app)/`, así que los demo users
+  nunca llegan a él — perfecto, porque sus claves vienen
+  pre-configuradas y no se pueden cambiar (defendido a nivel
+  backend con `403 demo_account_locked` en `PUT /profile/llm-keys`).
+
+Resultado: las vistas reales de `/chat`, `/kb`, `/quarantine`, `/expired`
+ya **no tienen ningún condicional `is_demo`** ni instrumentación
+demo-específica. Quedan idénticas a antes, solo para registered.
 
 ---
 

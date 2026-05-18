@@ -70,7 +70,7 @@ docker compose version   # debe ser ≥ 2.22
 
 #### curl
 
-Necesario para descargar los instaladores de Node.js y uv.
+Necesario para descargar los instaladores de Node.js y uv. 
 
 ::: code-group
 

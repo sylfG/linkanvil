@@ -1,9 +1,11 @@
 "use client";
 import Link from "next/link";
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, useScroll, useTransform, AnimatePresence } from "framer-motion";
-import { ArrowRight, Sparkles, Play, X } from "lucide-react";
+import { ArrowRight, Sparkles, Play, X, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/lib/auth";
+import { startDemoSession } from "@/lib/demo";
 import HeroPattern from "@/components/illustrations/HeroPattern";
 import ChatPreviewFrame from "@/components/illustrations/ChatPreviewFrame";
 
@@ -13,9 +15,25 @@ import ChatPreviewFrame from "@/components/illustrations/ChatPreviewFrame";
 const DEMO_VIDEO_SRC = "/demo.mp4";
 
 export default function Hero() {
+  const router = useRouter();
   const token = useAuthStore((s) => s.token);
   const ref = useRef<HTMLDivElement>(null);
   const [videoOpen, setVideoOpen] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
+
+  async function handleDemoClick() {
+    setDemoError(null);
+    setDemoLoading(true);
+    try {
+      await startDemoSession();
+      router.push("/demo");
+    } catch (err: any) {
+      setDemoError(err?.message ?? "No se pudo iniciar la sesión demo.");
+    } finally {
+      setDemoLoading(false);
+    }
+  }
 
   // Parallax suave: el screenshot del chat se mueve a 0.7x velocidad del
   // scroll y opacidad cae conforme entra la siguiente sección.
@@ -59,27 +77,53 @@ export default function Hero() {
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3">
-            {/* CTA primaria: abre el vídeo de demostración. Lo prominente
-                ahora es ENTENDER la propuesta antes de probarla. */}
+            {/* Slice 6 — CTA primaria: arranca una sesión demo
+                efímera (TTL 15min) llamando a POST /auth/demo-start
+                directamente. Sin password, sin formulario, sin
+                credenciales visibles. Redirige a /demo al terminar. */}
+            {token ? (
+              <Link
+                href="/chat"
+                className="group inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white font-medium px-5 py-3 rounded-lg transition-colors"
+              >
+                Abrir tu cerebro
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+              </Link>
+            ) : (
+              <button
+                onClick={handleDemoClick}
+                disabled={demoLoading}
+                className="group inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium px-5 py-3 rounded-lg transition-colors"
+              >
+                {demoLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4" />
+                )}
+                {demoLoading ? "Preparando demo..." : "Probar el demo gratis"}
+              </button>
+            )}
             <button
               onClick={() => setVideoOpen(true)}
-              className="group inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white font-medium px-5 py-3 rounded-lg transition-colors"
+              className="group inline-flex items-center justify-center gap-2 bg-card hover:bg-surface border border-border text-slate-200 font-medium px-5 py-3 rounded-lg transition-colors"
             >
               <Play className="w-4 h-4" />
               Ver cómo funciona
             </button>
-            {/* CTA secundaria: login (o /chat si ya hay sesión). */}
-            <Link
-              href={token ? "/chat" : "/login"}
-              className="group inline-flex items-center justify-center gap-2 bg-card hover:bg-surface border border-border text-slate-200 font-medium px-5 py-3 rounded-lg transition-colors"
-            >
-              {token ? "Abrir tu cerebro" : "Iniciar sesión"}
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-            </Link>
           </div>
 
+          {demoError && (
+            <p className="text-xs text-red-300 mt-3" role="alert">
+              {demoError}
+            </p>
+          )}
+
           <p className="text-xs text-muted mt-5">
-            Sin tarjeta. Credenciales demo visibles en la página de login.
+            Sin tarjeta. Demo público con 15 min de sesión y datos sembrados.
+            {" "}
+            <Link href="/login" className="text-accent-light/80 hover:underline">
+              ¿Ya tienes cuenta?
+            </Link>
           </p>
         </motion.div>
 

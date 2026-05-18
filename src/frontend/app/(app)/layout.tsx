@@ -790,7 +790,8 @@ function DemoCountdownBanner() {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { token } = useAuthStore();
+  const pathname = usePathname();
+  const { token, user } = useAuthStore();
   const { init } = useChatStore();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -798,6 +799,25 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => { setHydrated(true); }, []);
   useEffect(() => { if (hydrated && !token) router.push("/login"); }, [hydrated, token, router]);
   useEffect(() => { if (hydrated && token) init(token).catch(() => {}); }, [hydrated, token]);
+
+  // Slice 6 — Route guards: separación total demo ↔ registered.
+  // - Demo session intentando entrar en /chat, /kb, /quarantine, etc →
+  //   redirect a /demo (ruta única con tabs).
+  // - Registered intentando entrar en /demo → redirect a /chat (la
+  //   landing del usuario logueado).
+  // Hace el redirect en client después de hydration; el backend
+  // refuerza la separación devolviendo 403 en /auth/login con demo email
+  // y 404 en /demo/timeline si el visitante no tiene sesión demo.
+  const isDemo = !!user?.is_demo;
+  const inDemoRoute = pathname?.startsWith("/demo") ?? false;
+  useEffect(() => {
+    if (!hydrated || !token || !user) return;
+    if (isDemo && !inDemoRoute) {
+      router.replace("/demo");
+    } else if (!isDemo && inDemoRoute) {
+      router.replace("/chat");
+    }
+  }, [hydrated, token, user, isDemo, inDemoRoute, router]);
 
   if (!hydrated || !token) {
     return (
@@ -807,11 +827,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // Slice 6: la vista /demo trae su propio chrome (header con countdown
+  // global + tabs internas), así que ocultamos el sidebar de la app
+  // para no mezclar dos sistemas de navegación. El children es la
+  // página completa que se renderiza full-width.
+  if (inDemoRoute && isDemo) {
+    return (
+      <ResourceStreamProvider token={token}>
+        <div className="flex flex-col h-screen overflow-hidden bg-bg">
+          <main className="flex-1 overflow-hidden flex flex-col">
+            {children}
+          </main>
+        </div>
+      </ResourceStreamProvider>
+    );
+  }
+
   return (
     <ResourceStreamProvider token={token}>
     <div className="flex flex-col h-screen overflow-hidden bg-bg">
-      {/* Slice 5: countdown banner para sesiones demo (renderiza null
-          para registrados o si el JWT no es de sub-tenant). */}
+      {/* Slice 5: countdown banner para sesiones demo. Slice 6 lo limita
+          al route /demo via el guard de arriba, así que en este branch
+          (sidebar layout) jamás se ve — pero lo dejamos porque es un
+          render condicional null-safe en caso de race conditions. */}
       <DemoCountdownBanner />
 
     <div className="flex flex-1 overflow-hidden">
@@ -860,3 +898,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     </ResourceStreamProvider>
   );
 }
+
+// Slice 6: re-export para que la página /demo pueda reusar el mismo
+// componente sin duplicar la lógica del countdown.
+export { DemoCountdownBanner };

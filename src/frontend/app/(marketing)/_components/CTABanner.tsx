@@ -1,11 +1,30 @@
 "use client";
 import Link from "next/link";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Loader2, Sparkles } from "lucide-react";
 import { useAuthStore } from "@/lib/auth";
+import { startDemoSession } from "@/lib/demo";
 
 export default function CTABanner() {
+  const router = useRouter();
   const token = useAuthStore((s) => s.token);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDemoClick() {
+    setError(null);
+    setLoading(true);
+    try {
+      await startDemoSession();
+      router.push("/demo");
+    } catch (err: any) {
+      setError(err?.message ?? "No se pudo iniciar la sesión demo.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <section className="py-20 md:py-24">
@@ -47,13 +66,33 @@ export default function CTABanner() {
           <p className="relative text-muted text-base md:text-lg mb-8 max-w-xl mx-auto">
             Cuenta demo lista para usar. Sin tarjeta, sin formularios largos.
           </p>
-          <Link
-            href={token ? "/chat" : "/login"}
-            className="relative inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white font-medium px-6 py-3.5 rounded-lg transition-colors text-base group"
-          >
-            {token ? "Abrir tu cerebro" : "Acceder al demo"}
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-          </Link>
+          {token ? (
+            <Link
+              href="/chat"
+              className="relative inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white font-medium px-6 py-3.5 rounded-lg transition-colors text-base group"
+            >
+              Abrir tu cerebro
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+            </Link>
+          ) : (
+            <button
+              onClick={handleDemoClick}
+              disabled={loading}
+              className="relative inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium px-6 py-3.5 rounded-lg transition-colors text-base group"
+            >
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {loading ? "Preparando demo..." : "Acceder al demo"}
+            </button>
+          )}
+          {error && (
+            <p className="relative text-xs text-red-300 mt-3" role="alert">
+              {error}
+            </p>
+          )}
         </motion.div>
       </div>
     </section>

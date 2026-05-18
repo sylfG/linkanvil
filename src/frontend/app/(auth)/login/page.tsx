@@ -3,17 +3,15 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { LogIn, Copy, Check, Sparkles } from "lucide-react";
+import { LogIn } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
-import { copyToClipboard } from "@/lib/clipboard";
 import Logo from "@/components/Logo";
 
-// Credenciales del demo público. Coinciden con el seed inicial
-// (ops/seed_demo_user.py). Cualquiera puede usarlas para probar el
-// sistema. Si se rota la pwd del demo en BD, actualizar también aquí.
-const DEMO_EMAIL = "demo@linkanvil.io";
-const DEMO_PASSWORD = "linkanvil-demo";
+// Slice 6: /login es exclusivo de usuarios registrados. La cuenta demo
+// se entra desde la landing ("Probar demo" → POST /auth/demo-start), no
+// desde este formulario. Si alguien intenta poner demo@linkanvil.io aquí,
+// el backend responde 403 con redirect="/demo" y mostramos el mensaje.
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,9 +20,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [copiedField, setCopiedField] = useState<"email" | "password" | null>(
-    null,
-  );
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,18 +34,22 @@ export default function LoginPage() {
       setAuth(res.access_token, me);
       router.push("/chat");
     } catch (err: any) {
-      setError(err.message);
+      // El backend devuelve 403 con cuerpo estructurado cuando alguien
+      // intenta loguear con la cuenta demo. apiCall ya extrae el message
+      // del detail si viene como object; lo reforzamos por si llega
+      // como string crudo con JSON.
+      let msg = err?.message ?? "Error al iniciar sesión";
+      try {
+        const parsed = typeof msg === "string" ? JSON.parse(msg) : msg;
+        if (parsed?.error === "demo_use_dedicated_endpoint") {
+          msg = parsed.message ?? msg;
+        }
+      } catch {
+        /* msg ya es texto plano */
+      }
+      setError(msg);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function copyDemoField(field: "email" | "password") {
-    const value = field === "email" ? DEMO_EMAIL : DEMO_PASSWORD;
-    const ok = await copyToClipboard(value);
-    if (ok) {
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 1800);
     }
   }
 
@@ -62,7 +61,10 @@ export default function LoginPage() {
       className="w-full max-w-md"
     >
       <div className="flex flex-col items-center mb-8 gap-2">
-        <Link href="/" className="rounded-xl overflow-hidden hover:opacity-90 transition-opacity">
+        <Link
+          href="/"
+          className="rounded-xl overflow-hidden hover:opacity-90 transition-opacity"
+        >
           <Logo size={56} priority className="rounded-xl" />
         </Link>
         <h1 className="text-2xl font-bold text-slate-100">LinkAnvil</h1>
@@ -95,7 +97,9 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-muted mb-1.5">Contraseña</label>
+            <label className="block text-sm text-muted mb-1.5">
+              Contraseña
+            </label>
             <input
               type="password"
               required
@@ -119,39 +123,27 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Bloque DEMO: visible siempre, debajo del form. Botones copiar
-            usan lib/clipboard.ts (fallback para non-secure contexts). */}
-        <div className="mt-6 pt-6 border-t border-border/50">
-          <div className="flex items-center gap-2 mb-3">
-            <Sparkles className="w-3.5 h-3.5 text-accent-light" />
-            <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
-              Probar sin registro
-            </span>
-          </div>
-          <p className="text-xs text-muted mb-3 leading-relaxed">
-            Cuenta demo compartida con datos sembrados. Cópialos al
-            formulario y pulsa "Entrar".
-          </p>
-          <div className="space-y-2">
-            <DemoField
-              label="Email"
-              value={DEMO_EMAIL}
-              copied={copiedField === "email"}
-              onCopy={() => copyDemoField("email")}
-            />
-            <DemoField
-              label="Contraseña"
-              value={DEMO_PASSWORD}
-              copied={copiedField === "password"}
-              onCopy={() => copyDemoField("password")}
-            />
-          </div>
-        </div>
-
         <p className="text-center text-sm text-muted mt-6">
           ¿No tienes cuenta?{" "}
-          <Link href="/register" className="text-accent-light hover:underline">
+          <Link
+            href="/register"
+            className="text-accent-light hover:underline"
+          >
             Regístrate
+          </Link>
+        </p>
+
+        {/* Slice 6: enlace de vuelta a la landing donde vive el botón
+            "Probar demo". No linkeamos directamente a /demo porque esa
+            ruta requiere sesión demo previa (POST /auth/demo-start), y
+            sería un redirect loop. */}
+        <p className="text-center text-xs text-muted mt-3">
+          ¿Solo quieres ver cómo funciona?{" "}
+          <Link
+            href="/?demo=1"
+            className="text-accent-light/80 hover:underline"
+          >
+            Prueba el demo público
           </Link>
         </p>
       </div>
@@ -162,38 +154,5 @@ export default function LoginPage() {
         </Link>
       </p>
     </motion.div>
-  );
-}
-
-function DemoField({
-  label,
-  value,
-  copied,
-  onCopy,
-}: {
-  label: string;
-  value: string;
-  copied: boolean;
-  onCopy: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 bg-surface/50 border border-border rounded-lg px-3 py-2">
-      <span className="text-[11px] text-muted w-16 flex-shrink-0">{label}</span>
-      <code className="flex-1 text-xs text-slate-200 font-mono truncate">
-        {value}
-      </code>
-      <button
-        onClick={onCopy}
-        className="p-1.5 rounded-md hover:bg-card text-muted hover:text-slate-200 transition-colors"
-        title={`Copiar ${label.toLowerCase()}`}
-        aria-label={`Copiar ${label.toLowerCase()}`}
-      >
-        {copied ? (
-          <Check className="w-3 h-3 text-green-400" />
-        ) : (
-          <Copy className="w-3 h-3" />
-        )}
-      </button>
-    </div>
   );
 }

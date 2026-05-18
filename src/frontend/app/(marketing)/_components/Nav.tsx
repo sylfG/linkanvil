@@ -52,13 +52,31 @@ export default function Nav() {
           </a>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Link
-            href={token ? "/chat" : "/login"}
-            className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            {token ? "Abrir tu cerebro" : "Iniciar sesión"}
-          </Link>
+        <div className="flex items-center gap-2">
+          {token ? (
+            <Link
+              href="/chat"
+              className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Abrir tu cerebro
+            </Link>
+          ) : (
+            <>
+              {/* Login: link discreto a la izquierda. Demo: CTA principal. */}
+              <Link
+                href="/login"
+                className="hidden sm:inline-block text-sm text-muted hover:text-slate-200 px-3 py-2 transition-colors"
+              >
+                Iniciar sesión
+              </Link>
+              <Link
+                href="/?demo=1#hero"
+                className="text-sm bg-accent hover:bg-accent-hover text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Probar demo
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </nav>

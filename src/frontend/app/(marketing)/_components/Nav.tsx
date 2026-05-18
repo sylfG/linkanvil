@@ -41,11 +41,11 @@ export default function Nav() {
           <a href="#como-funciona" className="hover:text-slate-200 transition-colors">
             Cómo funciona
           </a>
+          <a href="#ejemplos" className="hover:text-slate-200 transition-colors">
+            Ejemplos
+          </a>
           <a href="#auditoria" className="hover:text-slate-200 transition-colors">
             Auditoría nocturna
-          </a>
-          <a href="#casos" className="hover:text-slate-200 transition-colors">
-            Casos
           </a>
           <a href="#faq" className="hover:text-slate-200 transition-colors">
             FAQ

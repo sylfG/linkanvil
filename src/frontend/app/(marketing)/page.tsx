@@ -4,10 +4,8 @@ import Hero from "./_components/Hero";
 import Problem from "./_components/Problem";
 import Solution from "./_components/Solution";
 import HowItWorks from "./_components/HowItWorks";
-import Features from "./_components/Features";
-import NightlyAudit from "./_components/NightlyAudit";
-import UseCases from "./_components/UseCases";
 import RealExamples from "./_components/RealExamples";
+import NightlyAudit from "./_components/NightlyAudit";
 import CTABanner from "./_components/CTABanner";
 import FAQ from "./_components/FAQ";
 import Footer from "./_components/Footer";
@@ -25,12 +23,21 @@ export const metadata: Metadata = {
   },
 };
 
-// La landing es la cara pública de LinkAnvil. Ensambla 10 secciones:
-//   Hero → Problem → Solution → HowItWorks → Features → NightlyAudit
-//   → UseCases → RealExamples → CTABanner → FAQ
-// más nav fijo y footer. Cada sección es server-renderable salvo donde
-// un hook cliente (framer-motion, useEmblaCarousel, useAuthStore) lo
-// requiere — ahí los componentes hijos llevan "use client".
+// La landing es la cara pública de LinkAnvil. Orden de secciones:
+//   Hero → Problem → Solution (6 pilares) → HowItWorks → RealExamples
+//   → NightlyAudit → CTABanner → FAQ
+//
+// Decisiones de composición:
+//   - Solution absorbe lo que antes era "Features" (eliminamos la
+//     duplicidad — ambas listaban los 6 pilares).
+//   - RealExamples va ANTES de NightlyAudit: el lector ve URLs reales
+//     clasificadas y entiende qué necesita el cron a continuación.
+//   - UseCases (personas) eliminado: los ejemplos reales con URLs
+//     comunican mejor el caso de uso que las quotes genéricas.
+//
+// Cada sección es server-renderable salvo donde un hook cliente
+// (framer-motion, useAuthStore) lo requiere — ahí los hijos llevan
+// "use client".
 export default function MarketingPage() {
   return (
     <>
@@ -40,10 +47,8 @@ export default function MarketingPage() {
         <Problem />
         <Solution />
         <HowItWorks />
-        <Features />
-        <NightlyAudit />
-        <UseCases />
         <RealExamples />
+        <NightlyAudit />
         <CTABanner />
         <FAQ />
       </main>

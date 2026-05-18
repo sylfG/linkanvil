@@ -233,6 +233,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:-cerebro_jwt_dev_secret_CHANGE_ME}
       LITELLM_URL: "http://litellm:4000"
       LITELLM_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+      DEMO_KEY_LITE: ${DEMO_KEY_LITE:-}
+      DEMO_KEY_EMBEDDINGS: ${DEMO_KEY_EMBEDDINGS:-}
+      DEMO_KEY_PRO: ${DEMO_KEY_PRO:-}
       QDRANT_URL: "http://qdrant:6333"
       INGESTION_URL: "http://ingestion-api:8000"
       PUBLIC_INGESTION_URL: ${PUBLIC_INGESTION_URL:-}

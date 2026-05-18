@@ -84,6 +84,13 @@ export interface User {
   //   ingestar/chatear". El chat además mapea 402 a este banner.
   is_demo?: boolean;
   llm_keys_configured?: boolean;
+  // Slice 5: cuando is_demo=true y el JWT lleva un sub-tenant efímero
+  // (demo_xxx), el backend rellena estos campos con el countdown desde
+  // el login. El layout pinta un banner regresivo. A los 0 segundos
+  // el siguiente request a la API devuelve 401 con
+  // X-Auth-Reason: demo_expired y el frontend redirige a /login.
+  demo_session_expires_at?: string | null;
+  demo_session_seconds_remaining?: number | null;
 }
 
 // Las 3 kinds de virtual-key que el backend espera en PUT /profile/llm-keys.

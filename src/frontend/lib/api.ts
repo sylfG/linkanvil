@@ -55,7 +55,7 @@ async function tryRefresh(): Promise<boolean> {
   return refreshInFlight;
 }
 
-async function forceLogout(): Promise<void> {
+async function forceLogout(redirectQuery: string = ""): Promise<void> {
   if (typeof window === "undefined") return;
   try {
     const mod = await import("./auth");
@@ -64,7 +64,7 @@ async function forceLogout(): Promise<void> {
     /* hard-fail logout still redirects */
   }
   if (!window.location.pathname.startsWith("/login")) {
-    window.location.href = "/login";
+    window.location.href = "/login" + redirectQuery;
   }
 }
 
@@ -73,6 +73,13 @@ async function forceLogout(): Promise<void> {
 export async function handleAuthFailure(res: Response): Promise<"refreshed" | "logout"> {
   if (res.status !== 401) return "logout";
   const reason = res.headers.get("X-Auth-Reason");
+  // Slice 5: demo_expired y demo_invalid son terminales pero queremos
+  // que el login renderice un toast explicativo ("Tu demo de 15min
+  // expiró"). Pasamos un query param que la página de login interpreta.
+  if (reason === "demo_expired" || reason === "demo_invalid") {
+    await forceLogout("?demo=expired");
+    return "logout";
+  }
   // Only "expired" is recoverable. "invalid", "missing", "no_user",
   // "refresh_invalid" — terminal, drop straight to login.
   if (reason !== "expired") {

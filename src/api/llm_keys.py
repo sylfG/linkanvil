@@ -1,14 +1,20 @@
-"""Resolución per-tenant de virtual keys LiteLLM.
+"""Resolución per-usuario de virtual keys LiteLLM.
 
-Los 5 call-sites de LLM identificados (scraper, embedder x3, chat
-completions + chat embeddings) llaman a ``resolve_llm_key(conn,
-tenant_id, kind)`` justo antes de armar el ``Authorization`` header.
+Slice 5 (clones por sesión): la resolución pasa de keyear por
+``tenant_id`` a keyear por ``user_id``. El motivo: los sub-tenants
+efímeros del demo (``demo_<8hex>``) NO tienen fila en ``usuarios``,
+así que un query por tenant_id falla. El user.id (claim ``sub`` del
+JWT) sí es estable — el demo siempre es el mismo user, aunque su
+tenant cambie cada login.
+
+Los 5 call-sites de LLM (scraper, embedder x3, chat completions +
+chat embeddings) llaman a ``resolve_llm_key(conn, user_id, kind)``
+justo antes de armar el ``Authorization`` header.
 
 Algoritmo
 ---------
 1. ``SELECT is_demo, llm_keys_configured, llm_key_<kind> FROM usuarios``
-2. Si el row no existe → ``HTTPException 401`` (tenant inválido, no
-   debería pasar tras auth, pero protección defensiva).
+2. Si el row no existe → ``HTTPException 401`` (user_id inválido).
 3. Si ``llm_key_<kind>`` está poblada → desencripta y devuelve.
 4. Si NO está poblada pero alguna OTRA key SÍ → fallback a la primera
    no-NULL. Caso típico: el usuario configura una sola key (lite) y
@@ -19,10 +25,10 @@ Algoritmo
 
 Cache
 -----
-TTL 60s in-process por ``tenant_id``. Mismo patrón que
+TTL 60s in-process por ``user_id``. Mismo patrón que
 ``_get_user_audit_policy`` en ``src/data/db.py``. La invalidación
 manual la dispara ``PUT /profile/llm-keys`` llamando a
-``invalidate_llm_key_cache(tenant_id)`` tras el UPDATE.
+``invalidate_llm_key_cache(user_id)`` tras el UPDATE.
 """
 from __future__ import annotations
 
@@ -36,7 +42,7 @@ from .crypto import decrypt_llm_key
 
 KeyKind = Literal["lite", "embeddings", "pro"]
 
-# tenant_id -> (timestamp, dict con las 3 keys ya desencriptadas o None)
+# user_id (str) -> (timestamp, dict con las 3 keys ya desencriptadas o None)
 _CACHE: dict[str, tuple[float, dict]] = {}
 _TTL_SECONDS = 60.0
 
@@ -45,13 +51,13 @@ def _now() -> float:
     return time.monotonic()
 
 
-def invalidate_llm_key_cache(tenant_id: str) -> None:
+def invalidate_llm_key_cache(user_id: str) -> None:
     """Borra la entrada del cache para forzar relectura tras UPDATE."""
-    _CACHE.pop(tenant_id, None)
+    _CACHE.pop(str(user_id), None)
 
 
 async def _load_keys(
-    conn: asyncpg.Connection, tenant_id: str
+    conn: asyncpg.Connection, user_id: str
 ) -> dict:
     row = await conn.fetchrow(
         """
@@ -61,12 +67,12 @@ async def _load_keys(
                llm_key_embeddings,
                llm_key_pro
           FROM usuarios
-         WHERE tenant_id = $1
+         WHERE id = $1::uuid
         """,
-        tenant_id,
+        user_id,
     )
     if not row:
-        raise HTTPException(status_code=401, detail="invalid_tenant")
+        raise HTTPException(status_code=401, detail="invalid_user")
 
     # Desencripta perezosamente — si falla, el caller lo verá.
     keys: dict[str, str | None] = {}
@@ -82,19 +88,20 @@ async def _load_keys(
 
 
 async def resolve_llm_key(
-    conn: asyncpg.Connection, tenant_id: str, kind: KeyKind
+    conn: asyncpg.Connection, user_id: str, kind: KeyKind
 ) -> str:
-    """Devuelve la virtual key del tenant para el alias ``kind``.
+    """Devuelve la virtual key del usuario para el alias ``kind``.
 
-    Levanta ``HTTPException(402)`` si el tenant no es demo y no tiene
+    Levanta ``HTTPException(402)`` si el user no es demo y no tiene
     ninguna key configurada.
     """
-    cached = _CACHE.get(tenant_id)
+    cache_key = str(user_id)
+    cached = _CACHE.get(cache_key)
     if cached and (_now() - cached[0]) < _TTL_SECONDS:
         data = cached[1]
     else:
-        data = await _load_keys(conn, tenant_id)
-        _CACHE[tenant_id] = (_now(), data)
+        data = await _load_keys(conn, user_id)
+        _CACHE[cache_key] = (_now(), data)
 
     # 1. Key específica disponible
     specific = data["keys"][kind]
@@ -111,7 +118,7 @@ async def resolve_llm_key(
     #    debería haber poblado las 3 con free-tier keys.
     if data["is_demo"]:
         raise RuntimeError(
-            f"Demo tenant {tenant_id} has no LLM keys configured. "
+            f"Demo user {user_id} has no LLM keys configured. "
             "Re-run ops/seed_demo_user.py with DEMO_KEY_* env-vars set."
         )
 
@@ -125,16 +132,4 @@ async def resolve_llm_key(
                 "el chat o ingestar URLs."
             ),
         },
-    )
-
-
-async def is_demo_tenant(
-    conn: asyncpg.Connection, tenant_id: str
-) -> bool:
-    """Helper rápido para guards de endpoint (no toca el cache de keys)."""
-    return bool(
-        await conn.fetchval(
-            "SELECT is_demo FROM usuarios WHERE tenant_id = $1",
-            tenant_id,
-        )
     )

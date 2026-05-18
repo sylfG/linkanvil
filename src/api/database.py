@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from typing import Optional
 
 import asyncpg
@@ -9,7 +10,166 @@ DATABASE_URL = os.getenv(
     "postgresql://cerebro:cerebro_db_pass@postgres:5432/cerebro_brain",
 )
 
+# Slice 5: tenant inmutable que aloja los 18 recursos seed del demo.
+# Los sub-tenants efímeros del demo (demo_<8hex>) hacen UNION con este
+# tenant en READS para ver los seed compartidos.
+DEMO_SEED_TENANT_ID = "user_demo_landing"
+DEMO_SESSION_TTL_MINUTES = 15
+
 _pool: Optional[asyncpg.Pool] = None
+
+
+def _as_tenant_list(tenant_id_or_list) -> list[str]:
+    """Helper de compat: el código viejo pasaba ``tenant_id: str``.
+    Las funciones de lectura ahora aceptan ``str | list[str]``; si reciben
+    string lo envuelven en lista de 1 elemento, si reciben lista la usan
+    tal cual. Permite migrar callers incrementalmente sin romper nada.
+    """
+    if isinstance(tenant_id_or_list, str):
+        return [tenant_id_or_list]
+    return list(tenant_id_or_list)
+
+
+# ── demo sessions (Slice 5) ───────────────────────────────────────────────────
+
+async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
+    """Crea un sub-tenant efímero (TTL 15min) para una nueva sesión demo.
+
+    Devuelve { tenant_id, created_at, expires_at }. El tenant_id sigue
+    el patrón ``demo_<8hex>`` para que el código pueda detectar sesiones
+    de demo mirando el prefijo (sin segundo query).
+    """
+    tenant_id = f"demo_{secrets.token_hex(4)}"
+    p = await get_pool()
+    row = await p.fetchrow(
+        """
+        INSERT INTO demo_sessions (tenant_id, user_id, expires_at, ip)
+        VALUES ($1, $2::uuid, NOW() + ($3::int * INTERVAL '1 minute'), $4)
+        RETURNING tenant_id, created_at, expires_at
+        """,
+        tenant_id, user_id, DEMO_SESSION_TTL_MINUTES, ip,
+    )
+    return dict(row)
+
+
+async def get_demo_session(tenant_id: str) -> Optional[dict]:
+    """Devuelve el row de demo_sessions o None si no existe / no es demo."""
+    if not tenant_id or not tenant_id.startswith("demo_"):
+        return None
+    p = await get_pool()
+    row = await p.fetchrow(
+        """SELECT tenant_id, user_id, created_at, expires_at, last_seen_at
+             FROM demo_sessions
+            WHERE tenant_id = $1""",
+        tenant_id,
+    )
+    return dict(row) if row else None
+
+
+async def get_expired_demo_sessions() -> list[dict]:
+    p = await get_pool()
+    rows = await p.fetch(
+        "SELECT tenant_id, user_id FROM demo_sessions WHERE expires_at < NOW()",
+    )
+    return [dict(r) for r in rows]
+
+
+async def delete_demo_session_cascade(tenant_id: str) -> dict:
+    """Borra una sesión demo expirada y todo su contenido en BD.
+
+    Orden de borrado (FK + integridad referencial):
+      1. chat_messages → chat_sessions de ese tenant
+      2. chat_sessions del tenant
+      3. notificaciones del tenant
+      4. usuario_recursos del tenant
+      5. recursos huérfanos (sin ningún tenant_id tras 4) — EXCEPTO los
+         que tienen url_hash idéntico a algún recurso del seed (para
+         no borrar accidentalmente los canónicos si el visitante reingestó
+         un URL que ya existía en el seed)
+      6. demo_sessions row
+
+    Devuelve un dict con conteos para logging.
+
+    Los Qdrant points (chunks + recurso summaries) los borra el cleanup
+    task EN main.py, no aquí — necesita HTTP al servicio Qdrant.
+    """
+    if not tenant_id.startswith("demo_"):
+        # Salvaguarda: nunca borrar tenants que no sean demo sub-sessions.
+        raise ValueError(f"refusing to cascade-delete non-demo tenant: {tenant_id!r}")
+
+    p = await get_pool()
+    out = {"tenant_id": tenant_id}
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            # sesiones_chat y usuario_recursos llevan RLS forced con
+            # policy ``tenant_isolation``: requieren que
+            # ``current_setting('app.tenant_id')`` coincida con la fila
+            # antes de poder borrar. Set LOCAL → solo para esta tx.
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+            )
+
+            # sesiones_chat: tabla en español. mensajes_chat cascadea
+            # vía FK ON DELETE CASCADE (no la borramos explícita).
+            r = await conn.execute(
+                "DELETE FROM sesiones_chat WHERE tenant_id = $1", tenant_id,
+            )
+            out["sesiones_chat"] = _parse_delete_count(r)
+
+            # notificaciones: sin RLS, delete directo.
+            r = await conn.execute(
+                "DELETE FROM notificaciones WHERE tenant_id = $1", tenant_id,
+            )
+            out["notificaciones"] = _parse_delete_count(r)
+
+            # Capturar recurso_ids ANTES de borrar usuario_recursos
+            # para poder detectar huérfanos después.
+            recurso_rows = await conn.fetch(
+                "SELECT recurso_id FROM usuario_recursos WHERE tenant_id = $1",
+                tenant_id,
+            )
+            recurso_ids = [r["recurso_id"] for r in recurso_rows]
+
+            r = await conn.execute(
+                "DELETE FROM usuario_recursos WHERE tenant_id = $1", tenant_id,
+            )
+            out["usuario_recursos"] = _parse_delete_count(r)
+
+            # Huérfanos: recursos que quedaron sin ningún tenant tras el delete
+            # de usuario_recursos. Salvaguarda extra: no borrar nunca un recurso
+            # cuyo url_hash coincida con uno asociado al seed canónico.
+            if recurso_ids:
+                r = await conn.execute(
+                    """DELETE FROM recursos r
+                        WHERE r.id = ANY($1::uuid[])
+                          AND NOT EXISTS (
+                              SELECT 1 FROM usuario_recursos ur
+                               WHERE ur.recurso_id = r.id
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM usuario_recursos ur2
+                                JOIN recursos r2 ON r2.id = ur2.recurso_id
+                               WHERE ur2.tenant_id = $2
+                                 AND r2.url_hash = r.url_hash
+                          )""",
+                    recurso_ids, DEMO_SEED_TENANT_ID,
+                )
+                out["recursos_huerfanos"] = _parse_delete_count(r)
+            else:
+                out["recursos_huerfanos"] = 0
+
+            r = await conn.execute(
+                "DELETE FROM demo_sessions WHERE tenant_id = $1", tenant_id,
+            )
+            out["demo_sessions"] = _parse_delete_count(r)
+
+    return out
+
+
+def _parse_delete_count(execute_result: str) -> int:
+    """asyncpg.execute() devuelve 'DELETE N' como string. Extrae N."""
+    parts = execute_result.split()
+    return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
 
 async def _init_conn(conn: asyncpg.Connection) -> None:
@@ -113,86 +273,94 @@ async def update_llm_keys(
 # ── recursos (KB) ─────────────────────────────────────────────────────────────
 
 async def get_resources(
-    tenant_id: str, estado: str = "todos", limit: int = 100
+    tenant_id, estado: str = "todos", limit: int = 100
 ) -> list[dict]:
     """Lista los recursos asociados al tenant via la pivote `usuario_recursos`.
     `created_at` es el momento en que el usuario añadió la URL a su KB
     (no el de creación global del recurso).
+
+    Slice 5: ``tenant_id`` acepta ``str`` (single tenant) o ``list[str]``
+    (UNION — usado por demo sessions que ven session_tenant + seed).
 
     Por defecto (`estado='todos'`) excluimos `cuarentena` y `expirado` —
     tienen vistas dedicadas (`/quarantine`, `/expired`) y mezclarlos en la
     KB es ruidoso. Para verlos hay que pedirlos explícitamente
     (`estado='cuarentena'` o `estado='expirado'`) o usar el alias
     `estado='_all'` que sí los incluye."""
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     base = """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
                      r.estado, r.volatilidad, r.fecha_caducidad,
                      ur.created_at, r.updated_at
               FROM recursos r
               JOIN usuario_recursos ur ON ur.recurso_id = r.id
-              WHERE ur.tenant_id = $1"""
+              WHERE ur.tenant_id = ANY($1::text[])"""
     if estado == "_all":
         rows = await p.fetch(
             base + " ORDER BY ur.created_at DESC LIMIT $2",
-            tenant_id, limit,
+            tenants, limit,
         )
     elif estado and estado != "todos":
         rows = await p.fetch(
             base + " AND r.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
-            tenant_id, estado, limit,
+            tenants, estado, limit,
         )
     else:
         rows = await p.fetch(
             base + " AND r.estado NOT IN ('cuarentena','expirado')"
                    " ORDER BY ur.created_at DESC LIMIT $2",
-            tenant_id, limit,
+            tenants, limit,
         )
     return [dict(r) for r in rows]
 
 
 async def get_active_resource_ids(
-    tenant_id: str, ids: list[str], include_archive: bool = False
+    tenant_id, ids: list[str], include_archive: bool = False
 ) -> list[str]:
-    """Return only the IDs from `ids` that the tenant has linked AND are
-    `estado='activo'`. Si `include_archive=True`, también incluye recursos
-    en `estado='expirado'` (que ahora funciona como "Archivo histórico" —
-    toggle del chat añadido en la migración 0006)."""
+    """Return only the IDs from `ids` that the tenant(s) have linked AND
+    are `estado='activo'`. Si `include_archive=True`, también incluye
+    recursos en `estado='expirado'`.
+
+    Slice 5: acepta ``tenant_id`` como str o list[str] para soportar el
+    UNION de demo session + seed."""
     if not ids:
         return []
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     allowed_states = ["activo"]
     if include_archive:
         allowed_states.append("expirado")
     rows = await p.fetch(
         """
-        SELECT r.id::text
+        SELECT DISTINCT r.id::text
         FROM recursos r
         JOIN usuario_recursos ur ON ur.recurso_id = r.id
-        WHERE ur.tenant_id = $1
+        WHERE ur.tenant_id = ANY($1::text[])
           AND r.estado = ANY($2::text[])
           AND r.id = ANY($3::uuid[])
         """,
-        tenant_id, allowed_states, ids,
+        tenants, allowed_states, ids,
     )
     return [r["id"] for r in rows]
 
 
-async def get_resources_for_rag(tenant_id: str, ids: list[str]) -> list[dict]:
-    """Devuelve recursos activos del tenant con campos enriquecidos para inyectar
-    como contexto del LLM (titulo, resumen, url, tags, categoria)."""
+async def get_resources_for_rag(tenant_id, ids: list[str]) -> list[dict]:
+    """Devuelve recursos activos del tenant con campos enriquecidos para
+    inyectar como contexto del LLM. Slice 5: tenant_id str | list[str]."""
     if not ids:
         return []
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     rows = await p.fetch(
         """
-        SELECT r.id::text, r.titulo, r.resumen, r.url, r.tags, r.categoria
+        SELECT DISTINCT r.id::text, r.titulo, r.resumen, r.url, r.tags, r.categoria
         FROM recursos r
         JOIN usuario_recursos ur ON ur.recurso_id = r.id
-        WHERE ur.tenant_id = $1
+        WHERE ur.tenant_id = ANY($1::text[])
           AND r.estado = 'activo'
           AND r.id = ANY($2::uuid[])
         """,
-        tenant_id, ids,
+        tenants, ids,
     )
     return [dict(r) for r in rows]
 
@@ -206,44 +374,45 @@ GRACE_PERIOD_DAYS = int(os.getenv("OBSOLESCENCE_GRACE_DAYS", "30"))
 _VOLATILITY_DAYS = {"baja": 365, "media": 180, "alta": 60, "dinamica": 30}
 
 
-async def list_quarantine(tenant_id: str, limit: int = 100) -> list[dict]:
-    """Recursos en `cuarentena` linkeados al tenant, con días restantes."""
+async def list_quarantine(tenant_id, limit: int = 100) -> list[dict]:
+    """Recursos en `cuarentena` linkeados al tenant. Slice 5: str|list."""
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     rows = await p.fetch(
-        """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria,
+        """SELECT DISTINCT r.id, r.url, r.titulo, r.resumen, r.categoria,
                   r.volatilidad, r.fecha_caducidad,
                   r.quarantined_at, r.quarantine_reason, r.quarantine_grace_until,
                   GREATEST(0, (r.quarantine_grace_until - NOW()::DATE))::int AS dias_restantes,
                   ur.created_at
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = $1 AND r.estado = 'cuarentena'
+           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'cuarentena'
            ORDER BY r.quarantine_grace_until ASC NULLS LAST
            LIMIT $2""",
-        tenant_id, limit,
+        tenants, limit,
     )
     return [dict(r) for r in rows]
 
 
-async def count_quarantine(tenant_id: str) -> int:
+async def count_quarantine(tenant_id) -> int:
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     row = await p.fetchrow(
-        """SELECT COUNT(*) AS n
+        """SELECT COUNT(DISTINCT r.id) AS n
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = $1 AND r.estado = 'cuarentena'""",
-        tenant_id,
+           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'cuarentena'""",
+        tenants,
     )
     return int(row["n"])
 
 
-async def list_expired(tenant_id: str, limit: int = 100) -> list[dict]:
-    """Recursos en `expirado` linkeados al tenant. `dias_desde_expiracion`
-    se calcula contra `fecha_caducidad` (puede ser NULL en recursos antiguos
-    que se expiraron sin tener fecha registrada — devolvemos NULL en ese caso)."""
+async def list_expired(tenant_id, limit: int = 100) -> list[dict]:
+    """Recursos en `expirado` linkeados al tenant. Slice 5: str|list."""
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     rows = await p.fetch(
-        """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria,
+        """SELECT DISTINCT r.id, r.url, r.titulo, r.resumen, r.categoria,
                   r.volatilidad, r.fecha_caducidad,
                   r.quarantined_at, r.quarantine_reason,
                   CASE WHEN r.fecha_caducidad IS NULL THEN NULL
@@ -252,22 +421,23 @@ async def list_expired(tenant_id: str, limit: int = 100) -> list[dict]:
                   ur.created_at, r.updated_at
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = $1 AND r.estado = 'expirado'
+           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'expirado'
            ORDER BY r.fecha_caducidad DESC NULLS LAST
            LIMIT $2""",
-        tenant_id, limit,
+        tenants, limit,
     )
     return [dict(r) for r in rows]
 
 
-async def count_expired(tenant_id: str) -> int:
+async def count_expired(tenant_id) -> int:
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     row = await p.fetchrow(
-        """SELECT COUNT(*) AS n
+        """SELECT COUNT(DISTINCT r.id) AS n
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = $1 AND r.estado = 'expirado'""",
-        tenant_id,
+           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'expirado'""",
+        tenants,
     )
     return int(row["n"])
 
@@ -275,36 +445,39 @@ async def count_expired(tenant_id: str) -> int:
 # ── notificaciones in-app (F-05.3) ────────────────────────────────────────────
 
 async def list_notifications(
-    tenant_id: str, limit: int = 50, only_unread: bool = False,
+    tenant_id, limit: int = 50, only_unread: bool = False,
 ) -> list[dict]:
+    """Slice 5: tenant_id str|list[str]. Demo session une con seed_tenant."""
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     if only_unread:
         rows = await p.fetch(
             """SELECT id, evento_tipo, recurso_id, titulo, url, motivo,
                       leido, created_at
                FROM notificaciones
-               WHERE tenant_id = $1 AND leido = FALSE
+               WHERE tenant_id = ANY($1::text[]) AND leido = FALSE
                ORDER BY created_at DESC LIMIT $2""",
-            tenant_id, limit,
+            tenants, limit,
         )
     else:
         rows = await p.fetch(
             """SELECT id, evento_tipo, recurso_id, titulo, url, motivo,
                       leido, created_at
                FROM notificaciones
-               WHERE tenant_id = $1
+               WHERE tenant_id = ANY($1::text[])
                ORDER BY created_at DESC LIMIT $2""",
-            tenant_id, limit,
+            tenants, limit,
         )
     return [dict(r) for r in rows]
 
 
-async def count_unread_notifications(tenant_id: str) -> int:
+async def count_unread_notifications(tenant_id) -> int:
+    tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
     row = await p.fetchrow(
         """SELECT COUNT(*) AS n FROM notificaciones
-           WHERE tenant_id = $1 AND leido = FALSE""",
-        tenant_id,
+           WHERE tenant_id = ANY($1::text[]) AND leido = FALSE""",
+        tenants,
     )
     return int(row["n"])
 

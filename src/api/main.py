@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -78,17 +79,99 @@ def _model_kind(model: str) -> str:
     return "pro" if "pro" in model.lower() else "lite"
 
 
-async def _resolve_tenant_key(tenant_id: str, kind: str) -> str:
+async def _resolve_user_key(user_id: str, kind: str) -> str:
     """Wrapper que abre conn del pool y delega a resolve_llm_key.
 
-    Levanta HTTPException 402 si el tenant no es demo y no tiene
-    keys configuradas. El cache TTL 60s vive dentro del módulo
-    ``llm_keys`` — sucesivas llamadas para el mismo tenant no
-    repegan a BD.
+    Slice 5: ahora keyea por ``user_id`` (no tenant_id) porque los
+    sub-tenants efímeros del demo no tienen fila en ``usuarios``.
+    El demo user es siempre el mismo (id estable), aunque su tenant
+    cambie en cada login.
+
+    Levanta HTTPException 402 si el user no es demo y no tiene keys
+    configuradas. Cache TTL 60s vive en llm_keys.py.
     """
     p = await db.get_pool()
     async with p.acquire() as conn:
-        return await resolve_llm_key(conn, tenant_id, kind)
+        return await resolve_llm_key(conn, user_id, kind)
+
+
+def _tenant_ids_for(user: dict) -> list[str]:
+    """Devuelve los tenant_ids que un usuario puede VER en lecturas.
+
+    Slice 5:
+    - Demo session (tenant_id empieza con 'demo_'): UNION con el seed
+      tenant compartido (``user_demo_landing``) para que vea los 18
+      recursos canónicos sin duplicarlos en BD ni Qdrant.
+    - Resto: solo su propio tenant_id.
+
+    Para ESCRITURAS (ingest, chat session save, notifications) usa
+    ``user['tenant_id']`` directamente — el seed es inmutable.
+    """
+    if str(user.get("tenant_id", "")).startswith("demo_"):
+        return [user["tenant_id"], db.DEMO_SEED_TENANT_ID]
+    return [user["tenant_id"]]
+
+
+def _is_demo_session(user: dict) -> bool:
+    return str(user.get("tenant_id", "")).startswith("demo_")
+
+
+async def _qdrant_delete_tenant_points(tenant_id: str) -> None:
+    """Borra todos los Qdrant points filtrados por payload.tenant_id.
+
+    Usado por el cleanup task tras expirar una sesión demo. Falla-soft:
+    si Qdrant está caído logueamos y seguimos — el cleanup retrigea
+    en el siguiente tick.
+    """
+    if _http is None:
+        return
+    filter_body = {
+        "filter": {
+            "must": [{"key": "tenant_id", "match": {"value": tenant_id}}]
+        }
+    }
+    for collection in ("cerebro_chunks", "cerebro_recursos"):
+        try:
+            await _http.post(
+                f"{QDRANT_URL}/collections/{collection}/points/delete",
+                json=filter_body,
+                timeout=10.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "qdrant delete %s/%s failed: %s", collection, tenant_id, exc
+            )
+
+
+async def _cleanup_demo_sessions_loop() -> None:
+    """Background task que cada 60s limpia las sesiones demo expiradas.
+
+    Orden: Qdrant first (puede fallar y reintentarse en el siguiente
+    tick) → BD cascade (transaccional, una vez OK no se pierde el
+    cleanup). Si Qdrant falla el siguiente tick lo recoge porque la
+    sesión sigue en BD hasta que ambas limpiezas pasan en orden.
+
+    En realidad: como BD borra siempre tras Qdrant, si Qdrant fallase
+    quedarían points huérfanos (sin tenant válido). Aceptable — un
+    barrido manual semanal los limpia. Lo importante: BD queda
+    consistente.
+    """
+    while True:
+        try:
+            expired = await db.get_expired_demo_sessions()
+            for s in expired:
+                tenant_id = s["tenant_id"]
+                await _qdrant_delete_tenant_points(tenant_id)
+                result = await db.delete_demo_session_cascade(tenant_id)
+                logger.info("demo session cleaned: %s", result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("demo cleanup tick failed")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
 
 _redis: Optional[aioredis.Redis] = None
 _http: Optional[httpx.AsyncClient] = None
@@ -112,7 +195,20 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("AUDIT_CRON_TOKEN configurado (longitud=%d)", len(os.getenv("AUDIT_CRON_TOKEN", "")))
 
+    # Slice 5: background task que limpia sub-tenants demo expirados.
+    # Corre cada 60s — granularidad fina porque el TTL es de 15min y
+    # queremos que los visitantes recién expirados se limpien rápido.
+    # Se cancela limpiamente al shutdown.
+    cleanup_task = asyncio.create_task(_cleanup_demo_sessions_loop())
+
     yield
+
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
     if _redis:
         await _redis.aclose()
     if _http:
@@ -162,6 +258,45 @@ async def get_current_user(
     user = await db.get_user_by_id(payload["sub"])
     if not user:
         raise HTTPException(401, "Usuario no encontrado", headers={"X-Auth-Reason": "no_user"})
+
+    # Slice 5: si el JWT lleva un sub-tenant de demo (formato demo_<8hex>)
+    # validamos que la fila exista en demo_sessions y no esté expirada.
+    # Sobreescribimos user['tenant_id'] con el del JWT para que los
+    # endpoints downstream operen en el namespace aislado del visitante.
+    jwt_tenant = payload.get("tenant_id")
+    if jwt_tenant and jwt_tenant.startswith("demo_"):
+        session = await db.get_demo_session(jwt_tenant)
+        if not session:
+            raise HTTPException(
+                401,
+                {"error": "demo_session_invalid", "message": "Tu sesión demo ya no existe."},
+                headers={"X-Auth-Reason": "demo_invalid"},
+            )
+        now = datetime.now(timezone.utc)
+        expires_at = session["expires_at"]
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            raise HTTPException(
+                401,
+                {
+                    "error": "demo_session_expired",
+                    "message": (
+                        "Tu sesión demo de 15 minutos ha expirado. "
+                        "Recárgala desde /login para empezar otra."
+                    ),
+                },
+                headers={"X-Auth-Reason": "demo_expired"},
+            )
+        # Override y memoizamos campos derivados para que /auth/me los
+        # devuelva sin re-query.
+        user = dict(user)
+        user["tenant_id"] = jwt_tenant
+        user["demo_session_expires_at"] = expires_at
+        user["demo_session_seconds_remaining"] = max(
+            0, int((expires_at - now).total_seconds())
+        )
+
     return user
 
 
@@ -226,17 +361,23 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(REFRESH_COOKIE, path="/", domain=COOKIE_DOMAIN)
 
 
-async def _issue_refresh_token(user: dict) -> str:
-    """Mint a new opaque refresh token, persist its hash in Redis, return the raw value."""
+async def _issue_refresh_token(
+    user: dict, session_tenant: Optional[str] = None,
+) -> str:
+    """Mint a new opaque refresh token, persist its hash in Redis, return raw.
+
+    Slice 5: ``session_tenant`` permite atar el refresh a un sub-tenant
+    demo. Sin esto, al refrescar habría que crear OTRA sesión demo (lo
+    cual el usuario no espera — quiere mantener la suya hasta los 15min).
+    Si es None, se usa user.tenant_id (comportamiento de registered).
+    """
     raw = generate_refresh_token()
     if _redis is None:
-        # Redis-less mode is only legitimate in tests; without it the
-        # refresh token is unverifiable later, so we just return the raw
-        # value and the next refresh call will fail back to login.
         return raw
     payload = json.dumps({
         "user_id": str(user["id"]),
-        "tenant_id": user["tenant_id"],
+        "tenant_id": user["tenant_id"],   # seed para demo, real para registered
+        "session_tenant": session_tenant,  # sub-tenant efímero o None
         "email": user["email"],
     })
     await _redis.set(
@@ -429,9 +570,13 @@ async def rate_limit_audit(user: dict = Depends(get_current_user)) -> dict:
 # Auth
 # ---------------------------------------------------------------------------
 
-def _access_token_for(user: dict) -> str:
+def _access_token_for(user: dict, tenant_id: Optional[str] = None) -> str:
+    """Slice 5: ``tenant_id`` override permite emitir un JWT con un
+    tenant distinto al del row de ``usuarios`` (necesario para sesiones
+    demo que llevan sub-tenants efímeros, no el seed)."""
+    effective_tenant = tenant_id if tenant_id is not None else user["tenant_id"]
     return create_access_token(
-        {"sub": str(user["id"]), "tenant_id": user["tenant_id"], "email": user["email"]}
+        {"sub": str(user["id"]), "tenant_id": effective_tenant, "email": user["email"]}
     )
 
 
@@ -445,19 +590,37 @@ async def register(req: RegisterRequest, response: Response, _=Depends(rate_limi
     csrf = _set_session_cookies(response, token)
     refresh = await _issue_refresh_token(user)
     _set_refresh_cookie(response, refresh)
-    # The access_token is still in the body so the legacy Authorization
-    # header path keeps working until the frontend fully migrates.
     return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
 
 
 @app.post("/auth/login")
-async def login(req: LoginRequest, response: Response, _=Depends(rate_limit_login)):
+async def login(
+    req: LoginRequest,
+    request: Request,
+    response: Response,
+    _=Depends(rate_limit_login),
+):
     user = await db.get_user_by_email(req.email)
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Credenciales incorrectas")
-    token = _access_token_for(user)
+
+    # Slice 5: cada login del demo crea un sub-tenant efímero con TTL
+    # 15min. El JWT lleva ese tenant_id, no el del seed. Es lo que
+    # permite que distintos visitantes vean KB aisladas y que el reset
+    # de uno no afecte a los demás.
+    effective_tenant: Optional[str] = None
+    if user.get("is_demo"):
+        ip = _client_ip(request)
+        session = await db.create_demo_session(str(user["id"]), ip=ip)
+        effective_tenant = session["tenant_id"]
+        logger.info(
+            "demo session created: tenant=%s ip=%s expires=%s",
+            effective_tenant, ip, session["expires_at"].isoformat(),
+        )
+
+    token = _access_token_for(user, tenant_id=effective_tenant)
     csrf = _set_session_cookies(response, token)
-    refresh = await _issue_refresh_token(user)
+    refresh = await _issue_refresh_token(user, session_tenant=effective_tenant)
     _set_refresh_cookie(response, refresh)
     return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
 
@@ -495,9 +658,39 @@ async def refresh_session(
     if not user:
         raise HTTPException(401, "Usuario inexistente", headers={"X-Auth-Reason": "no_user"})
 
-    token = _access_token_for(user)
+    # Slice 5: si el refresh estaba atado a una sesión demo, validamos
+    # que sigue viva. Si expiró, 401 — el usuario debe re-loguear (lo
+    # que crea una sesión nueva). No auto-renovamos el TTL en refresh.
+    session_tenant = meta.get("session_tenant")
+    if user.get("is_demo"):
+        if not session_tenant:
+            # Token viejo sin session_tenant — fuerza re-login.
+            raise HTTPException(
+                401,
+                {"error": "demo_session_expired"},
+                headers={"X-Auth-Reason": "demo_expired"},
+            )
+        session = await db.get_demo_session(session_tenant)
+        if not session:
+            raise HTTPException(
+                401,
+                {"error": "demo_session_expired"},
+                headers={"X-Auth-Reason": "demo_expired"},
+            )
+        now = datetime.now(timezone.utc)
+        expires_at = session["expires_at"]
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            raise HTTPException(
+                401,
+                {"error": "demo_session_expired"},
+                headers={"X-Auth-Reason": "demo_expired"},
+            )
+
+    token = _access_token_for(user, tenant_id=session_tenant)
     csrf = _set_session_cookies(response, token)
-    new_refresh = await _issue_refresh_token(user)
+    new_refresh = await _issue_refresh_token(user, session_tenant=session_tenant)
     _set_refresh_cookie(response, new_refresh)
     return {"access_token": token, "token_type": "bearer", "csrf_token": csrf}
 
@@ -533,6 +726,13 @@ async def me(user=Depends(get_current_user)):
         "is_demo": bool(user.get("is_demo", False)),
         "llm_keys_configured": bool(user.get("llm_keys_configured", False)),
     }
+    # Slice 5: campos de sesión demo (TTL 15min). get_current_user los
+    # adjunta a user si el JWT lleva un sub-tenant. Si no son demo o no
+    # están seteados, quedan None y el frontend no pinta countdown.
+    if user.get("demo_session_expires_at"):
+        kwargs["demo_session_expires_at"] = user["demo_session_expires_at"].isoformat()
+    if user.get("demo_session_seconds_remaining") is not None:
+        kwargs["demo_session_seconds_remaining"] = user["demo_session_seconds_remaining"]
     if raw_policy is not None:
         kwargs["audit_policy"] = raw_policy
     return UserResponse(**kwargs)
@@ -683,7 +883,9 @@ async def update_llm_keys_endpoint(
     )
     # Forzar relectura en el cache de resolve_llm_key (TTL 60s podría
     # devolver datos viejos sin esto, frustrando el "guardar y probar").
-    invalidate_llm_key_cache(user["tenant_id"])
+    # Slice 5: el cache keyea por user.id (no tenant_id), para soportar
+    # sub-tenants demo que no tienen fila en usuarios.
+    invalidate_llm_key_cache(str(user["id"]))
 
     return {
         "status": "ok",
@@ -749,7 +951,8 @@ async def get_resources(
     limit: int = Query(100, gt=0, le=500),
     user=Depends(get_current_user),
 ):
-    return await db.get_resources(user["tenant_id"], estado, limit)
+    # Slice 5: para demo sessions, _tenant_ids_for añade el seed tenant.
+    return await db.get_resources(_tenant_ids_for(user), estado, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -762,9 +965,10 @@ async def list_quarantine(
     limit: int = Query(100, gt=0, le=500),
     user=Depends(get_current_user),
 ):
+    tenants = _tenant_ids_for(user)
     if count_only:
-        return {"count": await db.count_quarantine(user["tenant_id"])}
-    items = await db.list_quarantine(user["tenant_id"], limit)
+        return {"count": await db.count_quarantine(tenants)}
+    items = await db.list_quarantine(tenants, limit)
     return {"items": items, "count": len(items)}
 
 
@@ -774,9 +978,10 @@ async def list_expired_endpoint(
     limit: int = Query(100, gt=0, le=500),
     user=Depends(get_current_user),
 ):
+    tenants = _tenant_ids_for(user)
     if count_only:
-        return {"count": await db.count_expired(user["tenant_id"])}
-    items = await db.list_expired(user["tenant_id"], limit)
+        return {"count": await db.count_expired(tenants)}
+    items = await db.list_expired(tenants, limit)
     return {"items": items, "count": len(items)}
 
 
@@ -791,9 +996,10 @@ async def list_notifications_endpoint(
     limit: int = Query(50, gt=0, le=200),
     user=Depends(get_current_user),
 ):
+    tenants = _tenant_ids_for(user)
     if count_only:
-        return {"count": await db.count_unread_notifications(user["tenant_id"])}
-    items = await db.list_notifications(user["tenant_id"], limit, only_unread)
+        return {"count": await db.count_unread_notifications(tenants)}
+    items = await db.list_notifications(tenants, limit, only_unread)
     return {"items": items, "count": len(items)}
 
 
@@ -1035,11 +1241,14 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
         )
         if last_user:
             try:
-                # Migración 0008: resolvemos la virtual-key del tenant
-                # para embeddings (kind="embeddings"). Demo usa sus keys
-                # pre-configuradas; registered con BYOK usa las suyas.
-                tenant_emb_key = await _resolve_tenant_key(
-                    user["tenant_id"], "embeddings"
+                # Migración 0008 + Slice 5: resolvemos la virtual-key
+                # del usuario (no del tenant) para embeddings. Demo usa
+                # sus keys pre-configuradas; registered con BYOK usa
+                # las suyas. La key se asocia al user, no al tenant
+                # — necesario para que sub-tenants demo (sin row en
+                # usuarios) puedan resolverla.
+                tenant_emb_key = await _resolve_user_key(
+                    str(user["id"]), "embeddings"
                 )
                 headers = {
                     "Authorization": f"Bearer {tenant_emb_key}",
@@ -1053,13 +1262,22 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                 )
                 if er.status_code == 200:
                     vector = er.json()["data"][0]["embedding"]
+                    # Slice 5: para demo session, el filter incluye AMBOS
+                    # tenants (session + seed) vía cláusula `should`.
+                    # Qdrant: dentro de `must`, un sub-bloque `should`
+                    # requiere que al menos una condición matchee. Esto
+                    # nos da OR en tenant_id manteniendo AND con otros
+                    # filtros futuros si los añadimos.
+                    visible_tenants = _tenant_ids_for(user)
+                    tenant_filter = {
+                        "should": [
+                            {"key": "tenant_id", "match": {"value": t}}
+                            for t in visible_tenants
+                        ]
+                    }
                     search = {
                         "vector": vector,
-                        "filter": {
-                            "must": [
-                                {"key": "tenant_id", "match": {"value": user["tenant_id"]}}
-                            ]
-                        },
+                        "filter": {"must": [tenant_filter]},
                         "limit": 10,
                         "with_payload": True,
                     }
@@ -1081,7 +1299,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                                 if h.get("payload", {}).get("recurso_id")
                             ]
                             active_ids = await db.get_active_resource_ids(
-                                user["tenant_id"],
+                                visible_tenants,
                                 recurso_ids,
                                 include_archive=req.include_archive,
                             )
@@ -1146,10 +1364,12 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
         req.model, req.use_rag, len(hits), len(context_block), len(llm_msgs),
     )
 
-    # Migración 0008: resolvemos la virtual-key per-tenant según el alias
-    # del modelo del request (cerebro-pro → kind=pro, resto → lite).
-    tenant_chat_key = await _resolve_tenant_key(
-        user["tenant_id"], _model_kind(req.model)
+    # Migración 0008 + Slice 5: resolvemos la virtual-key per-USUARIO
+    # (no per-tenant) según el alias del modelo (cerebro-pro → pro,
+    # resto → lite). Slice 5 cambió de tenant_id a user_id para que
+    # sub-tenants demo (sin row en usuarios) sigan resolviendo.
+    tenant_chat_key = await _resolve_user_key(
+        str(user["id"]), _model_kind(req.model)
     )
     litellm_headers = {"Authorization": f"Bearer {tenant_chat_key}", "Content-Type": "application/json"}
 
@@ -1216,6 +1436,36 @@ async def trigger_audit_cron(x_admin_token: str | None = Header(None, alias="X-A
     from src.data.audit_cron import run_audit_cron
     result = await run_audit_cron()
     return {"status": "ok", **result}
+
+
+@app.post("/admin/cleanup-demo-sessions")
+async def cleanup_demo_sessions(
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+):
+    """Slice 5: dispara manualmente la limpieza de sesiones demo
+    expiradas. Útil para n8n cron de respaldo (el cleanup_task de la
+    api ya corre cada 60s, este endpoint es para visibilidad y disaster
+    recovery — un operador puede dispararlo para verificar inmediatamente
+    sin esperar al tick).
+
+    Idempotente: si no hay sesiones expiradas, devuelve cleaned=0.
+    """
+    if not AUDIT_CRON_TOKEN:
+        raise HTTPException(503, "AUDIT_CRON_TOKEN no configurado")
+    if x_admin_token != AUDIT_CRON_TOKEN:
+        raise HTTPException(401, "Token administrativo inválido")
+
+    expired = await db.get_expired_demo_sessions()
+    details = []
+    for s in expired:
+        try:
+            await _qdrant_delete_tenant_points(s["tenant_id"])
+            res = await db.delete_demo_session_cascade(s["tenant_id"])
+            details.append(res)
+        except Exception as exc:
+            logger.exception("cleanup failed for %s: %s", s["tenant_id"], exc)
+            details.append({"tenant_id": s["tenant_id"], "error": str(exc)})
+    return {"status": "ok", "cleaned": len(details), "details": details}
 
 
 @app.post("/admin/cf-cookies")

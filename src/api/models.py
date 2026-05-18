@@ -71,6 +71,12 @@ class UserResponse(BaseModel):
     # banner "Sin claves, no puedes ingestar/chatear" o no.
     is_demo: bool = False
     llm_keys_configured: bool = False
+    # Slice 5: cuando el usuario está en una sesión demo efímera, estos
+    # campos llevan la info del countdown (TTL 15min desde el login).
+    # Ausentes (None) para usuarios registrados. El frontend pinta el
+    # banner de cuenta atrás y un modal de re-login cuando llega a 0.
+    demo_session_expires_at: Optional[str] = None
+    demo_session_seconds_remaining: Optional[int] = None
 
 
 class TelegramBotRequest(BaseModel):

@@ -1,0 +1,53 @@
+name: monthly-docs-audit
+description: >
+  Audit mensual automatizado del estado de la documentación, backlogs e
+  implementación. Lanza el fleet de 15 agentes (13 docs-reality-auditor
+  + 1 backlog-implementation-auditor + 1 commit-backlog-reconciler) y
+  deja reportes accionables en docs/review/<YYYY-MM-DD>/.
+
+# Schedule: 1 de cada mes a las 09:00 UTC.
+# Justificación: tras un sprint mensual típico (~50-200 commits), el
+# coste de re-auditar (~$4-6) es despreciable comparado con el coste
+# de descubrir drift acumulado.
+schedule: "0 9 1 * *"
+
+# Agente que orquesta el fleet. NO es un agente del fleet en sí —
+# es el "ejecutor" del slash command /audit-docs (definido en
+# .claude/commands/audit-docs.md).
+agent: claude
+model: sonnet
+
+prompt: |
+  Lanza el flujo /audit-docs en modo full con ventana de 30 días
+  (último mes), tal y como está definido en
+  .claude/commands/audit-docs.md.
+
+  Tras los 15 agentes:
+  1. Escribe docs/review/<YYYY-MM-DD>/README.md con resumen ejecutivo.
+  2. Si encuentras > 5 hallazgos CRITICAL o > 15 HIGH globales, usa
+     github-orchestrator para abrir un Issue en sylfG/linkanvil con
+     título "[audit] Drift mensual <fecha>" y body con link al review
+     dir + top-10 acciones. Etiqueta con `documentation` y `audit`.
+  3. Si encuentras > 0 backlogs huérfanos creados, NO commitees
+     automáticamente — déjalos como `untracked` para que el humano
+     revise antes de aprobar. Lista los nuevos en el Issue.
+
+  Sin acciones destructivas:
+  - NO modificar docs/src/ existentes (solo escribe reportes en
+    docs/review/).
+  - NO comitear ni pushear (deja todo en working tree).
+  - NO abrir más de 1 Issue/mes (verifica antes con
+    github-orchestrator si ya existe un Issue "[audit] Drift mensual"
+    abierto — si existe, comenta en él en lugar de duplicar).
+
+tags:
+  - scheduled
+  - documentation
+  - audit
+  - monthly
+
+# Notas operativas:
+# - Si quieres dispararlo manualmente: /schedule run monthly-docs-audit
+# - Si quieres pausarlo durante vacaciones: /schedule disable monthly-docs-audit
+# - El output del trigger queda en ops/sessions/monthly-docs-audit-<fecha>.md
+#   (convención de Antigravity).

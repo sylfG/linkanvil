@@ -1,0 +1,169 @@
+name: Agent · Docs Audit
+
+# ────────────────────────────────────────────────────────────────────────
+# Audit mensual + on-demand del estado de docs/backlogs/commits via fleet
+# de 5 agentes de Claude Code (docs-reality-auditor,
+# backlog-implementation-auditor, commit-backlog-reconciler, doc-reviser,
+# backlog-reviser).
+#
+# Triggers:
+# - Manual via "Run workflow" en la pestaña Actions (workflow_dispatch)
+# - Cron mensual (día 1 a las 09:00 UTC)
+#
+# Output:
+# - docs/review/<YYYY-MM-DD>/* commiteado a una rama "audit/<fecha>"
+# - PR automático contra develop con los reportes
+# ────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      window:
+        description: "Ventana de commits para el reconciler"
+        required: false
+        default: "30 days ago"
+        type: choice
+        options:
+          - "7 days ago"
+          - "30 days ago"
+          - "60 days ago"
+          - "90 days ago"
+      mode:
+        description: "Modo de audit"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "docs-only"
+          - "backlog-only"
+          - "commits-only"
+  schedule:
+    # Día 1 de cada mes a las 09:00 UTC
+    - cron: "0 9 1 * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Create audit branch
+        id: branch
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          BRANCH="audit/${DATE}"
+          git config user.name "audit-bot"
+          git config user.email "audit-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Run /audit-docs fleet
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUDIT_WINDOW: ${{ inputs.window || '30 days ago' }}
+          AUDIT_MODE: ${{ inputs.mode || 'full' }}
+        run: |
+          PROMPT="Ejecuta /audit-docs con window=\"$AUDIT_WINDOW\" y mode=$AUDIT_MODE. El slash command esta definido en .claude/commands/audit-docs.md. Sigue el protocolo paso a paso, lanza los agentes del fleet en paralelo, escribe los reportes en docs/review/${{ steps.branch.outputs.date }}/, y crea el README.md ejecutivo. NO hagas git add, commit ni push - el workflow se encarga despues."
+          claude -p "$PROMPT" \
+            --allowedTools "Read,Grep,Glob,Bash,Write,Agent" \
+            --output-format json > /tmp/audit-output.json 2>&1 || true
+          echo "--- audit output summary ---"
+          tail -100 /tmp/audit-output.json || true
+
+      - name: Verify reports were written
+        run: |
+          DATE=${{ steps.branch.outputs.date }}
+          if [ ! -d "docs/review/$DATE" ]; then
+            echo "::error::No review directory created at docs/review/$DATE"
+            exit 1
+          fi
+          REPORT_COUNT=$(find "docs/review/$DATE" -name "*.md" | wc -l)
+          if [ "$REPORT_COUNT" -lt 5 ]; then
+            echo "::error::Only $REPORT_COUNT reports found (expected >= 5)"
+            exit 1
+          fi
+          echo "OK $REPORT_COUNT reports written"
+
+      - name: Commit audit artifacts
+        run: |
+          DATE=${{ steps.branch.outputs.date }}
+          git add docs/review/"$DATE"/ \
+                  docs/src/Extractor_de_Requisitos/backlog/F-*.md 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+          MODE=${{ inputs.mode || 'full' }}
+          WINDOW=${{ inputs.window || '30 days ago' }}
+          MSG="docs(audit): reportes automaticos $DATE (mode=$MODE, window=$WINDOW)"
+          git commit -m "$MSG" -m "Generado por .github/workflows/agent-docs-audit.yml con el fleet de Claude Code. Revisa docs/review/$DATE/README.md para el resumen ejecutivo."
+
+      - name: Push branch
+        run: git push -u origin ${{ steps.branch.outputs.branch }}
+
+      - name: Build PR body
+        id: prbody
+        run: |
+          DATE=${{ steps.branch.outputs.date }}
+          BODY_FILE=/tmp/pr-body.md
+          {
+            echo "## Audit automatico $DATE"
+            echo ""
+            echo "Resumen ejecutivo extraido del README:"
+            echo ""
+            if [ -f "docs/review/$DATE/README.md" ]; then
+              head -30 "docs/review/$DATE/README.md" | tail -20
+            else
+              echo "(README.md no encontrado)"
+            fi
+            echo ""
+            echo "### Proximos pasos"
+            echo ""
+            echo "1. Revisa docs/review/$DATE/README.md para el resumen completo"
+            echo "2. Inspecciona los reportes individuales en docs/review/$DATE/docs/"
+            echo "3. Si hay backlogs nuevos creados por el reconciler, valida su contenido"
+            echo "4. Aplica los fixes con doc-reviser y backlog-reviser en sesiones locales"
+            echo ""
+            echo "### Como desactivar este audit"
+            echo ""
+            echo "Edita .github/workflows/agent-docs-audit.yml y comenta el bloque schedule."
+            echo ""
+            echo "---"
+            echo "Generado por agent-docs-audit.yml"
+          } > "$BODY_FILE"
+          echo "body_file=$BODY_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=${{ steps.branch.outputs.date }}
+          BRANCH=${{ steps.branch.outputs.branch }}
+          gh pr create \
+            --base develop \
+            --head "$BRANCH" \
+            --title "[audit] Reportes automaticos $DATE" \
+            --body-file ${{ steps.prbody.outputs.body_file }} \
+            --label documentation \
+            --label audit

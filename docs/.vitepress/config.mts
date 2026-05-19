@@ -95,7 +95,7 @@ export default withMermaid(
 
     // Drafts archivados: existen en disco pero NO se publican ni aparecen
     // en el sidebar. Es papelera operativa, no documentación.
-    srcExclude: ["**/old_/**"],
+    srcExclude: ["**/old_/**", "**/review/**"],
 
     ignoreDeadLinks: true,
 

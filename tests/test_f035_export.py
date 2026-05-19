@@ -11,7 +11,7 @@ def event_loop():
     yield loop
     loop.close()
 
-@pytest.mark.skip(reason="Pendiente refactor a usuario_recursos tras migración 0002")
+@pytest.mark.xfail(reason="F-03.5 sin endpoint /export · ver docs/review/2026-05-19/v2/backlog/ — recuperar cuando se implemente", strict=False)
 @pytest.mark.asyncio
 async def test_f035_export_markdown_mapping():
     """F-03.5: Verifica que todos los recursos de un Tenant se obtienen de la DB sin violar RLS y con los campos completos para Markdown."""

@@ -7,7 +7,8 @@ from typing import Optional
 
 from src.data.db import DatabaseManager
 
-logging.basicConfig(level=logging.INFO)
+from src.observability.logging import configure_json_logging
+configure_json_logging("audit-cron")
 logger = logging.getLogger(__name__)
 
 # Período de gracia tras el cual un recurso en cuarentena se expira de

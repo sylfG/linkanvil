@@ -194,7 +194,9 @@ async def telegram_webhook_user(token_hash: str, request: Request):
     try:
         tenant_id = await redis_client.get(f"telegram:{token_hash}") if redis_client else None
         if not tenant_id:
-            return {"status": "ignored", "reason": "bot token no registrado"}
+            # Defensa-en-profundidad: token desconocido → 404 sin revelar info.
+            # Evita enumeration attacks comparando tiempos de respuesta o mensajes.
+            raise HTTPException(status_code=404, detail="Not Found")
 
         data = await request.json()
         if "message" not in data:
@@ -227,51 +229,12 @@ async def telegram_webhook_user(token_hash: str, request: Request):
         return {"status": "error", "detail": str(e)}
 
 
-@app.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
-    """
-    Webhook para recibir mensajes de Telegram.
-    Extrae URLs del mensaje de texto y las inyecta en el pipeline de ingesta.
-    """
-    try:
-        data = await request.json()
-        logger.info(f"Recibido payload de Telegram")
-        
-        # Ignorar si no es un mensaje normal
-        if 'message' not in data:
-            return {"status": "ignored", "reason": "not a message"}
-        
-        message = data['message']
-        chat_id = str(message.get('chat', {}).get('id', 'unknown'))
-        text = message.get('text', '')
-        
-        if not text:
-            return {"status": "ignored", "reason": "no text in message"}
-            
-        urls = extract_urls(text)
-        if not urls:
-            return {"status": "ignored", "reason": "no url found in text"}
-            
-        trace_id = str(uuid.uuid4())
-        
-        # Por simplificar procesamos la primera URL encontrada
-        url = urls[0]
-        
-        # Reutilizamos IngestionRequest
-        ingest_req = IngestionRequest(
-            url=url,
-            tenant_id=f"tg_{chat_id}",
-            source="telegram",
-            trace_id=trace_id
-        )
-        
-        # Llamar localmente al flujo de ingesta
-        result = await ingest_url(ingest_req)
-        return {"status": "processed", "result": result}
-        
-    except Exception as e:
-        logger.error(f"Error procesando webhook de Telegram: {e}")
-        return {"status": "error", "detail": str(e)}
+# NOTA · 2026-05-19 · El endpoint legacy `/webhook/telegram` (sin path-param)
+# fue ELIMINADO en el audit de seguridad: aceptaba cualquier payload sin auth
+# y permitía crear sub-tenants `tg_{chat_id}` arbitrarios. El endpoint
+# autenticado es `/webhook/telegram/{token_hash}` (línea ~182). Configura
+# tu bot vía `PUT /profile/telegram` en cerebro-api para registrar el
+# token_hash en Redis.
 
 @app.post("/webhook/external")
 @trace_operation("external_webhook")

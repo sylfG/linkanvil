@@ -28,7 +28,8 @@ from src.data.db import DatabaseManager
 from src.data.heartbeat import start_heartbeat
 from src.telemetry import configure_telemetry, trace_operation
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+from src.observability.logging import configure_json_logging
+configure_json_logging("notifier-worker")
 logger = logging.getLogger(__name__)
 
 configure_telemetry("notifier-worker")

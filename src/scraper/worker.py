@@ -311,7 +311,8 @@ class ScraperWorker:
 
 
 async def run_worker():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    from src.observability.logging import configure_json_logging
+    configure_json_logging("scraper-worker")
     RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
     worker = ScraperWorker(rabbit_url=RABBIT_URL)
     await worker.consume()

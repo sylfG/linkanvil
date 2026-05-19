@@ -16,7 +16,8 @@ from src.telemetry import configure_telemetry, trace_operation
 from src.data.db import DatabaseManager
 from src.data.heartbeat import start_heartbeat
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from src.observability.logging import configure_json_logging
+configure_json_logging("embedder-worker")
 logger = logging.getLogger(__name__)
 
 # OTel

@@ -133,7 +133,8 @@ class OutboxPublisher:
         await self.db.close()
 
 async def run_outbox():
-    logging.basicConfig(level=logging.INFO)
+    from src.observability.logging import configure_json_logging
+    configure_json_logging("outbox-publisher")
     rabbit_url = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
     publisher = OutboxPublisher(rabbit_url)
     

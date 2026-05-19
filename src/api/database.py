@@ -790,15 +790,25 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
             )
             if not row:
                 return None
-            await _emit_outbox(
-                conn, tenant_id, row["id"], "recurso.rescatado",
-                {
-                    "recurso_id": str(row["id"]),
-                    "url": row["url"],
-                    "rescued_by": tenant_id,
-                    "fecha_caducidad": row["fecha_caducidad"].isoformat(),
-                },
+            # Fanout multi-tenant: emite outbox por cada tenant linkeado al
+            # recurso global — un recurso puede estar compartido entre N
+            # tenants (mismo patrón que quarantine_recurso y expire_recurso
+            # más arriba). Antes del audit 2026-05-19 esta función notificaba
+            # solo al caller, dejando huérfanos a otros tenants linkeados.
+            tenants = await conn.fetch(
+                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+                row["id"],
             )
+            for t in tenants:
+                await _emit_outbox(
+                    conn, t["tenant_id"], row["id"], "recurso.rescatado",
+                    {
+                        "recurso_id": str(row["id"]),
+                        "url": row["url"],
+                        "rescued_by": tenant_id,
+                        "fecha_caducidad": row["fecha_caducidad"].isoformat(),
+                    },
+                )
             return dict(row)
 
 

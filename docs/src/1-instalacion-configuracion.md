@@ -20,7 +20,7 @@ Bienvenidos a la guía práctica para inicializar LinkAnvil, tu backend soberano
    - 1.3 [Clonar el repositorio](#13-clonar-el-repositorio)
 2. [FASE 2: Tokens de Inteligencia Artificial y `.env`](#fase-2-tokens-de-inteligencia-artificial-y-env)
 3. [FASE 3: Despliegue e Inicialización (Bootstrapping)](#fase-3-despliegue-e-inicialización-bootstrapping)
-4. [FASE 3b: Aplicar Migraciones de Schema](#fase-3b-aplicar-migraciones-de-schema)
+4. [FASE 3b: Migraciones de Schema (automáticas)](#fase-3b-migraciones-de-schema-automáticas)
 5. [FASE 3c: Resetear el Stack Completo](#fase-3c-resetear-el-stack-completo)
 6. [FASE 4: Verificación del Ecosistema](#fase-4-verificación-del-ecosistema)
 7. [FASE 5: Acceso a la Plataforma y Dashboards](#fase-5-acceso-a-la-plataforma-y-dashboards)
@@ -71,7 +71,7 @@ git --version   # debe devolver 2.x o superior
 #### Docker Engine + Docker Compose V2
 
 Docker Compose V2 viene incluido con Docker Engine ≥ 24 y Docker Desktop.
-Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando cada uno de los 21 servicios distribuidos (como bases de datos, workers y el API Gateway) en contenedores aislados.
+Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando los **23 servicios long-running** del stack (más 2 one-shot de inicialización: `cerebro-migrate` y `cerebro-n8n-bootstrap`, y el sidecar opcional `tailscale-funnel` que solo arranca con `--profile telegram`) en contenedores aislados.
 A través del archivo de configuración (docker-compose.yml), permite levantar, interconectar dentro de la red privada cerebro-net y gestionar todo con un solo comando, garantizando que la plataforma funcione exactamente igual en cualquier entorno de desarrollo o producción.
 
 ::: code-group
@@ -98,9 +98,9 @@ docker compose version   # debe ser ≥ 2.22
 
 Necesario para descargar los instaladores de Node.js y uv. 
 
-**Node.js** se usa como el entorno de ejecución para arrancar y comunicar herramientas basadas en JavaScript. En LinkAnvil, se encarga de activar de forma distribuida los servidores de mensajería (como el bot de Telegram) y las conexiones con bases de datos relacionales (PostgreSQL y Redis).
+**Node.js + npx**: lo necesita Claude Code para los MCP servers escritos en JavaScript/TypeScript (n8n, Slack, GitHub, etc.). No es runtime del stack — todos los servicios corren en contenedores Docker.
 
-Por otro lado, **uv** es un gestor de paquetes de Python ultra-rápido que se usa para descargar e iniciar el motor de búsqueda conceptual (Qdrant) y los recolectores de texto web, garantizando que arranquen en milisegundos y sin conflictos de software.
+**uv / uvx**: usados por Claude Code para lanzar MCP servers en Python (`.mcp.json`). No participan en el runtime del stack.
 
 ::: code-group
 
@@ -110,6 +110,11 @@ sudo apt-get install -y curl
 
 ```bash [macOS]
 # Incluido por defecto en macOS
+curl --version
+```
+
+```powershell [Windows]
+# curl está incluido en Windows 10/11 por defecto (curl.exe)
 curl --version
 ```
 
@@ -151,7 +156,7 @@ python3 --version   # debe ser ≥ 3.9
 
 #### Node.js 20 LTS + npm
 
-**Node.js 20 LTS + npm** actúan como el entorno de ejecución del servidor para la interfaz visual y la API de interacción de LinkAnvil. Mediante el comando `npx`, levantan de forma distribuida los servidores que conectan la IA con bases de datos, redes y el bot de Telegram. Se exige la versión 20 LTS para garantizar un rendimiento estable y parches de seguridad a largo plazo.
+**Node.js 20 LTS + npm** son necesarios para los MCP servers de Claude Code escritos en JavaScript/TypeScript (n8n, Slack, GitHub, etc.), que se invocan mediante `npx`. Se exige la versión 20 LTS para garantizar un rendimiento estable y parches de seguridad a largo plazo. No forman parte del runtime del stack — todos los servicios productivos corren en contenedores Docker.
 
 ::: code-group
 
@@ -179,7 +184,7 @@ npx --version
 
 #### uv (gestor de paquetes Python ultrarrápido)
 
-**uv** actúa como el motor de ejecución en segundo plano para desplegar instantáneamente los componentes de Inteligencia Artificial y búsqueda vectorial de LinkAnvil. Mediante su comando `uvx`, descarga e inicializa en milisegundos los MCP servers distribuidos (como Qdrant, Fetch, Docker, Prometheus) sin necesidad de configuraciones previas. Su extrema velocidad y gestión aislada garantizan que el sistema funcione de forma ligera y libre de conflictos en el servidor.
+**uv / uvx** es un gestor de paquetes de Python ultra-rápido que usa Claude Code para lanzar los MCP servers escritos en Python (Qdrant, Fetch, Docker, Prometheus, etc.) definidos en `.mcp.json`. Su extrema velocidad y gestión aislada garantizan que los MCP servers arranquen en milisegundos y libres de conflictos. No interviene en el runtime del stack.
 
 ::: code-group
 
@@ -221,7 +226,7 @@ Todos deben devolver una versión sin errores.
 ### 1.3 Clonar el repositorio
 
 ```bash
-git clone https://github.com/sylfg/linkanvil.git
+git clone https://github.com/sylfG/linkanvil.git
 cd linkanvil
 ```
 
@@ -252,19 +257,33 @@ El corazón de extracción y vectorización de URLs funciona gracias a nuestro e
      LITELLM_MASTER_KEY=sk-tullave-privada-y-segura
      ```
 
-   * **Contraseñas del resto del Stack**: Modifica a placer las contraseñas predefinidas en el fichero de las bases de datos (RabbitMQ, Postgre, Redis, Grafana...).
+   * **Clave de cifrado de las BYOK keys (*CRÍTICA — obligatoria*)**: requerida para que `cerebro-api` arranque. El operador `:?` en `docker-compose.yml` hace fallar `docker compose up` inmediatamente si está vacía. Genera y pega:
+
+     ```bash
+     python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+     ```
 
      ```env
-     POSTGRES_PASSWORD=cerebro_db_pass
-     RABBITMQ_PASS=cerebro_pass
-     # ...
+     LLM_KEYS_ENCRYPTION_KEY=<el-valor-generado-arriba>
      ```
+
+   * **Contraseñas del resto del Stack**: Modifica las contraseñas predefinidas (RabbitMQ, Postgres, Redis, Grafana...). En `.env.example` llevan el sufijo `_CHANGE_ME` intencionalmente para forzar al usuario a editarlas — no son production-safe.
+
+     ```env
+     POSTGRES_PASSWORD=cerebro_db_pass_CHANGE_ME   # ⚠ debes cambiarlo
+     RABBITMQ_PASS=cerebro_pass_CHANGE_ME          # ⚠ debes cambiarlo
+     REDIS_PASSWORD=cerebro_redis_pass_CHANGE_ME
+     GRAFANA_PASSWORD=cerebro_grafana_pass_CHANGE_ME
+     N8N_PASSWORD=cerebro_n8n_pass_CHANGE_ME
+     ```
+
+> Las variables `DEMO_KEY_LITE`, `DEMO_KEY_EMBEDDINGS`, `DEMO_KEY_PRO` que aparecen en `.env.example` son virtual-keys de LiteLLM que usa el usuario demo. Si las dejas vacías, se hace fallback automático a `LITELLM_MASTER_KEY` y el demo funcionará sin configuración adicional.
 
 ---
 
 ## FASE 3: Despliegue e Inicialización (Bootstrapping)
 
-Ahora que las llaves están configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores y aplicará el `init.sql` (que crea el schema `cerebro` y todas las tablas en Postgres).
+Ahora que las llaves están configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores long-running y aplicará el `init.sql` (que crea el schema `cerebro` y todas las tablas en Postgres).
 
 ```bash
 docker compose up -d
@@ -272,30 +291,39 @@ docker compose up -d
 
 > **NOTA:** Tardará varios minutos en la primera ejecución. Puedes seguir los logs con `docker compose logs -f`.
 
+> **Nota sobre versiones**: todas las imágenes externas están pinneadas a versión exacta o a digest SHA-256 en `docker-compose.yml`, salvo `tailscale/tailscale:stable` (opcional, sidecar de Telegram). Esto garantiza reproducibilidad entre entornos.
+
 ---
 
-## FASE 3b: Aplicar Migraciones de Schema
+## FASE 3b: Migraciones de Schema (automáticas)
 
-El sistema incluye un runner de migraciones shell para mantener el schema `cerebro` actualizado sin necesidad de Alembic ni dependencias Python adicionales.
+Las migraciones SQL se aplican **automáticamente** por el servicio one-shot **`cerebro-migrate`** cada vez que ejecutas `docker compose up -d`. La API no arranca hasta que el runner termina con éxito (`cerebro-api` declara `depends_on: cerebro-migrate` con `condition: service_completed_successfully`).
 
-Es decir, se usa para actualizar y unificar la estructura de la base de datos de PostgreSQL a través del script `migrate.sh`. El sistema lee secuencialmente los archivos SQL para añadir nuevas tablas o columnas de forma segura y automatizada, registrando cada versión. Al ser una operación inteligente (*idempotente*), garantiza que los cambios se apliquen sin duplicar información ni borrar los datos existentes de los usuarios.
+El runner es **idempotente**: lee secuencialmente los archivos SQL de `infra/postgres/migrations/`, registra cada versión aplicada en la tabla `cerebro.schema_migrations` y solo ejecuta las pendientes. Si no hay novedades, imprime `schema is up to date` y sale con código 0.
+
+Solo necesitas ejecutarlo manualmente si:
+
+1. Has añadido una migración nueva en `infra/postgres/migrations/` sin reiniciar el stack.
+2. Estás depurando el runner.
 
 ```bash
+# Dentro del contenedor (recomendado — sin prerrequisitos en el host):
+docker compose run --rm cerebro-migrate
+
+# O desde el host (requiere psql instalado y puerto 5432 expuesto):
 bash scripts/migrate.sh
 ```
 
-**Primera ejecución:** aplica `0001_baseline.sql` que registra el estado inicial del schema. Si el stack acaba de arrancar con `docker compose up -d`, el `init.sql` ya habrá creado las tablas — la migración baseline verifica su existencia y registra la versión.
-
-**Ejecuciones posteriores:** idempotente — detecta las versiones ya aplicadas y solo ejecuta las nuevas. Si no hay migraciones pendientes, imprime `schema is up to date` y sale con código 0.
-
 Para añadir una migración nueva:
+
 ```bash
 # crear el archivo en infra/postgres/migrations/
 echo "ALTER TABLE cerebro.recursos ADD COLUMN nueva_col TEXT;" \
   > infra/postgres/migrations/0002_nueva_columna.sql
 
-# aplicar
-bash scripts/migrate.sh
+# aplicar (la próxima vez que arranques el stack se aplica sola,
+# o fuerza ahora con):
+docker compose run --rm cerebro-migrate
 ```
 
 ---
@@ -335,6 +363,12 @@ Para ver los logs en tiempo real:
 docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 ```
 
+Para un smoke test más profundo (verifica conectividad inter-servicio, no solo el estado del contenedor):
+
+```bash
+python3 infra/test_health.py
+```
+
 ---
 
 ## FASE 5: Acceso a la Plataforma y Dashboards
@@ -343,6 +377,8 @@ docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 |:--- |:--- |:--- |
 | **App Principal** | [http://localhost:3001](http://localhost:3001) | Registro en la propia app |
 | **API Backend** | [http://localhost:8001/docs](http://localhost:8001/docs) | JWT (Swagger UI) |
+| **Ingestion API** | [http://ingest.localhost/health](http://ingest.localhost/health) (vía Traefik) | Libre |
+| **LiteLLM Gateway** | [http://localhost:4000](http://localhost:4000) | `LITELLM_MASTER_KEY` |
 | **Orquestador (n8n)** | [http://localhost:5678](http://localhost:5678) | `N8N_USER` & `N8N_PASSWORD` |
 | **Colas (RabbitMQ)** | [http://localhost:15672](http://localhost:15672) | `RABBITMQ_USER` & `RABBITMQ_PASS` |
 | **Métricas (Grafana)** | [http://localhost:3000](http://localhost:3000) | `GRAFANA_USER` & `GRAFANA_PASSWORD` |
@@ -350,14 +386,29 @@ docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 | **BD Vectorial (Qdrant)** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Libre |
 | **API Gateway (Traefik)** | [http://localhost:8080](http://localhost:8080) | Libre (solo local) |
 
-> **Tip:** Añade las entradas `*.localhost` en tu `/etc/hosts` para acceder mediante subdominios: `cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc. Traefik enruta automáticamente según el `Host` header.
+> **Tip:** Traefik enruta por `Host` header, así que los subdominios `*.localhost` (`cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc.) son la vía canónica. La mayoría de sistemas (Linux con `systemd-resolved`, macOS 11+) resuelven `*.localhost` a 127.0.0.1 automáticamente (RFC 6761). En Windows o en sistemas con resolución estricta, añade entradas explícitas en `/etc/hosts` (o `C:\Windows\System32\drivers\etc\hosts`):
+>
+> ```
+> 127.0.0.1  cerebro.localhost ingest.localhost n8n.localhost rabbitmq.localhost \
+>            grafana.localhost prometheus.localhost qdrant.localhost jaeger.localhost \
+>            llm.localhost traefik.localhost
+> ```
 
 ### Tu primera ingesta
 
-Crea una cuenta en `http://localhost:3001`, inicia sesión y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API:
+Crea una cuenta en `http://localhost:3001`, inicia sesión y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API.
+
+> ⚠ El servicio `ingestion-api` **no expone puertos al host** — solo es accesible vía Traefik (PathPrefix `/ingest` o Host header `ingest.localhost`). Un `curl http://localhost:8000/ingest` desde el host falla con *connection refused*.
 
 ```bash
-curl -X POST http://localhost:8000/ingest \
+# Vía Traefik (recomendado — pasa por el rate-limiting global):
+curl -X POST http://localhost/ingest \
+  -H "Host: ingest.localhost" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://vitepress.dev/", "tenant_id": "mi-tenant"}'
+
+# O directamente al host header configurado:
+curl -X POST http://ingest.localhost/ingest \
   -H "Content-Type: application/json" \
   -d '{"url": "https://vitepress.dev/", "tenant_id": "mi-tenant"}'
 ```
@@ -391,11 +442,11 @@ El overlay `docker-compose.prod.yml` activa:
 ### 6.3 Variables críticas para producción
 
 ```env
-# En .env o como Docker secrets
-SESSION_COOKIE_SECURE=true          # requiere HTTPS para la cookie de sesión
-JWT_SECRET=<clave-aleatoria-fuerte> # mínimo 32 caracteres, sin predeterminados
-DOMAIN=tu-dominio.com               # Traefik construye rutas desde aquí
-ACME_EMAIL=admin@tu-dominio.com     # Let's Encrypt notifications
+# En .env de producción (los secretos van en Docker secrets, no aquí)
+JWT_SECRET=<clave-aleatoria-fuerte>   # mín 32 chars; genera con: python3 -c "import secrets; print(secrets.token_hex(32))"
+PUBLIC_HOSTNAME=tu-dominio.com        # Traefik construye rutas desde aquí
+ACME_EMAIL=admin@tu-dominio.com       # Let's Encrypt notifications
+LLM_KEYS_ENCRYPTION_KEY=<clave-fernet> # cifrado de las BYOK keys (obligatorio)
 ```
 
 Consulta `docs/PRODUCTION.md` para la guía completa incluyendo Docker secrets, configuración de firewall y backups programados.
@@ -470,6 +521,13 @@ El estado del nodo Tailscale vive en el volumen `cerebro-tailscale-state`. Mient
 bash scripts/backup.sh
 ```
 
-Genera `pg_dump` gzipado del schema `cerebro` y snapshots de Qdrant. Configura `BACKUP_RETENTION_DAYS` en `.env` para la retención automática.
+Genera `pg_dump` gzipado del schema `cerebro` y snapshots de Qdrant.
 
-*¡Felicidades! LinkAnvil está operativo.* Consulta la [Arquitectura](./6_arquitectura.md) para entender las decisiones de diseño, o las [Épicas y Features](./1_epics_and_features.md) para el roadmap del producto.
+Para la retención automática, exporta `BACKUP_RETENTION_DAYS` (entero, default `7`) como variable de entorno o añádela a tu `.env`. Nota: `BACKUP_RETENTION_DAYS` **no figura en `.env.example`** — debes añadirla manualmente. Alternativa equivalente sin tocar `.env`:
+
+```bash
+BACKUP_RETENTION_DAYS=14 bash scripts/backup.sh
+```
+
+*¡Felicidades! LinkAnvil está operativo.* Consulta la [Arquitectura](./4-arquitectura.md) para entender las decisiones de diseño, o las [Épicas y Features](./Extractor_de_Requisitos/1_epics_and_features.md) para el roadmap del producto.
+

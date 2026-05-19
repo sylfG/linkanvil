@@ -35,7 +35,7 @@ El proyecto **LinkAnvil** es una plataforma diseñada para organizar informació
 
 ## Estructura y Módulos del Sistema
 
-El sistema está dividido en cinco componentes independientes que trabajan en equipo de forma ordenada.
+El sistema agrupa **23 servicios** desplegados en Docker Compose alrededor de **cinco grandes capas funcionales** que se describen a continuación. Para ver el inventario detallado de servicios consulta [`3-componentes.md`](./3-componentes.md).
 
 ### A. Módulo de Ingesta y Captura (El Recolector)
 
@@ -43,9 +43,8 @@ Es la puerta de entrada de la información al sistema. Los usuarios pueden envia
 
 1. **Filtro de Entrada:** Cuando un usuario envía un enlace, el sistema limpia la dirección web (eliminando códigos de rastreo innecesarios).
 2. **Verificación de Duplicados:** El sistema comprueba al instante si el enlace ya existe en la base de datos general.
-* Si el enlace ya se había registrado antes, se reutiliza la información existente para ahorrar energía y costes.
-* Si es un enlace nuevo, se envía a una lista de espera (cola de mensajes) para ser procesado sin retrasar la navegación del usuario.
-
+   * Si el enlace ya se había registrado antes, se reutiliza la información existente para ahorrar energía y costes.
+   * Si es un enlace nuevo, se envía a una lista de espera (cola de mensajes) para ser procesado sin retrasar la navegación del usuario.
 
 3. **Extracción Flexible de Contenido:** Un extractor automático analiza la página web para leer su texto. Si la página cuenta con protecciones antibots o bloqueos avanzados (como LinkedIn o X), el sistema activa de forma automática herramientas especiales que simulan una navegación humana para asegurar la lectura del contenido.
 
@@ -57,7 +56,7 @@ Este módulo se encarga de entender el texto extraído utilizando Inteligencia A
 * **Formato de Datos Estricto:** Se obliga a la IA a entregar las respuestas en una estructura rígida y organizada que contiene:
 * **Clasificación:** Categoría principal y etiquetas del tema.
 * **Resumen:** Una síntesis breve y clara del texto.
-* **Fecha de Caducidad Estimada:** Un cálculo de cuánto tiempo seguirá siendo útil o vigente esa información (por ejemplo, se usaría para detectar url de eventos que ya han pasado, promociones que ya no estan vigentes, etc.).
+* **Fecha de Caducidad Estimada:** Un cálculo de cuánto tiempo seguirá siendo útil o vigente esa información (por ejemplo, se usaría para detectar url de eventos que ya han pasado, promociones que ya no están vigentes, etc.).
 
 
 
@@ -82,11 +81,13 @@ Para evitar que el sistema se vuelva lento o costoso debido a la acumulación de
 
 ### E. Interfaz y Chatbot (El Asistente Personal)
 
-Es la pantalla y el canal de comunicación con el usuario. Está formado por un panel de control visual y un chat interactivo.
+Es la pantalla y el canal de comunicación con el usuario. LinkAnvil expone tres superficies de UI complementarias:
 
-* **Panel de Control:** Permite ver estadísticas, consultar los enlaces guardados y revisar el historial de conversaciones.
-* **Chat Fluido:** Las respuestas de la IA se muestran palabra por palabra en tiempo real (mientras se van generando). El historial de conversación se guarda de forma segura en el servidor, permitiendo continuar la charla desde cualquier dispositivo (móvil, tablet u ordenador) sin perder información.
-* **Seguridad de Acceso:** El inicio de sesión utiliza cookies ultra-protegidas que los virus informáticos comunes no pueden leer del navegador, y cuenta con un límite de intentos para bloquear accesos no autorizados.
+* **Panel de Control (Aplicación Web):** Interfaz reactiva en Next.js (servicio `cerebro-web`) que permite ver estadísticas, consultar los enlaces guardados y revisar el historial de conversaciones.
+* **Chat Conversacional (Streamlit):** Cliente alternativo basado en Streamlit (`src/ui/chatbot.py`) para iterar rápidamente con el motor de chat.
+* **Extensión de Navegador:** Cliente ligero (`clientes/browser-extension/`) que permite enviar enlaces desde Chrome/Firefox sin abrir la app principal.
+* **Chat Fluido:** Las respuestas de la IA se muestran palabra por palabra en tiempo real mientras se generan. Adicionalmente, la interfaz refleja en directo el estado de cada enlace guardado (procesado, en cuarentena, expirado) mediante un canal de eventos reactivo (SSE), sin necesidad de recargar la página. El historial de conversación se guarda de forma segura en el servidor, permitiendo continuar la charla desde cualquier dispositivo (móvil, tablet u ordenador) sin perder información.
+* **Seguridad de Acceso:** El inicio de sesión utiliza cookies `httpOnly` (inaccesibles desde código JavaScript en la página, lo que bloquea ataques XSS comunes) con flag `SameSite` configurable, y cuenta con un límite de intentos para bloquear accesos no autorizados (5 intentos de login/min/IP por defecto).
 
 ---
 
@@ -132,7 +133,6 @@ Para garantizar un funcionamiento estable y sin caídas, la plataforma cuenta co
 
 * **Gestión de Enlaces Rotos:** Si el sistema intenta leer un enlace que no existe o está caído, lo reintenta 3 veces. Si sigue fallando, lo envía a una lista de errores y notifica al usuario: *"El enlace que intentaste guardar ya no está disponible"*, evitando gastar recursos innecesarios.
 * **Privacidad Total (Multi-Inquilino):** Los datos de cada usuario están estrictamente separados mediante etiquetas y llaves de seguridad únicas. Es técnicamente imposible que un usuario pueda ver o buscar en la información de otra persona.
-* **Control de Consumo de Memoria:** Si un usuario no utiliza su sesión de chat durante 30 días, el sistema la traslada de la memoria rápida al almacenamiento a largo plazo para liberar espacio en el servidor. Si el usuario vuelve a escribir, la sesión se recarga en un instante.
+* **Cuarentena de Recursos Obsoletos:** Cuando un enlace guardado supera su fecha de caducidad estimada (calculada por la IA), un proceso nocturno lo traslada a una bandeja de "cuarentena" durante 30 días antes de marcarlo como obsoleto. El usuario puede rescatar el recurso en cualquier momento durante ese periodo.
 * **Protección contra Abusos:** Si un usuario realiza miles de búsquedas o peticiones de forma exagerada y simultánea, el sistema limitará su velocidad de respuesta temporalmente. Esto evita que un solo usuario ralentice la plataforma para los demás.
 * **Rastreo de Errores en Cascada:** Cada enlace guardado recibe un código de identificación único. Si ocurre un fallo en cualquier punto del recorrido, los ingenieros pueden localizar exactamente en qué paso se detuvo el proceso usando ese código.
-

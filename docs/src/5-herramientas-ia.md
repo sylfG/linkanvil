@@ -41,7 +41,7 @@ en desarrollo no tendría contexto del repo. La pirámide:
 │   • 2 scripts ad-hoc (weekly_audit, build_staged_embeddings)│
 ├─────────────────────────────────────────────────────────────┤
 │   DESARROLLO       (Claude Code está delante)               │
-│   • 28 agentes Claude Code                                  │
+│   • 30 agentes Claude Code                                  │
 │   • 12 MCP servers                                          │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -56,7 +56,7 @@ en desarrollo no tendría contexto del repo. La pirámide:
 
 ---
 
-## 2. Agentes Claude Code (28) {#agentes-claude-code}
+## 2. Agentes Claude Code (30) {#agentes-claude-code}
 
 Cada agente vive en `.claude/agents/<nombre>.md` con frontmatter
 declarando modelo, descripción y herramientas permitidas. El harness
@@ -127,6 +127,7 @@ automáticamente cuando un trigger encaja con la `description`.
 | `docs-reality-auditor` | sonnet | Audita UN documento markdown contra la realidad del código y emite reporte de hallazgos |
 | `backlog-implementation-auditor` | sonnet | Audita TODOS los backlogs `F-XX.Y` contra el código real (IMPLEMENTED / PARTIAL / NOT_STARTED / OBSOLETE / SUPERSEDED_BY) |
 | `commit-backlog-reconciler` | sonnet | Reconcilia commits recientes con backlogs; identifica commits huérfanos y crea nuevos `F-XX.Y` |
+| `backlog-reviser` | sonnet | Reescribe fichas `F-XX.Y` con drift detectado — sustituye AC genéricos por criterios concretos verificados contra el código. Procesa lotes en una sola invocación. |
 
 ### 2.8 Familia · Integración GitHub
 
@@ -140,8 +141,9 @@ automáticamente cuando un trigger encaja con la `description`.
 |---|---|---|
 | `doc-updater` | sonnet | Actualiza codemaps, READMEs, guías — corre `/update-codemaps` y `/update-docs` |
 | `doc-reviser` | sonnet | Toma un doc + su review report y produce la v2 corregida aplicando CRITICAL/HIGH/MEDIUM sin reescribir desde cero |
+| `doc-rewriter` | sonnet | Tercera capa tras `doc-reviser`: regenera el documento user-facing desde el v2, eliminando metadocumentación (footers, citas `path:línea`, severidades) y dejando prosa limpia publicable |
 
-Total en `.claude/agents/`: **28 archivos**. Los built-in del CLI
+Total en `.claude/agents/`: **30 archivos**. Los built-in del CLI
 (`Explore`, `general-purpose`, `Plan`, `statusline-setup`, `claude`)
 no cuentan aquí porque no se versionan en el repo.
 

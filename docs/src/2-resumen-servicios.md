@@ -8,7 +8,7 @@
 </div>
 
 
-El clúster de **LinkAnvil** está compuesto por **23 contenedores** que operan dentro de la red privada `cerebro-net`, más un sidecar opcional (`tailscale-funnel`, profile `telegram`) que expone públicamente el endpoint de webhooks de Telegram cuando se necesita. Se dividen en seis capas funcionales: entrada y API, interfaz web, workers asíncronos, almacenamiento, orquestación/IA y observabilidad.
+El clúster de **LinkAnvil** está compuesto por **23 contenedores** que operan dentro de la red privada `cerebro-net`, más un sidecar opcional (`tailscale-funnel`, profile `telegram`) que expone públicamente el endpoint de webhooks de Telegram cuando se necesita. Los servicios se dividen en seis capas funcionales: entrada y API, interfaz web, workers asíncronos, almacenamiento, orquestación/IA y observabilidad.
 
 Este documento es el **catálogo operativo** del sistema: puertos, imágenes, recursos y propósito en una línea por servicio. Para entender el *porqué* de cada componente, las analogías pedagógicas y los flujos completos, consulta [3_arquitectura.md](./3_arquitectura.md).
 
@@ -117,40 +117,40 @@ graph TD
     Grafana -->|query| Jaeger
 ```
 
-> `cerebro-web` se expone directamente vía host port `3001` (no hay routing Traefik a la Web).
+> `cerebro-web` se expone directamente al host por el puerto `3001` (no hay routing Traefik hacia la Web).
 
 ---
 
 ## 🗂️ Catálogo de Contenedores
 
-Una fila por servicio. `RAM/CPU` indica el límite asignado en `docker-compose.yml`. Los servicios marcados como **sidecar** sólo arrancan con un profile específico.
+Una fila por servicio. `RAM/CPU` indica el límite asignado por el orquestador. Los servicios marcados como **sidecar** sólo arrancan con un profile específico.
 
-| Contenedor | Capa | Imagen / Código | Puerto(s) | RAM / CPU | Propósito (1 línea) |
+| Contenedor | Capa | Imagen | Puerto(s) | RAM / CPU | Propósito (1 línea) |
 |---|---|---|---|---|---|
-| `cerebro-tailscale` | Gateway (sidecar `telegram`) | `tailscale/tailscale:stable` (sin digest pin) | 443 vía Funnel (no mapeo Docker) | — | Túnel HTTPS público fijo para webhook de Telegram → `ingestion-api:8000`. |
+| `cerebro-tailscale` | Gateway (sidecar `telegram`) | `tailscale/tailscale:stable` (sin digest pin) | 443 vía Funnel (no mapeo Docker) | — | Túnel HTTPS público fijo para webhook de Telegram → `cerebro-ingestion:8000`. |
 | `cerebro-traefik` | Gateway | `traefik:v3.6.14` | 80, 8080 (443 declarado pero no publicado; TLS público se sirve vía `cerebro-tailscale` Funnel) | 256 MB / 0.5 | Único punto de entrada: routing por labels Docker, rate-limit global, retries, Trace-ID OTel y TLS Let's Encrypt en producción. |
-| `cerebro-ingestion` | Ingesta | `infra/ingestion.Dockerfile` · `src/ingestion/main.py` | 8000 (interno) | 512 MB / 1.0 | Recibe URLs, aplica Bloom Filter + rate-limit atómico en Redis y publica a `q.url.ingesta`. Responde `202` al instante. |
-| `cerebro-api` | API | `infra/api.Dockerfile` · `src/api/main.py` | 8001 | 768 MB / 1.0 | Backend FastAPI: auth JWT (cookie httpOnly + CSRF), chat RAG con SSE, CRUD de sesiones/mensajes, integración LiteLLM + Qdrant. |
-| `cerebro-web` | Frontend | `infra/frontend.Dockerfile` · `src/frontend/` | 3001 | 384 MB / 0.5 | Next.js 15 + Zustand API-backed: login, chat SSE, listado de recursos. Proxy server-side hacia `cerebro-api`. |
-| `cerebro-scraper` | Worker | `src/scraper/worker.py` | — | 1.5 GB / 2.0 (shm 1 GB) | Consume `q.url.ingesta`, scrapea con Basic/Stealth Playwright, valida bloqueos, llama a LiteLLM y persiste recurso + evento Outbox (healthcheck por heartbeat en Redis: clave `worker:scraper:heartbeat`). |
-| `cerebro-embedder` | Worker | `src/data/embedder_worker.py` | — | 768 MB / 1.0 | Consume `q.embeddings`, genera vector vía LiteLLM e inserta en Qdrant. Copia vectores existentes en flujo `reused` (healthcheck por heartbeat en Redis: clave `worker:embedder:heartbeat`). |
-| `cerebro-outbox` | Worker | `src/data/outbox_publisher.py` | — | 384 MB / 0.5 | Polling de `cerebro.outbox_eventos` → publica en RabbitMQ. Garantiza consistencia eventual sin Dual-Write (healthcheck por heartbeat en Redis: clave `worker:outbox:heartbeat`). |
-| `cerebro-notifier` | Worker | `src/notifier/worker.py` | — | 256 MB / 0.3 | Consume eventos de notificación desde RabbitMQ y entrega vía canales configurados (Telegram, etc.). Healthcheck por heartbeat en Redis (clave `worker:notifier:heartbeat`). |
-| `cerebro-litellm` | Motor LLM | `ghcr.io/berriai/litellm:main-latest` (pinned por digest) · config: `infra/litellm/config.yaml` | 4000 | 1 GB / 1.0 | Proxy multi-proveedor con Circuit Breaker, fallback automático y caché de prompts en Redis. |
+| `cerebro-ingestion` | Ingesta | Build local (imagen propia) | 8000 (interno) | 512 MB / 1.0 | Recibe URLs, aplica Bloom Filter + rate-limit atómico en Redis y publica a `q.url.ingesta`. Responde `202` al instante. |
+| `cerebro-api` | API | Build local (imagen propia) | 8001 | 768 MB / 1.0 | Backend FastAPI: auth JWT (cookie httpOnly + CSRF), chat RAG con SSE, CRUD de sesiones/mensajes, integración LiteLLM + Qdrant. |
+| `cerebro-web` | Frontend | Build local (imagen propia) | 3001 | 384 MB / 0.5 | Next.js 15 + Zustand API-backed: login, chat SSE, listado de recursos. Proxy server-side hacia `cerebro-api`. |
+| `cerebro-scraper` | Worker | Build local (imagen propia) | — | 1.5 GB / 2.0 (shm 1 GB) | Consume `q.url.ingesta`, scrapea con Basic/Stealth Playwright, valida bloqueos, llama a LiteLLM y persiste recurso + evento Outbox. Healthcheck por heartbeat en Redis (clave `worker:scraper:heartbeat`). |
+| `cerebro-embedder` | Worker | Build local (imagen propia) | — | 768 MB / 1.0 | Consume `q.embeddings`, genera vector vía LiteLLM e inserta en Qdrant. Copia vectores existentes en flujo `reused`. Healthcheck por heartbeat en Redis (clave `worker:embedder:heartbeat`). |
+| `cerebro-outbox` | Worker | Build local (imagen propia) | — | 384 MB / 0.5 | Lee la tabla de outbox transaccional y republica eventos en RabbitMQ, garantizando consistencia eventual sin Dual-Write. Healthcheck por heartbeat en Redis (clave `worker:outbox:heartbeat`). |
+| `cerebro-notifier` | Worker | Build local (imagen propia) | — | 256 MB / 0.3 | Consume eventos de notificación desde RabbitMQ y entrega vía canales configurados (Telegram, etc.). Healthcheck por heartbeat en Redis (clave `worker:notifier:heartbeat`). |
+| `cerebro-litellm` | Motor LLM | `ghcr.io/berriai/litellm:main-latest` (pinned por digest) | 4000 | 1 GB / 1.0 | Proxy multi-proveedor con Circuit Breaker, fallback automático y caché de prompts en Redis. |
 | `cerebro-n8n` | Orquestación | `n8nio/n8n:1.123.37` | 5678 | 768 MB / 1.0 | Orquestador visual: webhooks de Telegram, scraping ligero y curación nocturna. Usa schema `n8n`. |
 | `cerebro-n8n-bootstrap` | Orquestación | one-shot (`python:3.12-alpine`) | — | — | Espera a `n8n`, genera la API key inicial y la inyecta en `.env`. Se ejecuta una sola vez. |
-| `cerebro-migrate` | Almacenamiento | `postgres:16-alpine` · `scripts/migrate.sh` | — | — | One-shot: aplica migraciones SQL pendientes de `infra/postgres/migrations/`. Idempotente vía `cerebro.schema_migrations(version)`. `cerebro-api` depende de su `service_completed_successfully`. |
+| `cerebro-migrate` | Almacenamiento | `postgres:16-alpine` | — | — | One-shot: aplica migraciones SQL pendientes en orden. Idempotente vía `cerebro.schema_migrations(version)`. `cerebro-api` depende de su `service_completed_successfully`. |
 | `cerebro-postgres` | Almacenamiento | `postgres:16-alpine` | 5432 | 2 GB / 2.0 | Base de datos relacional. Schemas: `cerebro` (LinkAnvil), `n8n` (orquestador), `public` (LiteLLM/Prisma). |
 | `cerebro-redis` | Almacenamiento | `redis/redis-stack-server:latest` (pinned por digest) | 6379 | 768 MB / 1.0 | Bloom Filter de dedupe (módulo RedisBloom), rate-limiters atómicos, heartbeats de workers y caché LiteLLM. |
 | `cerebro-rabbitmq` | Mensajería | `rabbitmq:3.13-management-alpine` | 5672, 15672 | 768 MB / 1.0 | Broker con vhost `cerebro`. Colas `q.url.ingesta`, `q.embeddings` y DLQs asociadas. |
-| `cerebro-qdrant` | Vector DB | `qdrant/qdrant:v1.17.1` | 6333 (REST), 6334 (gRPC) | 2 GB / 2.0 | Vectores HNSW. Colecciones `cerebro_recursos` (doc-level) y `cerebro_chunks` (RAG), filtrado por `tenant_id` en payload. |
+| `cerebro-qdrant` | Vector DB | `qdrant/qdrant:v1.17.1` | 6333 (REST), 6334 (gRPC) | 2 GB / 2.0 | Vectores HNSW. Colecciones `cerebro_recursos` (doc-level) y `cerebro_chunks` (RAG), con filtrado por `tenant_id` en el payload. |
 | `cerebro-otel` | Observabilidad | `otel/opentelemetry-collector-contrib:0.150.1` | 4317, 4318, 8888, 8889 | 384 MB / 0.5 | Recolector OTLP: enruta trazas a Jaeger y métricas a Prometheus. |
 | `cerebro-prometheus` | Observabilidad | `prom/prometheus:v3.11.2` | 9090 | 1 GB / 1.0 | TSDB de métricas + 9 reglas de alerta activas (latencia, colas, DLQ, heartbeats, disco). |
 | `cerebro-jaeger` | Observabilidad | `jaegertracing/all-in-one` (pinned por digest) | 16686 (UI), 14317 (OTLP gRPC), 14318 (OTLP HTTP) | 384 MB / 0.5 | Distributed tracing: visualización de la cascada de spans por Trace-ID. |
 | `cerebro-grafana` | Observabilidad | `grafana/grafana:11.4.0` | 3000 | 384 MB / 0.5 | Dashboards y alertas sobre Prometheus + Jaeger. |
 | `cerebro-postgres-exporter` | Exporter | `prometheuscommunity/postgres-exporter:v0.19.1` | 9187 (interno) | 128 MB / 0.25 | Métricas Prometheus de PostgreSQL (conexiones, locks, tamaño). |
 | `cerebro-redis-exporter` | Exporter | `oliver006/redis_exporter:v1.82.0-alpine` | 9121 (interno) | 128 MB / 0.25 | Métricas Prometheus de Redis (memoria, hit rate, clientes). |
-| `cerebro-rabbitmq-exporter` | Exporter | `kbudde/rabbitmq-exporter` (pinned por digest) | 9419 (interno) | 128 MB / 0.25 | Métricas Prometheus de RabbitMQ (cola, consumers, mensajes). Versión congelada para evitar regresiones. |
+| `cerebro-rabbitmq-exporter` | Exporter | `kbudde/rabbitmq-exporter` (pinned por digest) | 9419 (interno) | 128 MB / 0.25 | Métricas Prometheus de RabbitMQ (colas, consumers, mensajes). Versión congelada para evitar regresiones. |
 
 ### Volúmenes persistentes
 
@@ -171,7 +171,7 @@ Una fila por servicio. `RAM/CPU` indica el límite asignado en `docker-compose.y
 
 ## 📊 Resumen de Límites por Contenedor
 
-Repartimos los recursos para que el stack quepa en una sola máquina sólida sin interferencias. Almacenamiento y scraper ocupan los tanques más grandes; exporters y observabilidad son mínimos.
+Los recursos están repartidos para que el stack quepa en una sola máquina sólida sin interferencias. Almacenamiento y scraper ocupan los tanques más grandes; exporters y observabilidad son mínimos.
 
 | Contenedor | RAM Límite | CPU Límite | Tipo |
 |---|---|---|---|

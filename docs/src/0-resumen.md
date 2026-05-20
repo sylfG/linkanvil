@@ -35,7 +35,7 @@ El proyecto **LinkAnvil** es una plataforma diseñada para organizar informació
 
 ## Estructura y Módulos del Sistema
 
-El sistema agrupa **23 servicios** desplegados en Docker Compose alrededor de **cinco grandes capas funcionales** que se describen a continuación. Para ver el inventario detallado de servicios consulta [`3-componentes.md`](./3-componentes.md).
+El sistema agrupa **22 servicios** desplegados bajo Docker Compose, organizados alrededor de **cinco grandes capas funcionales** que se describen a continuación. Para ver el inventario detallado de servicios consulta [`3-componentes.md`](./3-componentes.md).
 
 ### A. Módulo de Ingesta y Captura (El Recolector)
 
@@ -54,9 +54,9 @@ Este módulo se encarga de entender el texto extraído utilizando Inteligencia A
 
 * **Conexión Inteligente y de Respaldo:** El sistema no depende de un único proveedor de IA. Si el servicio principal (por ejemplo, OpenAI) falla, el sistema se conecta automáticamente a un servicio secundario sin que el usuario note la interrupción.
 * **Formato de Datos Estricto:** Se obliga a la IA a entregar las respuestas en una estructura rígida y organizada que contiene:
-* **Clasificación:** Categoría principal y etiquetas del tema.
-* **Resumen:** Una síntesis breve y clara del texto.
-* **Fecha de Caducidad Estimada:** Un cálculo de cuánto tiempo seguirá siendo útil o vigente esa información (por ejemplo, se usaría para detectar url de eventos que ya han pasado, promociones que ya no están vigentes, etc.).
+  * **Clasificación:** Categoría principal y etiquetas del tema.
+  * **Resumen:** Una síntesis breve y clara del texto.
+  * **Fecha de Caducidad Estimada:** Un cálculo de cuánto tiempo seguirá siendo útil o vigente esa información (por ejemplo, se usa para detectar URLs de eventos que ya han pasado, promociones que ya no están vigentes, etc.).
 
 
 
@@ -83,11 +83,11 @@ Para evitar que el sistema se vuelva lento o costoso debido a la acumulación de
 
 Es la pantalla y el canal de comunicación con el usuario. LinkAnvil expone tres superficies de UI complementarias:
 
-* **Panel de Control (Aplicación Web):** Interfaz reactiva en Next.js (servicio `cerebro-web`) que permite ver estadísticas, consultar los enlaces guardados y revisar el historial de conversaciones.
-* **Chat Conversacional (Streamlit):** Cliente alternativo basado en Streamlit (`src/ui/chatbot.py`) para iterar rápidamente con el motor de chat.
-* **Extensión de Navegador:** Cliente ligero (`clientes/browser-extension/`) que permite enviar enlaces desde Chrome/Firefox sin abrir la app principal.
+* **Panel de Control (Aplicación Web):** Interfaz reactiva basada en Next.js que permite ver estadísticas, consultar los enlaces guardados y revisar el historial de conversaciones.
+* **Chat Conversacional (Streamlit):** Cliente alternativo construido sobre Streamlit, pensado para iterar rápidamente con el motor de chat.
+* **Extensión de Navegador:** Cliente ligero para Chrome y Firefox que permite enviar enlaces sin abrir la aplicación principal.
 * **Chat Fluido:** Las respuestas de la IA se muestran palabra por palabra en tiempo real mientras se generan. Adicionalmente, la interfaz refleja en directo el estado de cada enlace guardado (procesado, en cuarentena, expirado) mediante un canal de eventos reactivo (SSE), sin necesidad de recargar la página. El historial de conversación se guarda de forma segura en el servidor, permitiendo continuar la charla desde cualquier dispositivo (móvil, tablet u ordenador) sin perder información.
-* **Seguridad de Acceso:** El inicio de sesión utiliza cookies `httpOnly` (inaccesibles desde código JavaScript en la página, lo que bloquea ataques XSS comunes) con flag `SameSite` configurable, y cuenta con un límite de intentos para bloquear accesos no autorizados (5 intentos de login/min/IP por defecto).
+* **Seguridad de Acceso:** El inicio de sesión utiliza cookies `httpOnly` (inaccesibles desde JavaScript en la página, lo que bloquea ataques XSS comunes) con flag `SameSite` configurable, y aplica un límite por defecto de 5 intentos de login por minuto y por IP para bloquear accesos no autorizados.
 
 ---
 

@@ -7,8 +7,11 @@ hero:
   tagline: "Ingesta asíncrona, RAG híbrido multi-tenant y Zero-Defect pipeline con despliegue local."
   actions:
     - theme: brand
+      text: Empezar
+      link: /0-resumen
+    - theme: alt
       text: Épicas y Features
-      link: /1_epics_and_features
+      link: /Extractor_de_Requisitos/1_epics_and_features
     - theme: alt
       text: Ver en GitHub
       link: https://github.com/sylfG/linkanvil

@@ -44,7 +44,7 @@ Instala las siguientes herramientas antes de continuar. Todas son necesarias par
 
 #### Git
 
-Se usa Git como control de versiones distribuido (DVCS) utilizado para clonar de forma local el repositorio remoto de LinkAnvil, permite aplicar actualizaciones de forma sencilla y mantener el control de los cambios en tus archivos de configuración. 
+Se usa Git como control de versiones distribuido (DVCS) utilizado para clonar de forma local el repositorio remoto de LinkAnvil, permite aplicar actualizaciones de forma sencilla y mantener el control de los cambios en tus archivos de configuración.
 
 ::: code-group
 
@@ -71,8 +71,8 @@ git --version   # debe devolver 2.x o superior
 #### Docker Engine + Docker Compose V2
 
 Docker Compose V2 viene incluido con Docker Engine ≥ 24 y Docker Desktop.
-Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando los **23 servicios long-running** del stack (más 2 one-shot de inicialización: `cerebro-migrate` y `cerebro-n8n-bootstrap`, y el sidecar opcional `tailscale-funnel` que solo arranca con `--profile telegram`) en contenedores aislados.
-A través del archivo de configuración (docker-compose.yml), permite levantar, interconectar dentro de la red privada cerebro-net y gestionar todo con un solo comando, garantizando que la plataforma funcione exactamente igual en cualquier entorno de desarrollo o producción.
+Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando los **21 servicios long-running** del stack (más 2 contenedores one-shot de inicialización — `cerebro-migrate` y `cerebro-n8n-bootstrap` — y el sidecar opcional `tailscale-funnel`, que solo arranca con el perfil `telegram`) en contenedores aislados.
+A través del fichero declarativo de Compose, permite levantar e interconectar todos los servicios dentro de la red privada `cerebro-net` y gestionar el ciclo de vida con un solo comando, garantizando que la plataforma funcione exactamente igual en cualquier entorno de desarrollo o producción.
 
 ::: code-group
 
@@ -96,11 +96,11 @@ docker compose version   # debe ser ≥ 2.22
 
 #### curl
 
-Necesario para descargar los instaladores de Node.js y uv. 
+Necesario para descargar los instaladores de Node.js y uv.
 
-**Node.js + npx**: lo necesita Claude Code para los MCP servers escritos en JavaScript/TypeScript (n8n, Slack, GitHub, etc.). No es runtime del stack — todos los servicios corren en contenedores Docker.
+**Node.js + npx**: lo necesita Claude Code para los MCP servers escritos en JavaScript/TypeScript (n8n, Slack, GitHub, etc.). No es runtime del stack — todos los servicios productivos corren en contenedores Docker.
 
-**uv / uvx**: usados por Claude Code para lanzar MCP servers en Python (`.mcp.json`). No participan en el runtime del stack.
+**uv / uvx**: usados por Claude Code para lanzar MCP servers en Python. No participan en el runtime del stack.
 
 ::: code-group
 
@@ -124,13 +124,13 @@ curl --version
 
 #### Python 3.9 o superior
 
-Se usa como la herramienta de diagnóstico y auditoría del sistema antes de ponerlo en marcha.
+Se usa como herramienta de diagnóstico y auditoría del sistema antes de ponerlo en marcha.
 
-Es necesario la ejecución del script `infra/test_health.py`, ya que actúa como un "médico virtual" que revisa la salud de la plataforma. Este script es fundamental por las siguientes razones:
+LinkAnvil incluye un smoke test escrito en Python puro que actúa como un "médico virtual" del stack. Sus propiedades:
 
-* **Verificación de servicios (*Healthcheck*):** Se conecta uno a uno con los contenedores activos de LinkAnvil para confirmar que responden correctamente y que la red interna funciona sin fallos.
-* **Independencia absoluta (Uso de `stdlib`):** Al estar programado utilizando únicamente la **biblioteca estándar** (`stdlib`) de Python, el script puede ejecutarse inmediatamente después de instalar Python. No necesita descargar librerías de internet ni instalar paquetes externos (como `pip` o `requests`), lo que garantiza que la prueba de diagnóstico sea ligera, rápida y 100% segura.
-* **Compatibilidad de sintaxis:** Requiere la versión 3.9 o superior para poder interpretar las funciones modernas de comunicación y manejo de datos con las que fue desarrollado el script.
+* **Verificación de servicios (*Healthcheck*):** se conecta uno a uno con los contenedores activos para confirmar que responden correctamente y que la red interna funciona sin fallos.
+* **Independencia absoluta (Uso de `stdlib`):** está programado utilizando únicamente la **biblioteca estándar** de Python, así que puede ejecutarse inmediatamente después de instalar el intérprete. No necesita descargar librerías de internet ni instalar paquetes externos (`pip`, `requests`, etc.), lo que garantiza que la prueba de diagnóstico sea ligera, rápida y 100% segura.
+* **Compatibilidad de sintaxis:** requiere la versión 3.9 o superior.
 
 ::: code-group
 
@@ -184,7 +184,7 @@ npx --version
 
 #### uv (gestor de paquetes Python ultrarrápido)
 
-**uv / uvx** es un gestor de paquetes de Python ultra-rápido que usa Claude Code para lanzar los MCP servers escritos en Python (Qdrant, Fetch, Docker, Prometheus, etc.) definidos en `.mcp.json`. Su extrema velocidad y gestión aislada garantizan que los MCP servers arranquen en milisegundos y libres de conflictos. No interviene en el runtime del stack.
+**uv / uvx** es un gestor de paquetes de Python ultrarrápido que usa Claude Code para lanzar los MCP servers escritos en Python (Qdrant, Fetch, Docker, Prometheus, etc.). Su velocidad y gestión aislada garantizan que los MCP servers arranquen en milisegundos y libres de conflictos. No interviene en el runtime del stack.
 
 ::: code-group
 
@@ -230,34 +230,35 @@ git clone https://github.com/sylfG/linkanvil.git
 cd linkanvil
 ```
 
-Verás varias carpetas como `/infra`, donde residen las configuraciones de cada uno de los contenedores Docker locales (Traefik, Redis, Grafana, PostgreSQL, LiteLLM, Qdrant).
+El repositorio contiene la configuración declarativa de los contenedores del stack (Traefik, Redis, Grafana, PostgreSQL, LiteLLM, Qdrant, etc.) y los scripts operativos.
 
 ---
 
 ## FASE 2: Tokens de Inteligencia Artificial y `.env`
 
-El corazón de extracción y vectorización de URLs funciona gracias a nuestro enrutador **LiteLLM**. Necesitaremos proporcionar credenciales seguras.
+El núcleo de extracción y vectorización de URLs funciona gracias al enrutador **LiteLLM**. Necesitarás proporcionar credenciales seguras.
 
-1. Copia nuestra plantilla a tu fichero local secreto (recuerda que este fichero NUNCA debe subirse a un repositorio público):
+1. Copia la plantilla a tu fichero local secreto (este fichero **NUNCA** debe subirse a un repositorio público):
 
    ```bash
    cp .env.example .env
    ```
 
 2. Edita `.env` con un editor como Nano, Vim o VS Code:
-   * **Variables de API (*CRÍTICAS*)**: Proporciona la llave de OpenRouter. En `infra/litellm/config.yaml` se pueden configurar otras, pero la plantilla general exige:
+
+   * **Variables de API (*CRÍTICAS*)**: proporciona la llave de OpenRouter. Es posible registrar proveedores adicionales en la configuración de LiteLLM, pero la plantilla general exige al menos:
 
      ```env
      OPENROUTER_API_KEY=sk-or-xxxxxx...
      ```
 
-   * **Contraseña del Gateway Local**: Necesitas una llave tuya propia que protegerá cualquier llamada interna. Por defecto es `sk-cerebro-master-key`, pero es muy recomendable cambiarla por seguridad (y usar la nueva en todas las peticiones).
+   * **Contraseña del Gateway Local**: una llave propia que protege las llamadas internas al gateway. El default es `sk-cerebro-master-key`, pero es muy recomendable cambiarla por seguridad (y usar la nueva en todas las peticiones).
 
      ```env
      LITELLM_MASTER_KEY=sk-tullave-privada-y-segura
      ```
 
-   * **Clave de cifrado de las BYOK keys (*CRÍTICA — obligatoria*)**: requerida para que `cerebro-api` arranque. El operador `:?` en `docker-compose.yml` hace fallar `docker compose up` inmediatamente si está vacía. Genera y pega:
+   * **Clave de cifrado de las BYOK keys (*CRÍTICA — obligatoria*)**: requerida para que la API de LinkAnvil arranque. La validación al arrancar el stack fallará inmediatamente si está vacía. Genera y pega:
 
      ```bash
      python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -267,7 +268,7 @@ El corazón de extracción y vectorización de URLs funciona gracias a nuestro e
      LLM_KEYS_ENCRYPTION_KEY=<el-valor-generado-arriba>
      ```
 
-   * **Contraseñas del resto del Stack**: Modifica las contraseñas predefinidas (RabbitMQ, Postgres, Redis, Grafana...). En `.env.example` llevan el sufijo `_CHANGE_ME` intencionalmente para forzar al usuario a editarlas — no son production-safe.
+   * **Contraseñas del resto del Stack**: modifica las contraseñas predefinidas (RabbitMQ, Postgres, Redis, Grafana...). En la plantilla llevan el sufijo `_CHANGE_ME` intencionalmente para forzar al usuario a editarlas — no son production-safe.
 
      ```env
      POSTGRES_PASSWORD=cerebro_db_pass_CHANGE_ME   # ⚠ debes cambiarlo
@@ -277,33 +278,33 @@ El corazón de extracción y vectorización de URLs funciona gracias a nuestro e
      N8N_PASSWORD=cerebro_n8n_pass_CHANGE_ME
      ```
 
-> Las variables `DEMO_KEY_LITE`, `DEMO_KEY_EMBEDDINGS`, `DEMO_KEY_PRO` que aparecen en `.env.example` son virtual-keys de LiteLLM que usa el usuario demo. Si las dejas vacías, se hace fallback automático a `LITELLM_MASTER_KEY` y el demo funcionará sin configuración adicional.
+> Las variables `DEMO_KEY_LITE`, `DEMO_KEY_EMBEDDINGS` y `DEMO_KEY_PRO` que aparecen en la plantilla son virtual-keys de LiteLLM que usa el usuario demo. Si las dejas vacías, se aplica fallback automático a `LITELLM_MASTER_KEY` y el demo funcionará sin configuración adicional.
 
 ---
 
 ## FASE 3: Despliegue e Inicialización (Bootstrapping)
 
-Ahora que las llaves están configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores long-running y aplicará el `init.sql` (que crea el schema `cerebro` y todas las tablas en Postgres).
+Con las llaves configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores long-running y aplicará el bootstrap SQL inicial (que crea el schema `cerebro` y todas las tablas en Postgres).
 
 ```bash
 docker compose up -d
 ```
 
-> **NOTA:** Tardará varios minutos en la primera ejecución. Puedes seguir los logs con `docker compose logs -f`.
+> **Nota:** la primera ejecución tarda varios minutos. Puedes seguir los logs con `docker compose logs -f`.
 
-> **Nota sobre versiones**: todas las imágenes externas están pinneadas a versión exacta o a digest SHA-256 en `docker-compose.yml`, salvo `tailscale/tailscale:stable` (opcional, sidecar de Telegram). Esto garantiza reproducibilidad entre entornos.
+> **Nota sobre versiones**: todas las imágenes externas están pinneadas a versión exacta o a digest SHA-256, salvo `tailscale/tailscale:stable` (opcional, sidecar de Telegram). Esto garantiza reproducibilidad entre entornos.
 
 ---
 
 ## FASE 3b: Migraciones de Schema (automáticas)
 
-Las migraciones SQL se aplican **automáticamente** por el servicio one-shot **`cerebro-migrate`** cada vez que ejecutas `docker compose up -d`. La API no arranca hasta que el runner termina con éxito (`cerebro-api` declara `depends_on: cerebro-migrate` con `condition: service_completed_successfully`).
+Las migraciones SQL se aplican **automáticamente** mediante el servicio one-shot **`cerebro-migrate`** cada vez que ejecutas `docker compose up -d`. La API no arranca hasta que el runner termina con éxito: `cerebro-api` declara `depends_on: cerebro-migrate` con `condition: service_completed_successfully`.
 
-El runner es **idempotente**: lee secuencialmente los archivos SQL de `infra/postgres/migrations/`, registra cada versión aplicada en la tabla `cerebro.schema_migrations` y solo ejecuta las pendientes. Si no hay novedades, imprime `schema is up to date` y sale con código 0.
+El runner es **idempotente**: lee secuencialmente los archivos SQL versionados del proyecto, registra cada versión aplicada en la tabla `cerebro.schema_migrations` y solo ejecuta las pendientes. Si no hay novedades, imprime `schema is up to date` y sale con código 0.
 
 Solo necesitas ejecutarlo manualmente si:
 
-1. Has añadido una migración nueva en `infra/postgres/migrations/` sin reiniciar el stack.
+1. Has añadido una migración nueva sin reiniciar el stack.
 2. Estás depurando el runner.
 
 ```bash
@@ -314,15 +315,9 @@ docker compose run --rm cerebro-migrate
 bash scripts/migrate.sh
 ```
 
-Para añadir una migración nueva:
+Para añadir una migración nueva, crea un fichero SQL nuevo en el directorio de migraciones del proyecto siguiendo el patrón de numeración existente (`0002_nueva_columna.sql`, `0003_...`, etc.). En el próximo arranque del stack se aplicará automáticamente, o fuerza la aplicación inmediata con:
 
 ```bash
-# crear el archivo en infra/postgres/migrations/
-echo "ALTER TABLE cerebro.recursos ADD COLUMN nueva_col TEXT;" \
-  > infra/postgres/migrations/0002_nueva_columna.sql
-
-# aplicar (la próxima vez que arranques el stack se aplica sola,
-# o fuerza ahora con):
 docker compose run --rm cerebro-migrate
 ```
 
@@ -330,19 +325,20 @@ docker compose run --rm cerebro-migrate
 
 ## FASE 3c: Resetear el Stack Completo
 
-Se usa a través del script `./reset.sh` para devolver el entorno de desarrollo a un estado totalmente limpio de forma automática. El comando destruye todos los contenedores Docker, borra los volúmenes de datos en disco y regenera las configuraciones de acceso de la plataforma. Es una herramienta crítica en pruebas que permite solucionar problemas de corrupción o cambios estructurales mayores, perdiendo toda la información guardada.
+El script `./reset.sh` devuelve el entorno de desarrollo a un estado totalmente limpio de forma automática. Destruye todos los contenedores Docker, borra los volúmenes de datos en disco y regenera las configuraciones de acceso de la plataforma. Es una herramienta crítica en pruebas que permite solucionar problemas de corrupción o cambios estructurales mayores, perdiendo toda la información guardada.
 
 ```bash
 ./reset.sh
 ```
 
 Este script:
-1. Para y elimina todos los contenedores del proyecto
-2. Elimina los volúmenes de datos (`postgres-data`, `qdrant-data`, etc.)
-3. Opcionalmente elimina las imágenes locales (pregunta confirmación)
-4. Rehash de la contraseña de RabbitMQ en `definitions.json` desde `.env`
-5. Vuelve a levantar todo con `docker compose up -d`
-6. Espera a que los servicios con healthcheck estén `healthy`
+
+1. Para y elimina todos los contenedores del proyecto.
+2. Elimina los volúmenes de datos (`postgres-data`, `qdrant-data`, etc.).
+3. Opcionalmente elimina las imágenes locales (pregunta confirmación).
+4. Rehasea la contraseña de RabbitMQ en sus definiciones desde `.env`.
+5. Vuelve a levantar todo con `docker compose up -d`.
+6. Espera a que los servicios con healthcheck estén `healthy`.
 
 > **Importante:** `reset.sh` borra todos los datos. Las sesiones de chat, recursos capturados y embeddings se perderán. Usar solo en desarrollo o cuando se quiera un estado completamente limpio.
 
@@ -356,18 +352,21 @@ Mediante el comando `docker compose ps` se puede realizar una auditoría rápida
 docker compose ps
 ```
 
-Todos los servicios con healthcheck deben mostrar `(healthy)`. Los workers (`cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`) se marcarán como healthy una vez que su heartbeat Redis esté activo (puede tardar hasta 60 segundos).
+Todos los servicios con healthcheck deben mostrar `(healthy)`. Los workers (`cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`) se marcan como healthy una vez que su heartbeat en Redis está activo (puede tardar hasta 60 segundos).
 
 Para ver los logs en tiempo real:
+
 ```bash
 docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 ```
 
-Para un smoke test más profundo (verifica conectividad inter-servicio, no solo el estado del contenedor):
+Para un smoke test más profundo que verifica la conectividad inter-servicio (no solo el estado del contenedor), LinkAnvil incluye un script de diagnóstico ejecutable directamente:
 
 ```bash
-python3 infra/test_health.py
+python3 -m linkanvil.health
 ```
+
+> El smoke test usa exclusivamente la stdlib de Python, así que no requiere instalar dependencias.
 
 ---
 
@@ -386,7 +385,7 @@ python3 infra/test_health.py
 | **BD Vectorial (Qdrant)** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Libre |
 | **API Gateway (Traefik)** | [http://localhost:8080](http://localhost:8080) | Libre (solo local) |
 
-> **Tip:** Traefik enruta por `Host` header, así que los subdominios `*.localhost` (`cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc.) son la vía canónica. La mayoría de sistemas (Linux con `systemd-resolved`, macOS 11+) resuelven `*.localhost` a 127.0.0.1 automáticamente (RFC 6761). En Windows o en sistemas con resolución estricta, añade entradas explícitas en `/etc/hosts` (o `C:\Windows\System32\drivers\etc\hosts`):
+> **Tip:** Traefik enruta por `Host` header, así que los subdominios `*.localhost` (`cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc.) son la vía canónica. La mayoría de sistemas (Linux con `systemd-resolved`, macOS 11+) resuelven `*.localhost` a `127.0.0.1` automáticamente (RFC 6761). En Windows o en sistemas con resolución estricta, añade entradas explícitas en `/etc/hosts` (o `C:\Windows\System32\drivers\etc\hosts`):
 >
 > ```
 > 127.0.0.1  cerebro.localhost ingest.localhost n8n.localhost rabbitmq.localhost \
@@ -398,7 +397,7 @@ python3 infra/test_health.py
 
 Crea una cuenta en `http://localhost:3001`, inicia sesión y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API.
 
-> ⚠ El servicio `ingestion-api` **no expone puertos al host** — solo es accesible vía Traefik (PathPrefix `/ingest` o Host header `ingest.localhost`). Un `curl http://localhost:8000/ingest` desde el host falla con *connection refused*.
+> ⚠ El servicio `cerebro-ingestion` **no expone puertos al host** — solo es accesible vía Traefik (PathPrefix `/ingest` o Host header `ingest.localhost`). Un `curl http://localhost:8000/ingest` desde el host falla con *connection refused*.
 
 ```bash
 # Vía Traefik (recomendado — pasa por el rate-limiting global):
@@ -423,9 +422,9 @@ Para desplegar en un servidor real con HTTPS:
 
 ### 6.1 Prerrequisitos
 
-- Dominio apuntando a la IP del servidor
-- Variables de entorno de producción en `.env` (o Docker secrets)
-- Docker Engine en el servidor
+- Dominio apuntando a la IP del servidor.
+- Variables de entorno de producción en `.env` (o Docker secrets).
+- Docker Engine en el servidor.
 
 ### 6.2 Levantar con el overlay de producción
 
@@ -433,23 +432,24 @@ Para desplegar en un servidor real con HTTPS:
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-El overlay `docker-compose.prod.yml` activa:
-- **TLS automático** con Let's Encrypt (certResolver Traefik)
-- **Redirección HTTP→HTTPS** en todos los routers públicos
-- **Puertos internos cerrados**: Postgres, Redis, RabbitMQ, Qdrant no exponen ports al host — solo accesibles dentro de `cerebro-net`
-- **Docker secrets**: `JWT_SECRET_FILE`, `POSTGRES_PASSWORD_FILE` leen de `/run/secrets/` en lugar de variables de entorno
+El overlay de producción activa:
+
+- **TLS automático** con Let's Encrypt (certResolver Traefik).
+- **Redirección HTTP→HTTPS** en todos los routers públicos.
+- **Puertos internos cerrados**: Postgres, Redis, RabbitMQ y Qdrant no exponen puertos al host — solo accesibles dentro de `cerebro-net`.
+- **Docker secrets**: `JWT_SECRET_FILE` y `POSTGRES_PASSWORD_FILE` leen de `/run/secrets/` en lugar de variables de entorno.
 
 ### 6.3 Variables críticas para producción
 
 ```env
 # En .env de producción (los secretos van en Docker secrets, no aquí)
-JWT_SECRET=<clave-aleatoria-fuerte>   # mín 32 chars; genera con: python3 -c "import secrets; print(secrets.token_hex(32))"
-PUBLIC_HOSTNAME=tu-dominio.com        # Traefik construye rutas desde aquí
-ACME_EMAIL=admin@tu-dominio.com       # Let's Encrypt notifications
-LLM_KEYS_ENCRYPTION_KEY=<clave-fernet> # cifrado de las BYOK keys (obligatorio)
+JWT_SECRET=<clave-aleatoria-fuerte>      # mín 32 chars; genera con: python3 -c "import secrets; print(secrets.token_hex(32))"
+PUBLIC_HOSTNAME=tu-dominio.com           # Traefik construye rutas desde aquí
+ACME_EMAIL=admin@tu-dominio.com          # Let's Encrypt notifications
+LLM_KEYS_ENCRYPTION_KEY=<clave-fernet>   # cifrado de las BYOK keys (obligatorio)
 ```
 
-Consulta `docs/PRODUCTION.md` para la guía completa incluyendo Docker secrets, configuración de firewall y backups programados.
+Consulta la guía de producción del proyecto para Docker secrets, configuración de firewall y backups programados.
 
 ### 6.4 Webhooks de Telegram (Tailscale Funnel)
 
@@ -460,11 +460,13 @@ El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entre
 1. **Cuenta**: regístrate gratis en https://login.tailscale.com (plan Personal).
 2. **Activar HTTPS**: Admin Console → DNS → `Enable HTTPS`. Imprescindible para que Funnel pueda emitir certificados.
 3. **Permitir Funnel**: Admin Console → Access Controls. La política por defecto en cuentas personales lo permite. Si no, añade:
+
    ```jsonc
    "nodeAttrs": [
      { "target": ["*"], "attr": ["funnel"] }
    ]
    ```
+
 4. **Auth-key reusable**: Admin Console → Settings → Keys → `Generate auth key`. Marca:
    - Reusable ✓
    - Ephemeral ✗
@@ -475,28 +477,34 @@ El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entre
 #### Configurar el túnel
 
 1. **Edita `.env`**:
+
    ```env
    TS_AUTHKEY=tskey-auth-XXXXXXXXXXXXXXXXXX
    PUBLIC_INGESTION_URL=                # se rellena tras el primer arranque
    ```
 
 2. **Levanta el túnel** (sin tocar el resto de servicios):
+
    ```bash
    docker compose --profile telegram up -d tailscale-funnel
    ```
 
 3. **Descubre la URL pública**:
+
    ```bash
    docker logs cerebro-tailscale 2>&1 | grep -i "https://"
    ```
+
    Formato: `https://linkanvil-ingest.<tu-tailnet>.ts.net`.
 
 4. **Rellena `PUBLIC_INGESTION_URL`** en `.env` con esa URL y reinicia la API:
+
    ```bash
    docker compose up -d cerebro-api
    ```
 
 5. **Smoke test desde fuera de la LAN** (móvil con datos, otra máquina):
+
    ```bash
    curl https://linkanvil-ingest.<tu-tailnet>.ts.net/health
    # → {"status":"healthy"}
@@ -506,14 +514,14 @@ El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entre
 
 1. Crea un bot con `@BotFather` en Telegram → guarda el token.
 2. En la UI, ve a `/profile`, pega el token y guarda.
-3. La respuesta del PUT `/profile/telegram` debe incluir `webhook_url` apuntando al subdominio público.
+3. La respuesta del `PUT /profile/telegram` debe incluir `webhook_url` apuntando al subdominio público.
 4. Manda una URL al bot — debería aparecer en tu KB tras unos segundos.
 
 #### Persistencia entre rebuilds
 
 El estado del nodo Tailscale vive en el volumen `cerebro-tailscale-state`. Mientras no lo borres con `docker volume rm`, la URL pública es la misma siempre. Tras un `docker compose down && up`, todo arranca y Telegram sigue entregando mensajes a la misma dirección sin reconfigurar nada.
 
-> **Aviso**: Tailscale Funnel solo expone los puertos públicos 443/8443/10000 (usamos 443) y solo responde mientras `cerebro-tailscale` esté corriendo.
+> **Aviso**: Tailscale Funnel solo expone los puertos públicos 443/8443/10000 (LinkAnvil usa 443) y solo responde mientras `cerebro-tailscale` esté corriendo.
 
 ### 6.5 Backup automático
 
@@ -523,11 +531,10 @@ bash scripts/backup.sh
 
 Genera `pg_dump` gzipado del schema `cerebro` y snapshots de Qdrant.
 
-Para la retención automática, exporta `BACKUP_RETENTION_DAYS` (entero, default `7`) como variable de entorno o añádela a tu `.env`. Nota: `BACKUP_RETENTION_DAYS` **no figura en `.env.example`** — debes añadirla manualmente. Alternativa equivalente sin tocar `.env`:
+Para la retención automática, exporta `BACKUP_RETENTION_DAYS` (entero, default `7`) como variable de entorno o añádela a tu `.env`. Esta variable no figura en la plantilla `.env.example`, así que debes añadirla manualmente. Alternativa equivalente sin tocar `.env`:
 
 ```bash
 BACKUP_RETENTION_DAYS=14 bash scripts/backup.sh
 ```
 
 *¡Felicidades! LinkAnvil está operativo.* Consulta la [Arquitectura](./4-arquitectura.md) para entender las decisiones de diseño, o las [Épicas y Features](./Extractor_de_Requisitos/1_epics_and_features.md) para el roadmap del producto.
-

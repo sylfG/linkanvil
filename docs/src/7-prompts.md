@@ -1,10 +1,10 @@
 # Prompts del sistema LinkAnvil
 
-> Referencia canónica de TODOS los puntos donde LinkAnvil llama a un LLM:
-> qué prompt envía, qué intenta extraer y dónde se invoca.
+> Referencia canónica de todos los puntos donde LinkAnvil llama a un LLM:
+> qué prompt envía, qué intenta extraer y dónde se invoca a nivel
+> funcional.
 >
-> Última actualización: 2026-05-17. Si modificas un prompt en código, actualiza
-> este archivo en el mismo commit para que no se desincronicen.
+> Última actualización: 2026-05-19.
 
 ---
 
@@ -22,7 +22,7 @@
    - 4.1 [Pre-push hook](#41-pre-push-hook)
    - 4.2 [Weekly audit cron](#42-weekly-audit-cron)
 5. [Cliente LiteLLM compartido](#5-cliente-litellm-compartido)
-6. [Gap conocido — clasificación temporal del contenido](#6-gap-conocido--clasificación-temporal-del-contenido)
+6. [Clasificación temporal del contenido (cerrado en migraciones 0006 + 0007)](#6-clasificación-temporal-del-contenido-cerrado-en-migraciones-0006--0007)
 
 ---
 
@@ -34,14 +34,14 @@
                      │            │                              │
                      │            ▼                              │
                      │  ┌─────────────────────┐                  │
-                     │  │ scraper-worker      │                  │
+                     │  │ cerebro-scraper     │                  │
                      │  │  └─ Prompt #1       │ ← extrae metadata│
                      │  │     (cerebro-lite)  │   incl. caducidad│
                      │  └────────┬────────────┘                  │
                      │           │ outbox: recurso.procesado     │
                      │           ▼                               │
                      │  ┌─────────────────────┐                  │
-                     │  │ embedder-worker     │                  │
+                     │  │ cerebro-embedder    │                  │
                      │  │  ├─ Embeddings API  │ ← vectorización  │
                      │  │  └─ Prompt #4       │ ← tipifica       │
                      │  │     (cerebro-lite)  │   relaciones     │
@@ -62,13 +62,14 @@
                    ──▶ cron lunes ─▶ Prompt #7 (weekly-audit, código completo)
 
    LEGACY (en repo, no en pipeline live):
-                  Prompt #5 (Streamlit chatbot, en `src/ui/chatbot.py`)
+                  Prompt #5 (chatbot Streamlit de desarrollo local)
 ```
 
-**Servicio dorsal**: todos los prompts pasan por
-[LiteLLM](http://localhost:4000) (`cerebro-litellm` container). El proxy
-LiteLLM expone modelos lógicos `cerebro-lite` y `cerebro-pro` que mapean a
-proveedores configurados en su `config.yaml`.
+**Servicio dorsal**: todos los prompts pasan por LiteLLM (contenedor
+`cerebro-litellm`, expuesto en `http://localhost:4000` en desarrollo).
+El proxy LiteLLM expone los alias virtuales `cerebro-lite`, `cerebro-pro`
+y `cerebro-embeddings` que mapean a los providers configurados en su
+`config.yaml`.
 
 ---
 
@@ -76,29 +77,56 @@ proveedores configurados en su `config.yaml`.
 
 ### 2.1 Extracción de metadata (scraper)
 
-- **Ubicación**: `src/scraper/worker.py:73-91` (función `_extract_metadata_with_llm`)
-- **Disparador**: cada mensaje en la cola `q.url.ingesta`. El scraper baja la URL,
-  limpia el HTML, y llama a este prompt con los primeros 6000 caracteres del texto.
-- **Modelo**: `cerebro-lite`
-- **Temperatura**: `0.1` (cuasi-determinista — queremos estabilidad en la salida JSON)
-- **Inputs interpolados**: `url`, `title` (HTML `<title>`), `clean_text[:6000]`
-- **Outputs esperados**: JSON estricto con 10 campos (los 7 originales +
-  3 añadidos en migración 0006: `event_date`, `temporal_class`,
+- **Componente**: prompt de extracción de metadata del worker scraper.
+- **Disparador**: cada mensaje en la cola `q.url.ingesta`. El scraper
+  baja la URL, limpia el HTML, y llama a este prompt con los primeros
+  6000 caracteres del texto.
+- **Modelo**: `cerebro-lite`.
+- **Temperatura**: `0.1` (cuasi-determinista — buscamos estabilidad en
+  la salida JSON).
+- **Inputs interpolados**: `url`, `title` (HTML `<title>`),
+  `clean_text[:6000]`.
+- **Outputs esperados**: JSON estricto con 10 campos (los 7 originales
+  + 3 añadidos en la migración 0006: `event_date`, `temporal_class`,
   `valor_archivistico`).
 - **Qué intenta conseguir**: transformar HTML scrappeado en estructura
-  consumible aguas abajo — categoría, palabras clave, volatilidad estimada,
-  caducidad del recurso, y desde la migración 0006 también la **clasificación
-  temporal del contenido** (¿es un evento concreto, una referencia
-  descriptiva o evergreen?) y su **valor archivístico** (¿merece guardarse
-  si su fecha es pasada?). El cruce policy × class × valor decide el
-  destino del recurso al ingestar — ver `lifecycle.md` §2.
+  consumible aguas abajo — categoría, palabras clave, volatilidad
+  estimada, caducidad del recurso, y desde la migración 0006 también la
+  **clasificación temporal del contenido** (¿es un evento concreto, una
+  referencia descriptiva o evergreen?) y su **valor archivístico**
+  (¿merece guardarse si su fecha es pasada?). El cruce policy × class ×
+  valor decide el destino del recurso al ingestar — ver el documento de
+  ciclo de vida.
 
-**Texto literal del prompt (post-migración 0006)**:
+**Texto literal del prompt:**
 
-El prompt actual en `src/scraper/worker.py` solicita los 7 campos
-originales más los 3 nuevos. Para el texto exacto del prompt consulta el
-código fuente — varía con la fase de prompt-engineering. Lo crucial es
-el **schema de salida** (ver tabla siguiente).
+```text
+Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE con un JSON válido (sin markdown) con estos campos:
+- "title": título del contenido
+- "summary": resumen de 2-3 frases en español
+- "category": una palabra en inglés (technology, science, business, health, politics, entertainment, education, other)
+- "keywords": lista de 3-5 palabras clave
+- "volatility_score": "baja" (docs/tutoriales), "media" (artículos), "alta" (noticias), o "dinamica" (precios/stocks)
+- "estimated_useful_life_days": entero entre 30 y 365
+- "expiration_date": fecha ISO YYYY-MM-DD si el contenido menciona una fecha concreta de evento, deadline, fin de oferta o caducidad explícita; null si no aplica o no se puede determinar
+- "event_date": fecha ISO YYYY-MM-DD del evento principal descrito en el contenido (puede ser pasada o futura). Si la URL contiene un patrón YYYY/MM/DD en el path (típico de prensa: '/2024/03/18/'), úsalo como pista cuando el texto no diga la fecha de forma explícita. null si no hay ninguna fecha identificable.
+- "temporal_class": clasificación temporal del contenido:
+    * "evento" — feria, concierto, deadline, oferta, lanzamiento con fecha concreta;
+    * "referencia" — análisis o crónica descriptiva (artículo de prensa retrospectivo, informe técnico, paper, post-mortem);
+    * "evergreen" — tutorial, documentación técnica estable, definición, guía atemporal.
+- "valor_archivistico": ¿merece guardarse como referencia histórica si su fecha es pasada?
+    * "alto" — datos verificables, análisis estructural, autoridad de la fuente (papers, informes oficiales tipo AEMET, post-mortems con cifras, retrospectivas con datos);
+    * "medio" — artículo de prensa estándar, crónica común con valor moderado;
+    * "nulo" — anuncio caducado o evento trivial pasado sin valor de referencia.
+
+URL: {url}
+Título HTML: {title or '(sin título)'}
+
+Texto:
+{clean_text[:6000]}
+
+Responde SOLO con el JSON.
+```
 
 **Schema del output**:
 
@@ -117,96 +145,104 @@ el **schema de salida** (ver tabla siguiente).
 
 ⭐ = campos añadidos por la migración 0006.
 
-**Cómo se usa cada campo aguas abajo** (`src/data/db.py::save_with_outbox`):
+**Cómo se usa cada campo aguas abajo:**
 
 - `temporal_class='evergreen'` o evento/referencia con **fecha futura** →
   `estado='procesando'` → `'activo'` tras embedder.
 - `temporal_class != 'evergreen'` con **fecha pasada**: se compone la
-  key `{evento_pasado|referencia_pasada}_{alto|medio|nulo}` y se lee la
-  decisión de `usuarios.audit_policy[key]`:
+  key `{evento_pasado|referencia_pasada}_{alto|medio|nulo}` y se lee
+  la decisión de `usuarios.audit_policy[key]`:
   - `"activo"` → activo en KB (caducidad NULL).
   - `"cuarentena"` → cuarentena con motivo `evento_pasado`.
-  - `"expirado"` → flag `auto_archive_pending=true`, embedder vectoriza
-    igualmente y transiciona a `expirado` (archivo histórico).
+  - `"expirado"` → flag de auto-archivado pendiente; el embedder
+    vectoriza igualmente y transiciona a `expirado` (archivo histórico).
 
-**Manejo de errores**: `with_retries(_call)` (en `src/scraper/_retry.py`)
-reintenta. Si tras retries falla, **fail-open** con valores por defecto
-seguros (`worker.py:115-123`): título = URL, summary = primeros 400 chars,
-`volatility="media"`, `useful_life=30`, `expiration_date=None`.
+**Manejo de errores**: reintentos con back-off. Si tras los reintentos
+la llamada falla, **fail-open** con valores por defecto seguros:
+`title=url`, `summary=primeros 400 chars`, `volatility="media"`,
+`useful_life=30`, `expiration_date=None`, `event_date=None`,
+`temporal_class="evento"`, `valor_archivistico="medio"`.
 
 **Observaciones**:
 
-- El prompt **no** pide al LLM que clasifique la naturaleza temporal del
-  contenido (evento vs referencia vs evergreen). Solo pide
-  `expiration_date` para casos de "evento, deadline, fin de oferta o
-  caducidad explícita". Para artículos descriptivos sobre el pasado
-  (p.ej. el blog AEMET 2020 que motivó este documento), el LLM tiende a
-  responder `null` → cae al fallback `today + useful_life` → el recurso
-  queda con caducidad sintética futura que no refleja la naturaleza
-  histórica del contenido. Ver [sección 6](#6-gap-conocido--clasificación-temporal-del-contenido).
+- El prompt clasifica la naturaleza temporal del contenido
+  (`temporal_class`: evento / referencia / evergreen) y su
+  `valor_archivistico` desde la migración 0006. Antes solo pedía
+  `expiration_date` y caía al fallback `today + useful_life` para
+  artículos descriptivos sobre el pasado — ese era el comportamiento
+  documentado en la [sección 6](#6-clasificación-temporal-del-contenido-cerrado-en-migraciones-0006--0007)
+  como referencia histórica.
 - `temperature=0.1` (no 0.0) es un compromiso: la salida es JSON
   estructurado pero algunos campos (`summary`, `keywords`) se benefician
   de un poco de variabilidad estilística.
-- Trunca el texto a 6000 chars — páginas largas pierden contexto. No hay
-  estrategia de chunking en esta fase (el chunking para RAG ocurre
-  después, en el embedder, sobre el `contenido` completo guardado en BD).
+- Trunca el texto a 6000 chars — páginas largas pierden contexto en
+  esta fase. El chunking para RAG ocurre después, en el embedder,
+  sobre el `contenido` completo guardado en BD.
 
 ---
 
 ### 2.2 Clasificador de relación semántica (embedder)
 
-- **Ubicación**: `src/data/embedder_worker.py:260-275` (dentro de
-  `_classify_relation` u operación equivalente — método privado dentro del
-  cómputo de colisiones semánticas)
-- **Disparador**: tras generar el embedding de un recurso, cuando Qdrant
-  detecta uno preexistente con alta similitud (`_compute_semantic_collisions`).
-  Se invoca por cada par (nuevo, antiguo) cuya similitud supere el umbral.
-- **Modelo**: `cerebro-lite`
-- **Temperatura**: `0.0` (determinismo absoluto — la salida es un enum de 5 valores)
-- **Tokens máximos**: `max_tokens: 10` (limitación dura — el LLM solo debe
-  responder UNA palabra)
+- **Componente**: prompt de tipificación de relaciones del worker
+  embedder.
+- **Disparador**: tras generar el embedding de un recurso, cuando
+  Qdrant detecta uno preexistente con alta similitud. Se invoca por
+  cada par (nuevo, antiguo) cuya similitud supere el umbral.
+- **Modelo**: `cerebro-lite`.
+- **Temperatura**: `0.0` (determinismo absoluto — la salida es un enum
+  de 5 valores).
+- **Tokens máximos**: `max_tokens: 10` (limitación dura — el LLM solo
+  debe responder UNA palabra).
 - **Inputs interpolados**: `new_info.title`, `new_info.summary`,
-  `old_info.title`, `old_info.summary`
+  `old_info.title`, `old_info.summary`.
 - **Outputs esperados**: una sola palabra del enum
-  `{ES_UN, CONTRADICE, EXTIENDE, VUELVE_OBSOLETO, ASOCIACION_GENERAL}`
+  `{ES_UN, CONTRADICE, EXTIENDE, VUELVE_OBSOLETO, ASOCIACION_GENERAL}`.
 - **Qué intenta conseguir**: tipificar la relación entre dos recursos
-  similares para alimentar el grafo (`grafo_relaciones` tabla) y disparar el
-  colisionador semántico (F-03.3). Si la relación es `VUELVE_OBSOLETO` o
-  `CONTRADICE`, el recurso antiguo se manda a cuarentena con
-  `quarantine_reason='colision_semantica'`.
+  similares para alimentar el grafo (tabla `grafo_relaciones`) y
+  disparar el colisionador semántico. Si la relación es `VUELVE_OBSOLETO`
+  o `CONTRADICE`, el recurso antiguo se manda a cuarentena con motivo
+  `colision_semantica`.
 
 **Texto literal del prompt:**
 
 ```text
-Como un evaluador experto, compara el nuevo documento con el antiguo.
-Documento Nuevo (ID Reciente):
-Título: {new_info.get('title', '')}
-Resumen: {new_info.get('summary', '')}
 
-Documento Antiguo (ID Existente):
-Título: {old_info.get('title', '')}
-Resumen: {old_info.get('summary', '')}
-
-Tipifica la relación como UNA ÚNICA PALABRA: 'ES_UN', 'CONTRADICE', 'EXTIENDE', 'VUELVE_OBSOLETO' o 'ASOCIACION_GENERAL'.
+        Como un evaluador experto, compara el nuevo documento con el antiguo.
+        Documento Nuevo (ID Reciente):
+        Título: {new_info.get('title', '')}
+        Resumen: {new_info.get('summary', '')}
+        
+        Documento Antiguo (ID Existente):
+        Título: {old_info.get('title', '')}
+        Resumen: {old_info.get('summary', '')}
+        
+        Tipifica la relación como UNA ÚNICA PALABRA: 'ES_UN', 'CONTRADICE', 'EXTIENDE', 'VUELVE_OBSOLETO' o 'ASOCIACION_GENERAL'.
+        
 ```
+
+> Nota: el prompt incluye un newline inicial y 8 espacios de
+> indentación por línea (artefacto de un f-string indentado). Si
+> reproduces este prompt en el sandbox de LiteLLM, incluye la
+> indentación tal cual — empíricamente no afecta al output pero forma
+> parte del input real en producción.
 
 **Manejo de errores**: try/except. Si LiteLLM falla, retorna
 `"ASOCIACION_GENERAL"` (la relación más conservadora — no dispara
 transición de cuarentena). El parser busca substrings del enum en la
-respuesta tolerando ruido (`for t in [...]: if t in tipo: return t`).
+respuesta para tolerar ruido en el formato.
 
 **Observaciones**:
 
-- Patrón **enum-classification** muy reusable: temperatura 0.0 + max_tokens
-  bajo + parser tolerante a ruido. Si en el futuro se quiere clasificar
-  `temporal_class` del contenido (evento/referencia/evergreen), este es el
+- Patrón **enum-classification** muy reusable: temperatura 0.0 +
+  `max_tokens` bajo + parser tolerante a ruido. Si en el futuro se
+  quiere clasificar algo nuevo con cardinalidad fija, este es el
   template a copiar.
 - El prompt es **monolingüe en español** mientras que el enum es
   mayúsculas-snake-case. No genera confusión empíricamente, pero es un
   detalle de estilo a refinar si se internacionaliza.
-- Solo se ejecuta cuando hay un "match" en Qdrant — no en toda ingesta. Eso
-  limita el coste pero también significa que el grafo no se construye para
-  recursos completamente nuevos.
+- Solo se ejecuta cuando hay un "match" en Qdrant — no en toda
+  ingesta. Eso limita el coste pero también significa que el grafo no
+  se construye para recursos completamente nuevos.
 
 ---
 
@@ -214,18 +250,18 @@ respuesta tolerando ruido (`for t in [...]: if t in tipo: return t`).
 
 ### 3.1 Chat con RAG
 
-- **Ubicación**: `src/api/main.py:779-794` (función `chat` dentro de
-  `@app.post("/chat")`)
-- **Disparador**: cada `POST /chat` con `use_rag=true` y al menos un hit
-  válido en Qdrant cuyo recurso esté `activo` para el tenant.
-- **Modelo**: dinámico — viene en el campo `req.model` del body, típicamente
-  `cerebro-lite` o `cerebro-pro`.
+- **Componente**: system prompt del endpoint `POST /chat` cuando hay
+  contexto recuperado de Qdrant.
+- **Disparador**: cada `POST /chat` con `use_rag=true` y al menos un
+  hit válido en Qdrant cuyo recurso esté `activo` para el tenant.
+- **Modelo**: dinámico — viene en el campo `req.model` del body,
+  típicamente `cerebro-lite` o `cerebro-pro`.
 - **Streaming**: sí (`stream: true`), respuesta SSE.
-- **Inputs interpolados**: `context_block` (fragmentos de chunks del RAG
-  formateados como markdown). Los chunks vienen de la colección
+- **Inputs interpolados**: `context_block` (fragmentos de chunks del
+  RAG formateados como markdown). Los chunks vienen de la colección
   `cerebro_chunks` en Qdrant, ordenados por score descendente.
-- **Outputs**: respuesta libre en lenguaje natural. El streaming devuelve
-  deltas `{choices: [{delta: {content: "..."}}]}`.
+- **Outputs**: respuesta libre en lenguaje natural. El streaming
+  devuelve deltas `{choices: [{delta: {content: "..."}}]}`.
 - **Qué intenta conseguir**: respuestas que prioricen la base de
   conocimiento del usuario sobre el conocimiento general del LLM, con
   citas textuales y distinción explícita entre fuentes.
@@ -251,8 +287,8 @@ directa y ofrece tu conocimiento general indicándolo.
 {context_block}
 ```
 
-**Construcción del `context_block`**: cada hit de Qdrant se formatea como
-(`src/api/main.py:572-589`):
+**Construcción del `context_block`**: cada hit de Qdrant se formatea
+en un bucle dentro del handler de `/chat`:
 
 ```text
 ## Contexto recuperado de tu base de conocimiento:
@@ -269,33 +305,36 @@ URL: {url 2}
 ...
 ```
 
-**Manejo de errores**: try/except que captura cualquier fallo del RAG y
-deja `context_block=""`. Si el bloque queda vacío, se ramifica al prompt
-**3.2** (sin RAG). Recientemente añadido (commit `ba405e2`): try/except
-también en `_stream()` que emite `data: {"type": "error", ...}` para que
-el frontend muestre el error al usuario en lugar de un bubble vacío.
+**Manejo de errores**: el handler captura cualquier fallo del RAG y
+deja `context_block=""`. Si el bloque queda vacío, se ramifica al
+prompt **3.2** (sin RAG). El stream emite `data: {"type": "error", ...}`
+ante fallos del LLM para que el frontend muestre el error al usuario en
+lugar de un bubble vacío.
 
 **Observaciones**:
 
 - El prompt incluye solo los **10 últimos mensajes** del historial
-  (`req.messages[-10:]`), no toda la conversación. Sliding window para
-  controlar contexto.
-- No hay límite explícito a `context_block`. Si Qdrant devuelve muchos
-  chunks largos, el system prompt puede llegar a decenas de miles de
-  tokens. Confiar en el rate limit de LiteLLM y la ventana del modelo.
+  (sliding window), no toda la conversación.
+- No hay límite explícito sobre el tamaño del `context_block`. Si
+  Qdrant devuelve muchos chunks largos, el system prompt puede llegar
+  a decenas de miles de tokens — confía en el rate limit de LiteLLM y
+  la ventana del modelo.
 
 ---
 
 ### 3.2 Chat sin RAG (fallback)
 
-- **Ubicación**: `src/api/main.py:797-801` (rama `else` del `if context_block`)
-- **Disparador**: `POST /chat` con `use_rag=false` o con `use_rag=true` pero
-  sin hits relevantes (Qdrant vacío o todos los hits filtrados por estado).
+- **Componente**: system prompt del endpoint `POST /chat` cuando no
+  hay contexto.
+- **Disparador**: `POST /chat` con `use_rag=false`, o con `use_rag=true`
+  pero sin hits relevantes (Qdrant vacío o todos los hits filtrados
+  por estado).
 - **Modelo / temperatura / streaming**: igual que 3.1.
 - **Inputs**: ninguno (prompt estático).
 - **Outputs**: respuesta libre.
-- **Qué intenta conseguir**: dejar claro al usuario que la respuesta NO
-  viene de su KB, para que no asuma que tiene cobertura sobre la pregunta.
+- **Qué intenta conseguir**: dejar claro al usuario que la respuesta
+  NO viene de su KB, para que no asuma que tiene cobertura sobre la
+  pregunta.
 
 **Texto literal del prompt (system role):**
 
@@ -308,22 +347,23 @@ conocimiento general e indícalo explícitamente.
 **Observaciones**:
 
 - Es el camino de salida más débil del sistema — el usuario podría no
-  notar la diferencia con 3.1 si el LLM no acompaña la respuesta con la
-  cláusula "según mi conocimiento general". Vigilar: si la calidad
+  notar la diferencia con 3.1 si el LLM no acompaña la respuesta con
+  la cláusula "según mi conocimiento general". Vigilar: si la calidad
   percibida del chat baja, este prompt es el primer sospechoso.
-- En la métrica de `logger.info("CHAT model=%s use_rag=%s hits=%d ...")`
-  se ve cuándo se dispara (línea `src/api/main.py:803`): `hits=0`.
+- Se puede observar en métricas cuándo se dispara por el log
+  estructurado del chat (`hits=0`).
 
 ---
 
 ### 3.3 Chat legacy Streamlit (deprecated)
 
-- **Ubicación**: `src/ui/chatbot.py:136-142`
-- **Disparador**: solo si alguien arranca `streamlit run src/ui/chatbot.py`
-  manualmente. **NO está en docker-compose**, no se ejecuta en producción.
+- **Componente**: chatbot Streamlit de desarrollo local.
+- **Disparador**: solo si alguien arranca `streamlit run` sobre el
+  módulo del chatbot manualmente. **NO está en docker-compose**, no se
+  ejecuta en producción.
 - **Modelo**: dinámico (selectbox de Streamlit).
-- **Inputs interpolados**: `context_block` (lista de URLs+similitud, NO
-  chunks reales).
+- **Inputs interpolados**: `context_block` (lista de URLs+similitud,
+  NO chunks reales).
 - **Outputs**: texto en bloque (no streaming).
 - **Qué intenta conseguir**: legado de pre-Next.js — chatbot embebido
   Streamlit para debugging local.
@@ -340,7 +380,7 @@ conocimiento general e indícalo.
 
 - Está **deprecated** desde la migración a Next.js. Mantenerlo o
   eliminarlo es decisión de producto pendiente. Si se elimina, asegurar
-  que tampoco quede en `docker-compose.yml` como servicio (verificado:
+  que tampoco quede como servicio en `docker-compose.yml` (verificado:
   no aparece).
 - Su `context_block` es muy pobre (solo `title — url [similitud: 0.XX]`),
   no incluye el texto del chunk. Diferencia clave vs 3.1 — el LLM no
@@ -352,23 +392,26 @@ conocimiento general e indícalo.
 
 ### 4.1 Pre-push hook
 
-- **Ubicación**: `ops/prompts/pre-push.txt` (template externo)
-- **Disparador**: hook git `.githooks/pre-push` antes de cada `git push`.
-  El hook envía el diff a través de `litellm_client.send_prompt`.
-- **Modelo**: `cerebro-lite` (default de `litellm_client.py`, env
-  `LITELLM_MODEL` puede sobreescribir).
+- **Componente**: template externo `ops/prompts/pre-push.txt` (18
+  líneas).
+- **Disparador**: hook git `.githooks/pre-push` antes de cada
+  `git push`. El hook envía el diff a través del cliente compartido
+  LiteLLM (ver §5).
+- **Modelo**: `cerebro-lite` (default del cliente compartido; la
+  variable de entorno `LITELLM_MODEL` puede sobreescribirlo).
 - **Temperatura**: `0` (audit determinista).
-- **`max_tokens`**: `600` (default de `send_prompt`).
-- **Inputs interpolados**: `{diff}` (diff completo de `git diff
-  origin/<branch>..HEAD`, truncado a `MAX_DIFF_CHARS` — actualmente
-  8000 — con aviso `"Diff truncado a 8000 chars"`).
+- **`max_tokens`**: `600` (default del cliente compartido).
+- **Inputs interpolados**: `{diff}` — diff completo de
+  `git diff origin/<branch>..HEAD`, truncado a `MAX_DIFF_CHARS`
+  (actualmente `8000`), con aviso por stderr cuando se trunca.
 - **Outputs esperados**: una de dos formas:
-  - `CLEAN` (single line) si no hay hallazgos.
-  - Lista de líneas `CRITICAL|HIGH|MEDIUM: archivo:línea descripción` si
-    hay hallazgos.
-- **Qué intenta conseguir**: cazar 6 categorías clásicas de vulnerabilidad
-  específicas de LinkAnvil antes de subir a GitHub. Bloquea el push solo
-  si encuentra `CRITICAL`; `HIGH`/`MEDIUM` son warnings que no bloquean.
+  - `CLEAN` (línea única) si no hay hallazgos.
+  - Una línea por hallazgo con el prefijo `CRITICAL|HIGH|MEDIUM:
+    archivo:línea descripción`.
+- **Qué intenta conseguir**: cazar 6 categorías clásicas de
+  vulnerabilidad específicas de LinkAnvil antes de subir a GitHub.
+  Bloquea el push solo si encuentra `CRITICAL`; `HIGH`/`MEDIUM` son
+  warnings que no bloquean.
 
 **Texto literal del prompt:**
 
@@ -393,17 +436,18 @@ Diff:
 {diff}
 ```
 
-**Manejo de errores**: `litellm_client.send_prompt` retorna `None` si LiteLLM
-no responde — el hook trata `None` como fail-open (`warning LiteLLM HTTP
-... — push continua sin analisis`). Push **no se bloquea** si LiteLLM cae.
+**Manejo de errores**: el cliente compartido retorna respuesta nula si
+LiteLLM no responde — el hook trata el nulo como **fail-open** (avisa
+por stderr y el push continúa sin análisis). El push **no se bloquea**
+si LiteLLM cae.
 
 **Observaciones**:
 
-- Las 6 categorías son **fijas y específicas del dominio**. Si añades una
-  nueva práctica de seguridad (p.ej. auth0/OAuth), edita este archivo,
-  no el código del hook.
-- Cuidado con el truncado a 8000 chars en PRs grandes — análisis parcial.
-  Ver `pre_push.py::_collect_diff` para el algoritmo de truncado.
+- Las 6 categorías son **fijas y específicas del dominio**. Si añades
+  una nueva práctica de seguridad (por ejemplo, OAuth), edita el
+  archivo `.txt` del prompt, no el código del hook.
+- Cuidado con el truncado a 8000 chars en PRs grandes — el análisis es
+  parcial.
 - Asume que el repo respeta el patrón outbox: si un día se añade un
   servicio nuevo con su propia ruta de eventos, este prompt empezará a
   generar falsos positivos en la categoría 5.
@@ -412,23 +456,25 @@ no responde — el hook trata `None` como fail-open (`warning LiteLLM HTTP
 
 ### 4.2 Weekly audit cron
 
-- **Ubicación**: `ops/prompts/weekly-audit.txt` (template externo)
-- **Disparador**: cron semanal (`ops/cron/weekly_audit.py` invocado por
-  Antigravity / systemd timer / etc. según despliegue).
+- **Componente**: template externo `ops/prompts/weekly-audit.txt`
+  (19 líneas).
+- **Disparador**: cron semanal (script `ops/cron/weekly_audit.py`
+  invocado por cron del host o equivalente según despliegue).
 - **Modelo**: `cerebro-lite` (default).
 - **Temperatura**: `0`.
-- **`max_tokens`**: `1200` (más generoso que pre-push porque el output es
-  un reporte estructurado).
+- **`max_tokens`**: `1200` (más generoso que pre-push porque el output
+  es un reporte estructurado).
 - **`timeout`**: 60s.
-- **Inputs interpolados**: `{code}` — concatenación de archivos críticos
-  (típicamente `src/api/main.py`, `src/api/auth.py`, `src/scraper/worker.py`).
+- **Inputs interpolados**: `{code}` — concatenación de archivos
+  críticos (auth, outbox, scraper, embedder).
 - **Outputs esperados**: markdown con 3 secciones fijas:
   - `## Resumen Ejecutivo`
   - `## Hallazgos (CRITICAL/HIGH/MEDIUM)`
   - `## Acciones recomendadas`
 - **Qué intenta conseguir**: auditoría más profunda y reflexiva que el
-  pre-push. No mira un diff, mira el código entero de archivos sensibles
-  y produce un informe legible que se archiva en `ops/sessions/`.
+  pre-push. No mira un diff, mira el código entero de archivos
+  sensibles y produce un informe legible que se archiva en
+  `ops/sessions/security-audit-<fecha>.md`.
 
 **Texto literal del prompt:**
 
@@ -455,85 +501,89 @@ Solo hallazgos reales con >80% de confianza. Si no hay hallazgos, indicar
 explícitamente "Sin hallazgos" en cada sección.
 ```
 
-**Manejo de errores**: como en 4.1, fail-open via `litellm_client`. Si la
-ejecución cron falla, no rompe nada; al lunes siguiente vuelve a intentar.
+**Manejo de errores**: como en 4.1, fail-open vía el cliente
+compartido. Si la ejecución cron falla, no rompe nada; al lunes
+siguiente vuelve a intentar.
 
 **Observaciones**:
 
-- Las **6 categorías son casi idénticas a 4.1** con una addición: "Rate
-  limiting" (categoría 5 aquí). Conviene mantener ambos prompts
+- Las **6 categorías son casi idénticas a 4.1** con una addición:
+  "Rate limiting" (categoría 5 aquí). Conviene mantener ambos prompts
   alineados — si añades una categoría, hazlo en los dos sitios.
-- Output en markdown es legible para humanos. El cron suele guardar el
-  reporte en `ops/sessions/security-audit-<fecha>.md`.
-- Si los archivos auditados crecen, el prompt puede superar el contexto
-  de `cerebro-lite`. En ese caso, considerar dividir en múltiples
-  llamadas (por archivo) o pasar a `cerebro-pro`.
+- Output en markdown es legible para humanos.
+- Si los archivos auditados crecen, el prompt puede superar el
+  contexto de `cerebro-lite`. En ese caso, considerar dividir en
+  múltiples llamadas (por archivo) o pasar a `cerebro-pro`.
 
 ---
 
 ## 5. Cliente LiteLLM compartido
 
-- **Ubicación**: `ops/cron/litellm_client.py` (módulo Python ~220 líneas)
-- **API pública**: `send_prompt(prompt, max_tokens=600, timeout=30, ...)` →
-  `Optional[str]`.
-- **Quién lo usa**: prompts #6 y #7 (los hooks/cron). Los prompts #1-#5
-  llaman directamente a httpx desde sus propios módulos.
+- **Componente**: módulo Python `litellm_client` que vive en
+  `ops/cron/`. Se importa como librería desde los hooks de git y los
+  scripts cron.
+- **API pública**: `send_prompt(prompt, max_tokens=600, timeout=30, ...)`
+  → cadena de respuesta o `None` si la llamada falla.
+- **Quién lo usa**: los prompts #6 (pre-push) y #7 (weekly audit). Los
+  prompts #1-#5 llaman directamente a `httpx` desde sus propios
+  módulos.
 - **Resolución de credenciales** (orden de precedencia):
   1. Variable de entorno `LITELLM_KEY` (exportada en el shell).
   2. Variable de entorno `LITELLM_MASTER_KEY` (alias usado por
      docker-compose).
-  3. Fallback: `_load_dotenv_fallback()` parsea `.env` del root del
-     repo y puebla `os.environ` con `setdefault` (no pisa overrides
-     manuales).
-- **Resolución de URL**: `LITELLM_URL` env → default
-  `http://localhost:4000`. Validada con `_validate_url` para evitar
-  esquemas no-http.
-- **Resolución de modelo**: `LITELLM_MODEL` env → default `cerebro-lite`.
-- **Comportamiento de errores**: nunca lanza. Captura `HTTPError`,
-  `URLError`, parsing errors → imprime warning a stdout y retorna `None`.
+  3. Fallback: parser de `.env` del root del repo que puebla
+     `os.environ` con `setdefault` (no pisa overrides manuales).
+- **Resolución de URL**: variable `LITELLM_URL` → default
+  `http://localhost:4000`. Se valida para evitar esquemas no-HTTP.
+- **Resolución de modelo**: variable `LITELLM_MODEL` → default
+  `cerebro-lite`.
+- **Comportamiento de errores**: nunca lanza. Captura errores de red
+  y de parsing, imprime warning y retorna `None`.
 - **Headers que envía**:
   - `Content-Type: application/json`
-  - `Authorization: Bearer <key>` (si hay key resuelta — añadido en
-    commit `2c7e4a5` tras detectar HTTP 401 en pre-push).
+  - `Authorization: Bearer <key>` (si hay key resuelta).
 
 **Por qué los prompts #1-#5 NO usan este cliente**:
 
-- Son código de runtime (workers / API) que ya tienen `httpx.AsyncClient`
-  abierto en el lifespan del proceso. Reusan el pool de conexiones.
-- Necesitan streaming (chat) o headers extra (Authorization ya está
-  hardcodeado con `LITELLM_KEY` de container env).
-- Histórico — `litellm_client.py` se introdujo para hooks/cron donde
-  no había httpx ni event loop. Si en el futuro se quiere centralizar
-  todo en un solo cliente, hay refactor pendiente.
+- Son código de runtime (workers / API) que ya tienen un cliente
+  `httpx.AsyncClient` abierto en el lifespan del proceso. Reusan el
+  pool de conexiones.
+- Necesitan streaming (chat) o headers extra ya hardcodeados con la
+  `LITELLM_KEY` del entorno del contenedor.
+- Histórico — el cliente compartido se introdujo para hooks/cron
+  donde no había httpx ni event loop. Centralizarlo todo en un único
+  cliente queda como refactor pendiente.
 
 ---
 
-## 6. Resuelto en migraciones 0006 + 0007 — clasificación temporal y policy por celda
+## 6. Clasificación temporal del contenido (cerrado en migraciones 0006 + 0007)
 
 > **Estado**: gap cerrado. Esta sección queda como referencia histórica.
-> El comportamiento descrito abajo es el del prompt #1 ANTES de la
-> migración 0006; el comportamiento actual se documenta en
-> §2.1 ("Output esperado") y en `lifecycle.md` (Anexo A).
+> El comportamiento descrito al final del documento es el del prompt #1
+> ANTES de las migraciones 0006 + 0007; el comportamiento actual se
+> documenta en §2.1 ("Output esperado") y en el documento de ciclo de
+> vida.
 
 ### Resumen del cierre
 
-1. **Migración 0006**: el prompt #1 ahora extrae tres campos adicionales —
-   `temporal_class` (evento/referencia/evergreen), `valor_archivistico`
-   (alto/medio/nulo), `event_date` (fecha del evento, posiblemente
-   pasada). Las columnas equivalentes existen en `recursos`.
+1. **Migración 0006**: el prompt #1 ahora extrae tres campos
+   adicionales — `temporal_class` (evento/referencia/evergreen),
+   `valor_archivistico` (alto/medio/nulo), `event_date` (fecha del
+   evento, posiblemente pasada). Las columnas equivalentes existen en
+   `recursos`.
 2. **Migración 0007**: la decisión "qué hacer con un recurso de fecha
-   pasada" se pasó de un enum `audit_strictness` (estricto/equilibrado/
-   permisivo) a una `audit_policy` JSONB con 6 keys (una por celda
-   `temporal_class × valor_archivistico`). El frontend ofrece 3 presets
-   (Estricto/Equilibrado/Permisivo) que rellenan las 6 celdas + 6 selects
-   para ajuste fino. Decisiones posibles por celda: `activo`,
-   `cuarentena`, `expirado`.
-3. **Auto-archive**: cuando la policy decide `expirado` para un recurso
-   de fecha pasada, el scraper marca `auto_archive_pending=true` y el
-   embedder transiciona a `'expirado'` tras vectorizar (en vez del
-   default `'activo'`). Los chunks quedan disponibles para recuperación
-   vía toggle "Archivo ON" en el chat (campo `include_archive` del
-   `/chat`).
+   pasada" se pasó de un enum `audit_strictness`
+   (estricto/equilibrado/permisivo) a una `audit_policy` JSONB con 6
+   keys (una por celda `temporal_class × valor_archivistico`). El
+   frontend ofrece 3 presets (Estricto/Equilibrado/Permisivo) que
+   rellenan las 6 celdas + 6 selects para ajuste fino. Decisiones
+   posibles por celda: `activo`, `cuarentena`, `expirado`.
+3. **Auto-archive**: cuando la policy decide `expirado` para un
+   recurso de fecha pasada, el scraper marca el recurso como pendiente
+   de auto-archivado y el embedder transiciona a `'expirado'` tras
+   vectorizar (en vez del default `'activo'`). Los chunks quedan
+   disponibles para recuperación vía toggle "Archivo ON" en el chat
+   (campo `include_archive` del `/chat`).
 
 ### Trazas con el comportamiento nuevo (preset Equilibrado, default)
 
@@ -546,78 +596,74 @@ ejecución cron falla, no rompe nada; al lunes siguiente vuelve a intentar.
 
 Cambiar la policy desde `/profile` ajusta el destino sin reingestar.
 
-### Apéndice — Comportamiento previo (referencia histórica)
+### Apéndice — Comportamiento previo (solo referencia histórica)
+
+> Los párrafos siguientes describen el caso que motivó las migraciones
+> 0006 + 0007. **Ya no aplica al sistema actual** — se conserva como
+> contexto para entender por qué se introdujeron `temporal_class`,
+> `valor_archivistico` y `audit_policy`.
 
 **Origen**: duda del usuario tras intentar ingestar
 `https://aemetblog.es/2020/09/18/avance-climatico-nacional-del-verano-2020/`
-(análisis del verano 2020 publicado por AEMET en 2020) y observar que el
-sistema **no lo reconoce como evento pasado** ni como referencia histórica.
+(análisis del verano 2020 publicado por AEMET en 2020) y observar que
+el sistema **no lo reconocía** como evento pasado ni como referencia
+histórica.
 
-**Comportamiento actual del prompt #1**:
+**Comportamiento previo del prompt #1**:
 
-- El prompt solicita `expiration_date` solo cuando el texto menciona "una
-  fecha concreta de evento, deadline, fin de oferta o caducidad
+- El prompt solicitaba `expiration_date` solo cuando el texto mencionaba
+  "una fecha concreta de evento, deadline, fin de oferta o caducidad
   explícita".
-- Para un artículo descriptivo sobre el pasado, el LLM tiende a
+- Para un artículo descriptivo sobre el pasado, el LLM tendía a
   responder `expiration_date: null`.
-- Cuando `expiration_date` es null, `src/data/db.py:170-177` cae al
+- Cuando `expiration_date` era null, la lógica de persistencia caía al
   fallback `fecha_caducidad = today + estimated_useful_life_days`.
-- Resultado: el AEMET-2020 se guarda como `activo` con caducidad
+- Resultado: el AEMET-2020 se guardaba como `activo` con caducidad
   sintética hacia 2026-09-XX, **perdiendo la naturaleza histórica del
   contenido**.
 
-**Por qué este gap es conceptual, no de implementación**:
+**Por qué este gap fue conceptual, no de implementación**:
 
-La columna `recursos.fecha_caducidad` mezcla **dos conceptos distintos** que
-el prompt #1 no separa:
+La columna `recursos.fecha_caducidad` mezclaba **dos conceptos distintos**
+que el prompt #1 no separaba:
 
 | Concepto | Pregunta que responde | Ejemplo AEMET 2020 |
 |----------|----------------------|--------------------|
 | Caducidad del EVENTO | ¿Cuándo ocurre/terminó lo que el contenido describe? | Verano 2020 (pasado, ~5 años) |
 | Vigencia del CONTENIDO | ¿Hasta cuándo es útil este recurso como referencia? | Indefinida (datos climáticos archivables) |
 
-**Para los recursos tipo "concierto futuro / deadline / oferta", ambos
-conceptos coinciden** y el sistema funciona. Para los tipo "análisis
-descriptivo / referencia histórica / tutorial atemporal", **divergen** y
-el sistema se equivoca.
+Para los recursos tipo "concierto futuro / deadline / oferta", ambos
+conceptos coincidían y el sistema funcionaba. Para los tipo "análisis
+descriptivo / referencia histórica / tutorial atemporal", divergían y
+el sistema se equivocaba.
 
-**Posibles direcciones (NO se implementan en este documento — quedan para
-otro plan)**:
+**Direcciones consideradas en su momento** (las opciones 1 y 2 fueron
+las que finalmente se implementaron en las migraciones 0006 + 0007):
 
 1. **Nuevo campo en el output del prompt #1**: `temporal_class` (enum:
-   `evento` / `referencia` / `evergreen`). Para `referencia` y
-   `evergreen`, `fecha_caducidad` se guarda como `NULL` (el cron de
-   obsolescencia ya filtra `IS NOT NULL`, así que NULL bypasses
-   automáticamente).
+   `evento` / `referencia` / `evergreen`). Implementado en 0006.
 2. **Separar columnas**: `fecha_evento` (cuándo ocurre lo descrito,
-   puede ser pasado) y `fecha_caducidad` (vigencia del recurso). Schema
-   más explícito pero migración no trivial.
-3. **Toggle de usuario**: dejar el LLM como está y añadir un control
-   en la UI del KB para que el usuario marque manualmente un recurso
-   como "Histórico/Referencia" → backend lo trata como caducidad
-   `NULL`.
+   puede ser pasado) y `fecha_caducidad` (vigencia del recurso).
+   Implementado en 0006.
+3. **Toggle de usuario**: dejar el LLM como estaba y añadir un control
+   en la UI del KB para que el usuario marcase manualmente un recurso
+   como "Histórico/Referencia". No se implementó como mecanismo
+   principal; el equivalente actual es la `audit_policy` configurable
+   desde `/profile` (migración 0007).
 4. **Híbrido**: combinar (1) y (3) — LLM clasifica por defecto, usuario
-   puede sobreescribir desde la UI.
+   puede sobreescribir desde la UI. Parcialmente vigente: el LLM
+   clasifica y la policy del usuario decide qué hacer con cada celda
+   class × valor.
 
-Para evaluar cualquiera de estas opciones se requiere una sesión
-separada con AskUserQuestion sobre:
-
-- ¿El contenido histórico aparece en el RAG con prioridad normal o
-  penalizada por antigüedad?
-- ¿Quién decide la clasificación temporal — solo LLM, solo usuario, o
-  ambos?
-- ¿Eventos ya pasados al ingestar (AEMET 2020 visto hoy) → cuarentena
-  automática o referencia automática?
-
-**Mientras tanto** este gap está documentado pero el comportamiento es:
+**Comportamiento previo end-to-end (antes de 0006 + 0007)**:
 
 - AEMET 2020 → ingestado como `activo` con caducidad sintética futura.
-- A los `estimated_useful_life_days` días → audit-cron lo mueve a
-  cuarentena con motivo `caducidad`.
+- A los `estimated_useful_life_days` días → la auditoría temporal lo
+  movía a cuarentena con motivo `caducidad`.
 - A los 30 días más (`OBSOLESCENCE_GRACE_DAYS`) → `expirado`.
-- El usuario podría rescatarlo manualmente desde `/quarantine` o
-  `/expired` con el botón "Rescatar", que recalcula caducidad según
-  `volatilidad` (`api/database.py:rescue_recurso`).
+- El usuario podía rescatarlo manualmente desde `/quarantine` o
+  `/expired` con el botón "Rescatar", que recalculaba caducidad según
+  `volatilidad`.
 
 ---
 
@@ -627,9 +673,8 @@ Si editas:
 
 | Cambio | Acción |
 |--------|--------|
-| Texto literal de un prompt inline (`worker.py`, `main.py`, etc.) | Actualizar el bloque ```text correspondiente en el mismo commit |
+| Texto literal de un prompt inline | Actualizar el bloque ```text correspondiente en el mismo commit |
 | Modelo / temperatura / max_tokens | Actualizar la tabla de cabecera del prompt afectado |
 | Archivos en `ops/prompts/*.txt` | El doc cita el contenido literal — re-pegar |
-| `litellm_client.py::send_prompt` signature | Actualizar sección 5 |
+| Signatura de `send_prompt` en el cliente LiteLLM | Actualizar sección 5 |
 | Nuevo prompt en cualquier sitio | Añadir nueva sección, actualizar TOC y mapa |
-| Resolución del gap temporal (sección 6) | Cuando se implemente, mover la sección 6 a un archivo histórico y reescribir |

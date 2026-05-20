@@ -8,8 +8,8 @@
 </div>
 
 
-Para ilustrar cómo los 21 contenedores de **LinkAnvil** colaboran en tiempo
-real, seguimos un escenario realista de uso diario.
+Para ilustrar cómo los ~22 contenedores de **LinkAnvil** colaboran en
+tiempo real, seguimos un escenario realista de uso diario.
 
 **El escenario:**
 Un desarrollador interactúa con el sistema para guardar documentación sobre
@@ -28,6 +28,12 @@ A lo largo del recorrido veremos tres dimensiones del sistema:
 - La **observabilidad pasiva** (trazas, métricas y exportaciones que
   ocurren sin intervención del usuario).
 
+> Nota: el escenario LangChain v0.1 → tutorial → v0.2 es **ilustrativo**,
+> no un test reproducible. Las clasificaciones (`EXTIENDE`,
+> `VUELVE_OBSOLETO`) dependen del LLM y pueden variar entre corridas; lo
+> que es determinista son los **estados de las tablas y eventos del
+> outbox**, no las palabras exactas que devuelve el modelo.
+
 ---
 
 ## 🧭 Antes de empezar — vocabulario mínimo
@@ -38,7 +44,9 @@ el resto del documento sin perderte:
 - **Tenant** — cada usuario aislado. LinkAnvil es **multi-tenant**: los
   datos de un usuario (sus recursos, sus chats, sus notificaciones)
   nunca son visibles a otro, aunque vivan en las mismas tablas.
-  Se identifica por un `tenant_id` (`user_<uuid>`).
+  Se identifica por un `tenant_id` con formato `user_<32 hex>` para
+  cuentas registradas o `demo_<8 hex>` para sub-tenants efímeros del
+  demo público.
 
 - **Síncrono vs asíncrono** — síncrono = el usuario espera a que termine
   (ej.: abrir el chat y leer). Asíncrono = el usuario lanza una tarea y
@@ -48,9 +56,9 @@ el resto del documento sin perderte:
 
 - **Cola de mensajes** — buzón donde un servicio deja una tarea y otro
   la recoge. LinkAnvil usa **RabbitMQ** como broker de colas: el
-  scraper consume `q.url.ingesta`, el embedder consume `q.embeddings`,
-  el notifier consume `q.notifications`. Esto desacopla los servicios
-  (uno puede caerse sin parar a los otros).
+  scraper consume `q.url.ingesta`, el embedder consume
+  `q.recurso.embedder`, el notifier consume `q.notifications`. Esto
+  desacopla los servicios (uno puede caerse sin parar a los otros).
 
 - **Búsqueda semántica** — en lugar de buscar por palabras exactas, se
   busca por significado. Para hacerlo, cada texto se transforma en un
@@ -75,6 +83,7 @@ el resto del documento sin perderte:
    - 3.c [Camino manual — el usuario manda algo a cuarentena](#3c-camino-manual--el-usuario-manda-algo-a-cuarentena)
    - 3.d [Camino por policy — contenido pasado clasificado al ingestar](#3d-camino-por-policy--contenido-pasado-clasificado-al-ingestar)
    - 3.e [Y luego — el usuario decide](#3e-y-luego--el-usuario-decide)
+   - 3.f [Camino demo — auditoría intra-sesión](#3f-camino-demo--auditoría-intra-sesión)
 4. [👁️ Fase 4: Observabilidad silenciosa](#️-fase-4-observabilidad-silenciosa-todo-lo-que-el-usuario-no-vio)
 5. [📚 Glosario rápido](#-glosario-rápido)
 
@@ -98,29 +107,38 @@ inmediata (`202 Accepted`) y el procesamiento real ocurre en background.
 
 1. **`cerebro-traefik`** (el **reverse proxy** del clúster: enruta cada
    petición HTTP al servicio interno correspondiente) recibe la petición
-   y la envía a `cerebro-ingestion`. Si la URL entra por Telegram en vez
-   de la web, el receptor inicial es **`cerebro-tailscale`** (red privada
-   VPN para recibir webhooks de Telegram sin exponer la API a internet).
+   y la envía a `cerebro-ingestion`. Si la URL entra por Telegram,
+   **`cerebro-tailscale`** (red privada VPN) expone `cerebro-ingestion`
+   al webhook de Telegram sin exponer la API a internet; el receptor
+   real del payload sigue siendo `cerebro-ingestion`, a través de su
+   webhook `POST /webhook/telegram/{token_hash}`.
 
 2. **`cerebro-ingestion`** (la API de entrada para ingestar URLs):
    - Aplica **rate limiting** atómico en Redis (máximo de peticiones por
      usuario por minuto; si lo excedes, devuelve 429).
-   - Consulta un **Bloom Filter** en Redis (estructura de datos
+   - Consulta un **Bloom Filter** en Redis **por tenant**
+     (clave `bf:tenant:{tenant_id}:ingestion`) — estructura de datos
      probabilística muy compacta que responde "definitivamente NO he
-     visto esto antes" o "quizás sí lo he visto"; usar `BF.ADD`
-     devuelve también si la URL era nueva).
+     visto esto antes" o "quizás sí lo he visto" *para este tenant*;
+     `BF.ADD` devuelve también si la URL era nueva para el tenant en
+     cuestión. El Bloom es solo un hint local; la deduplicación global
+     cross-tenant la hace el scraper consultando `recursos.url_hash` en
+     Postgres.
    - **Publica SIEMPRE** al queue, sin importar lo que diga el bloom —
-     el filtro es solo un hint *best-effort*, no un veto. Si la URL
-     parece duplicada, el mensaje se marca con flag `relink` para que el
-     scraper resuelva la idempotencia río abajo (ver paso 1.3 punto 1).
+     el filtro es solo un hint *best-effort*, no un veto. El payload
+     del mensaje es siempre el mismo (no se añade ningún flag de
+     duplicado); el scraper resuelve la idempotencia río abajo
+     consultando `recursos` por `url_hash` antes de scrapear (ver
+     paso 1.3 punto 1).
 
 3. **`cerebro-rabbitmq`** (el message broker): la URL se inyecta en la
    cola `q.url.ingesta`.
 
 4. **Retorno inmediato al usuario**: `202 Accepted` con
    `status="Accepted & Published"` (URL nueva) o `"Accepted (relink)"`
-   (vista antes en el bloom filter). El navegador muestra la URL en
-   `/ingest` con estado `procesando` al instante.
+   (vista antes en el bloom filter — este string es solo un hint en la
+   respuesta HTTP, no se propaga al mensaje). El navegador muestra la
+   URL en `/ingest` con estado `procesando` al instante.
 
 #### 1.2 Procesamiento asíncrono (segundos)
 
@@ -137,15 +155,15 @@ inmediata (`202 Accepted`) y el procesamiento real ocurre en background.
        cuando el origen es `telegram` / `extension` (que tienden a
        lanzar bloqueos por user-agent automático).
 
-6. **Validación post-scraping**: tras cada estrategia ejecuta
-   `_looks_blocked()`, que busca marcadores específicos
+6. **Validación post-scraping**: tras cada estrategia ejecuta una
+   detección de bloqueo que busca marcadores específicos
    (`cf-mitigated`, `verifica que usted no es un bot`,
    `failed to render this page`…). Evita keywords genéricos como
    `cloudflare` a secas — eso matchearía `cdnjs.cloudflare.com` en
    sitios legítimos. Si tras Stealth sigue bloqueado, **o** si el
-   texto extraído por `_html_to_clean_text` es < 300 chars, el recurso
-   se mueve a `cuarentena` automáticamente (motivo `manual`, 30 días
-   de gracia). El mensaje se *ack-ea* (= se confirma al broker que se
+   texto extraído tras limpiar HTML es < 300 caracteres, el recurso se
+   mueve a `cuarentena` automáticamente (motivo `manual`, 30 días de
+   gracia). El mensaje se *ack-ea* (= se confirma al broker que se
    procesó, no DLQ — el bloqueo no es un fallo recuperable: reintentar
    no lo arreglaría).
 
@@ -160,7 +178,7 @@ inmediata (`202 Accepted`) y el procesamiento real ocurre en background.
    categoría, tags, `temporal_class`, `valor_archivistico`,
    `event_date`, etc.). El JSON se valida con **Pydantic** (librería
    Python para definir schemas estrictos). Ver
-   [`prompts.md` §2.1](./prompts.md#21-extracción-de-metadata-scraper)
+   [`7-prompts.md` §2.1](./7-prompts.md#21-extracción-de-metadata-scraper)
    para el schema exacto.
 
 #### 1.3 Almacenamiento (patrón Outbox)
@@ -204,10 +222,12 @@ inmediata (`202 Accepted`) y el procesamiento real ocurre en background.
     evento) y marca el row como `procesado=true`.
 
 11. **`cerebro-embedder`** (worker que genera vectores): consume del
-    fanout vía su cola `q.embeddings`. Filtra por `evento_tipo` —
-    solo procesa `recurso.procesado` y `recurso.reusado`. Otros
-    eventos (`recurso.cuarentena`, `recurso.expirado`…) los ack-ea
-    silenciosamente; no son su responsabilidad.
+    fanout vía su cola `q.recurso.embedder` (la cola está bound al
+    fanout `cerebro.procesamiento` con routing key vacía). Filtra por
+    `evento_tipo` — solo procesa `recurso.procesado` y
+    `recurso.reusado`. Otros eventos (`recurso.cuarentena`,
+    `recurso.expirado`…) los ack-ea silenciosamente; no son su
+    responsabilidad.
     - Llama a `cerebro-litellm` para generar el **embedding**
       (vector numérico que representa el significado del texto).
 
@@ -251,15 +271,6 @@ sin coste de scraping ni de embedder.
 > aislamiento entre tenants sigue siendo total (un usuario solo ve
 > sus filas linkeadas), pero ahorramos coste y latencia.
 
-### 📁 Si quieres ir al código
-
-- `src/ingestion/main.py` — endpoint `POST /ingest`, bloom filter, rate limit.
-- `src/scraper/worker.py` — descarga, validación, llamada al LLM.
-- `src/data/db.py::save_with_outbox` — transacción atómica.
-- `src/data/outbox_worker.py` — relay Postgres → RabbitMQ.
-- `src/data/embedder_worker.py` — generación de embeddings + Qdrant.
-- `prompts.md` §2.1 — schema completo del prompt del scraper.
-
 ### Diagrama del flujo
 
 ```mermaid
@@ -301,7 +312,7 @@ sequenceDiagram
     OB->>RMQ: publish fanout cerebro.procesamiento
     OB->>PG: UPDATE outbox_eventos SET procesado=true
 
-    EM->>RMQ: consume q.embeddings
+    EM->>RMQ: consume q.recurso.embedder
     alt evento_tipo = 'recurso.procesado'
         EM->>LLM: POST /v1/embeddings
         LLM-->>EM: Vector [0.12, -0.45, ...]
@@ -341,11 +352,11 @@ implementación práctica del framework.
    similares. Qdrant devuelve la **similitud coseno** (medida entre 0
    y 1 que compara dos vectores: 1 = idénticos, 0 = ortogonales /
    sin relación) con cada recurso conocido. Encuentra alta similitud
-   (cosine > 0.88) con el UUID del recurso "LangChain v0.1".
+   (cosine > 0.92) con el UUID del recurso "LangChain v0.1".
 
-3. **`cerebro-scraper`** envía ambos resúmenes a **`cerebro-litellm`**
+3. **`cerebro-embedder`** envía ambos resúmenes a **`cerebro-litellm`**
    con el **prompt clasificador de relación semántica** (ver
-   [`prompts.md` §2.2](./prompts.md#22-clasificador-de-relación-semántica-embedder)):
+   [`7-prompts.md` §2.2](./7-prompts.md#22-clasificador-de-relación-semántica-embedder)):
    pide tipificar la relación con UNA palabra del enum
    `{ES_UN, CONTRADICE, EXTIENDE, VUELVE_OBSOLETO, ASOCIACION_GENERAL}`.
 
@@ -359,27 +370,20 @@ implementación práctica del framework.
 
 ### 💡 Por qué este diseño
 
-El umbral 0.88 es **alto a propósito**. Por debajo es ruido — dos
+El umbral 0.92 es **alto a propósito**. Por debajo es ruido — dos
 artículos del mismo dominio (ej.: ambos hablan de Python) tienen
 similitud ~0.7, pero no están realmente relacionados. Solo por encima
-de 0.88 (un threshold calibrado empíricamente) tiene sentido pedirle al
+de 0.92 (un threshold calibrado empíricamente) tiene sentido pedirle al
 LLM que tipifique la relación. Esto evita decenas de llamadas al LLM
 por cada ingesta — solo se invoca cuando hay una señal fuerte de
 similitud.
-
-### 📁 Si quieres ir al código
-
-- `src/data/embedder_worker.py::_compute_semantic_collisions` —
-  consulta Qdrant + invocación del prompt clasificador.
-- `src/data/db.py::save_semantic_collisions` — INSERT en
-  `grafo_relaciones` con su inversa.
 
 ---
 
 ## 🔴 Fase 3: Obsolescencia y deprecación
 
-> 📘 **Referencia canónica del ciclo de vida**: [`lifecycle.md`](./lifecycle.md).
-> Esta sección cuenta cuatro narrativas concretas; el documento dedicado
+> 📘 **Referencia canónica del ciclo de vida**: [`8-lifecycle.md`](./8-lifecycle.md).
+> Esta sección cuenta narrativas concretas; el documento dedicado
 > describe el state machine completo, todas las transiciones y los
 > efectos exactos sobre Postgres y Qdrant.
 
@@ -387,7 +391,7 @@ similitud.
 
 Los recursos no son eternos. Una noticia caduca, un paper se vuelve
 obsoleto por uno más nuevo, un evento ya ocurrió. LinkAnvil tiene
-**cuatro caminos** distintos para mover un recurso de `activo` a un
+**cinco caminos** distintos para mover un recurso de `activo` a un
 estado terminal (`cuarentena`, `expirado` o eliminado):
 
 1. **3.a — Cron temporal**: una `fecha_caducidad` cumplida → cuarentena.
@@ -398,6 +402,9 @@ estado terminal (`cuarentena`, `expirado` o eliminado):
 4. **3.d — `audit_policy` al ingestar**: el LLM detecta que el
    contenido es retrospectivo (fecha pasada) y la policy del tenant
    decide qué hacer (cuarentena, archivo histórico, o seguir activo).
+5. **3.f — Auditoría intra-sesión del demo**: ruta paralela al cron de
+   producción, ejecutada durante la sesión demo sobre sub-tenants
+   efímeros.
 
 Después de cualquiera de esos caminos, **3.e** describe las acciones
 que el usuario puede tomar sobre el recurso ya transicionado.
@@ -410,30 +417,31 @@ usuario no ha vuelto a tocar el sistema.
 
 #### 🛠️ El viaje paso a paso
 
-1. A las 03:00 locales (07:00 UTC) **`cerebro-n8n`** (orquestador de
-   workflows con UI visual — similar a Zapier pero self-hosted)
-   dispara el workflow `linkanvil — audit cron diario`. Hace
-   `POST /admin/audit-cron` con el header `X-Admin-Token`.
+1. A las 03:00 UTC (default del contenedor n8n, sin TZ explícita)
+   **`cerebro-n8n`** (orquestador de workflows con UI visual — similar
+   a Zapier pero self-hosted) dispara el workflow
+   `linkanvil — audit cron diario`. Hace `POST /admin/audit-cron` con
+   el header `X-Admin-Token`.
 
-2. **`cerebro-api`** ejecuta `run_audit_cron()`
-   (`src/data/audit_cron.py`). La **Fase A** del cron lanza un
+2. **`cerebro-api`** ejecuta la **Fase A** del cron de auditoría: un
    `UPDATE recursos SET estado='cuarentena'` filtrado por
    `estado='activo' AND temporal_class = 'evento' AND fecha_caducidad <= NOW()::DATE`.
 
    > 💡 **¿Por qué el filtro `temporal_class = 'evento'`?** La
-   > migración 0006 añadió esta columna para distinguir recursos con
-   > deadline (`evento`) de los descriptivos (`referencia`) y los
-   > eternos (`evergreen`). Solo los `evento` tienen
-   > `fecha_caducidad` activa; los demás la tienen `NULL`. El filtro
-   > es defensa en profundidad: si por error rellenamos la caducidad
-   > en una referencia, el cron NO la cuarentena automáticamente.
+   > clasificación temporal del LLM distingue recursos con deadline
+   > (`evento`) de los descriptivos (`referencia`) y los eternos
+   > (`evergreen`). Solo los `evento` tienen `fecha_caducidad`
+   > activa; los demás la tienen `NULL`. El filtro es defensa en
+   > profundidad: si por error se rellena la caducidad en una
+   > referencia, el cron NO la cuarentena automáticamente.
 
 3. La URL de la exposición transiciona a `cuarentena`, motivo
    `caducidad`, con `quarantine_grace_until = 2026-05-10` (30 días por
-   defecto via `OBSOLESCENCE_GRACE_DAYS`).
+   defecto vía `OBSOLESCENCE_GRACE_DAYS`).
 
-4. Por cada tenant linkeado al recurso, `_emit_outbox_per_tenant`
-   inserta un evento `recurso.cuarentena` en `outbox_eventos`.
+4. Por cada tenant linkeado al recurso, el cron inserta un evento
+   `recurso.cuarentena` en `outbox_eventos` (un evento por tenant
+   afectado).
 
 5. **`cerebro-outbox`** publica esos eventos al fanout
    `cerebro.procesamiento`. **`cerebro-notifier`** (worker dedicado a
@@ -444,15 +452,15 @@ usuario no ha vuelto a tocar el sistema.
 
 6. Los **vectores en Qdrant siguen intactos** — ni `cerebro_recursos`
    ni `cerebro_chunks` se tocan. El recurso simplemente deja de
-   aparecer en el RAG porque `get_active_resource_ids` filtra por
-   `estado='activo'`.
+   aparecer en el RAG porque el filtro de recursos activos solo
+   acepta `estado='activo'`.
 
 #### ⚠️ Variante con disparo manual
 
 Si el usuario no quiere esperar al cron, puede pulsar el botón
 **"Revisar caducidades"** en `/kb`, que llama a
-`POST /resources/audit-now` (auth user normal + rate-limit 5/min) y
-ejecuta exactamente la misma lógica que el cron.
+`POST /resources/audit-now` (auth de usuario normal + rate-limit
+5/min) y ejecuta exactamente la misma lógica que el cron.
 
 ### 3.b Camino semántico — el reemplazo por contenido más reciente
 
@@ -474,8 +482,7 @@ ejecuta exactamente la misma lógica que el cron.
 4. **`cerebro-embedder`** llama a LiteLLM con el prompt clasificador
    de relación semántica. La IA responde `VUELVE_OBSOLETO`.
 
-5. **Manejo de estado en `cerebro-postgres`**
-   (`save_semantic_collisions`):
+5. **Manejo de estado en `cerebro-postgres`**:
    - El nuevo enlace (v0.2) se inserta como `'activo'`.
    - El enlace antiguo (v0.1) se actualiza de `'activo'` a
      `'cuarentena'` con `quarantine_reason='colision_semantica'` y
@@ -489,10 +496,11 @@ ejecuta exactamente la misma lógica que el cron.
 ### 3.c Camino manual — el usuario manda algo a cuarentena
 
 Trivial: el usuario pulsa el botón "Mandar a cuarentena" sobre un
-recurso en `/kb`. Frontend llama a
-`POST /resources/{id}/quarantine` con `motivo='manual'`. El backend
-hace `UPDATE recursos SET estado='cuarentena', quarantine_reason='manual'`
-+ emite outbox + sigue el mismo pipeline (notifier, SSE, Telegram).
+recurso en `/kb`. El frontend llama a
+`POST /resources/{id}/quarantine` (sin body específico). El backend
+fija internamente `quarantine_reason='manual'`, hace
+`UPDATE recursos SET estado='cuarentena'` + emite outbox + sigue el
+mismo pipeline (notifier, SSE, Telegram).
 
 ### 3.d Camino por policy — contenido pasado clasificado al ingestar
 
@@ -515,8 +523,8 @@ Antes de seguir, estos 6 términos aparecen varias veces:
 | `temporal_class` | Tipo de contenido extraído por el LLM: `evento` (deadline/feria/oferta), `referencia` (artículo descriptivo), `evergreen` (tutorial atemporal). |
 | `valor_archivistico` | ¿Vale la pena guardarlo si su fecha es pasada? `alto` (informes oficiales, papers), `medio` (prensa estándar), `nulo` (anuncio caducado). |
 | `auto_archive_pending` | Flag booleano en `recursos`. Si `true`, el embedder transiciona el recurso directamente a `expirado` tras vectorizar (en vez del default `activo`). |
-| `evento_pasado` | Nuevo `quarantine_reason` introducido en migración 0006. Indica que el recurso entró en cuarentena porque el LLM detectó fecha pasada. |
-| Archivo histórico | El estado `expirado` ahora significa "archivado, recuperable opcionalmente", no "borrado". Se accede en el chat con el toggle "Archivo ON". |
+| `evento_pasado` | Valor del campo `quarantine_reason`. Indica que el recurso entró en cuarentena porque el LLM detectó fecha pasada. |
+| Archivo histórico | El estado `expirado` significa "archivado, recuperable opcionalmente", no "borrado". Se accede en el chat con el toggle "Archivo ON". |
 
 #### 🛠️ El viaje paso a paso
 
@@ -529,37 +537,45 @@ Antes de seguir, estos 6 términos aparecen varias veces:
    | Expojove | 2024-03-18 (lo deduce del path de la URL) | `referencia` | `medio` (prensa estándar) |
    | AEMET | 2020-09-18 (del path) | `referencia` | `alto` (informe oficial con datos) |
 
-2. **`save_with_outbox`** consulta la `audit_policy` del tenant (cache
-   in-process 60 s para no consultar Postgres en cada ingesta).
+2. **El paso de almacenamiento** consulta la `audit_policy` del tenant
+   (cache in-process 60 s para no consultar Postgres en cada ingesta).
    Compone la key del JSONB combinando clase + valor archivístico:
    - Expojove: key `referencia_pasada_medio` → policy dice
      `"cuarentena"`. El recurso queda `estado='cuarentena'`,
-     `quarantine_reason='evento_pasado'`, 30 días de gracia. Aparecerá
-     en `/quarantine` con badge azul "Evento pasado".
+     `quarantine_reason='evento_pasado'`, 30 días de gracia. El outbox
+     emite directamente `recurso.cuarentena` (no un `recurso.procesado`
+     que luego se filtre). Aparecerá en `/quarantine` con badge azul
+     "Evento pasado".
    - AEMET: key `referencia_pasada_alto` → policy dice `"expirado"`.
-     Marca `auto_archive_pending=true`, `estado='procesando'`.
+     Marca `auto_archive_pending=true`, `estado='procesando'`, y el
+     outbox emite `recurso.procesado` para que el embedder vectorice
+     antes de archivar.
 
-3. **Embedder** procesa ambos eventos del outbox:
-   - **Expojove**: el outbox emitió `recurso.cuarentena`. El embedder
-     lo ignora (whitelist solo acepta `recurso.procesado` /
-     `recurso.reusado`). Expojove **NO se vectoriza** — gana el estado
-     cuarentena.
+3. **Embedder** procesa los eventos del outbox:
+   - **Expojove**: el outbox emitió `recurso.cuarentena`
+     directamente. El embedder **ni siquiera lo recibe** como evento a
+     procesar: su filtro acepta únicamente `recurso.procesado` y
+     `recurso.reusado` (defensa en profundidad por si llegase). El
+     flujo principal es que la decisión policy-driven ya se aplicó en
+     la propia transacción, así que Expojove **nunca entra al pipeline
+     de vectorización**.
    - **AEMET**: el outbox emitió `recurso.procesado` con el flag
      `auto_archive_pending=true` en el payload. El embedder vectoriza
-     normalmente, inyecta el point en Qdrant, construye chunks
-     (fragmentos del texto, normalmente ~1200 caracteres, para que el
-     RAG pueda recuperar pasajes específicos en vez del documento
-     entero), transiciona directo a `'expirado'`, y **emite un segundo
-     evento outbox `recurso.expirado` con `motivo='auto_archive'`**
-     (vía helper `_emit_auto_archive_event`).
+     normalmente, inyecta el point en la colección Qdrant
+     `cerebro_recursos`, construye chunks (~1200 caracteres con
+     overlap de 150 chars), los inyecta en la **colección Qdrant
+     `cerebro_chunks`** (separada del recurso "head" en
+     `cerebro_recursos`), transiciona directo a `'expirado'`, y
+     **emite un segundo evento outbox `recurso.expirado` con
+     `motivo='auto_archive'`** para que el notifier avise al usuario.
 
    > 💡 **¿Por qué el embedder lee el flag de la BD si ya viene en el
    > payload?** Defensa en profundidad. El payload del outbox lleva el
    > flag como hint para evitar una query extra, pero si el evento ya
    > estaba en la cola desde antes del deploy (sin el campo nuevo) o
    > si alguna mutación intermedia cambió el flag, la BD es la fuente
-   > autoritativa. Helper `_fetch_auto_archive_flag(recurso_id)` lo
-   > consulta justo antes de la transición.
+   > autoritativa. El embedder consulta el flag justo antes de la
+   > transición.
 
 4. **Notificaciones al usuario**:
    - **Expojove**: el `recurso.cuarentena` con motivo `evento_pasado`
@@ -587,12 +603,11 @@ Antes de seguir, estos 6 términos aparecen varias veces:
 
 6. **Recuperación en chat**: el usuario pregunta "¿Cómo fue el verano
    2020 según AEMET?". Con el toggle **RAG ON + Archivo ON**, el
-   `/chat` pasa `include_archive=true` y
-   `get_active_resource_ids` amplía el filtro a
-   `estado IN ('activo','expirado')`. Qdrant devuelve los chunks del
-   AEMET y el LLM responde con datos reales del informe. Con
-   **Archivo OFF**, el AEMET no aparece (queda como archivo pasivo,
-   solo visible en `/expired`).
+   endpoint `/chat` pasa `include_archive=true` y el filtro de recursos
+   activos amplía el rango a `estado IN ('activo','expirado')`.
+   Qdrant devuelve los chunks del AEMET y el LLM responde con datos
+   reales del informe. Con **Archivo OFF**, el AEMET no aparece (queda
+   como archivo pasivo, solo visible en `/expired`).
 
 7. **Cambio de policy**: el usuario va a `/profile` (o abre el panel
    lateral Perfil), switchea al preset **Estricto** y re-ingesta el
@@ -633,14 +648,34 @@ pasar por `/expired` y pulsar "Borrar definitivamente" para liberar
 espacio en Qdrant. No existe (a día de hoy) garbage collection
 automático de vectores huérfanos.
 
-### 📁 Si quieres ir al código
+### 3.f Camino demo — auditoría intra-sesión
 
-- `src/data/audit_cron.py::run_audit_cron` — cron temporal (Fase A y B).
-- `src/data/embedder_worker.py::_compute_semantic_collisions` — colisión semántica.
-- `src/data/db.py::save_with_outbox` — decisión policy-driven al ingestar.
-- `src/data/embedder_worker.py::_emit_auto_archive_event` — emite el evento del auto-archive.
-- `src/notifier/worker.py::_human_message` — mapping de motivos a copy humano.
-- `src/api/database.py::get_active_resource_ids` — filtro RAG con `include_archive`.
+**Acción:** El visitante entra al demo (sub-tenant efímero
+`demo_<8 hex>`) y, durante su sesión, los recursos pre-cargados
+transicionan a `cuarentena` o `expirado` según un calendario de eventos
+pre-programados — para que el visitante pueda ver el ciclo de vida sin
+esperar al cron nocturno.
+
+#### 🛠️ El viaje paso a paso
+
+1. La tabla `demo_session_events` contiene filas con
+   `fires_at TIMESTAMPTZ` que indican en qué instante exacto de la
+   sesión debe dispararse cada transición.
+
+2. Un loop de limpieza dentro de `cerebro-api` (tick cada 60 s)
+   recorre periódicamente las sesiones demo activas e invoca la
+   auditoría intra-sesión por cada sub-tenant.
+
+3. La auditoría intra-sesión procesa los eventos vencidos del
+   sub-tenant: aplica transiciones cuarentena/expirado idénticas a las
+   del cron de prod, e inserta los eventos `recurso.cuarentena` /
+   `recurso.expirado` en el mismo `outbox_eventos`.
+
+4. A partir de aquí, **reutiliza exactamente el mismo pipeline que
+   prod**: outbox → fanout → notifier → in-app + SSE (no se envía
+   Telegram en demo). El bell del frontend funciona de forma idéntica
+   al cron de prod, lo que permite ilustrar la observabilidad sin
+   maquinaria extra.
 
 ---
 
@@ -663,10 +698,10 @@ un **Trace ID** (identificador único de correlación) mediante headers
 **OpenTelemetry** (estándar abierto de telemetría: tracing + metrics +
 logs unificados).
 
-- **`cerebro-otel`** (collector OpenTelemetry) interceptó el inicio y
+- **`cerebro-otel`** (collector OpenTelemetry) intercepta el inicio y
   fin de cada llamada gRPC/HTTP de fondo.
 - **`cerebro-jaeger`** (UI de visualización de trazas distribuidas)
-  dibujó una gráfica en cascada permitiendo ver exactamente cuántos
+  dibuja una gráfica en cascada permitiendo ver exactamente cuántos
   milisegundos tomó LiteLLM en responder frente a lo que tardó el
   scraping web.
 
@@ -677,7 +712,7 @@ logs unificados).
 
 #### Monitorización médica (Metrics)
 
-Las métricas del sistema no pararon:
+Las métricas del sistema no paran:
 
 - Los **Exporters** (`cerebro-postgres-exporter`,
   `cerebro-redis-exporter`, `cerebro-rabbitmq-exporter`) traducen el
@@ -695,35 +730,24 @@ Las métricas del sistema no pararon:
 > `q.url.ingesta` se acumula y la RAM del scraper sube, sabes que
 > tienes que escalar replicas.
 
-#### El exportador físico (Gemelo Markdown)
+#### Exportador a Markdown (gemelo portable)
 
-De manera desacoplada y reaccionando a los eventos "Outbox" guardados
-en Postgres:
+LinkAnvil incluye un **exportador on-demand** que genera un **ZIP** con
+el vault completo del tenant: ficheros `.md` por recurso con
+*frontmatter* YAML (cabecera estructurada con tags, fecha, categoría),
+un `index.md` global y un `hot.md` con las variables activas. Ese es
+el "gemelo Markdown" en formato portable.
 
-- Un script de cron (`audit_cron` o similar, también guiado por
-  eventos) activa al **Exportador LLM Wiki**.
-- Este servicio extrae el grafo de **Postgres** y materializa carpetas
-  y archivos locales en formato Markdown (`.md`).
-- Crea un archivo con *frontmatter* YAML (cabecera estructurada al
-  inicio del archivo con metadatos como tags, fecha, categoría) y
-  etiquetas correspondientes a "LangChain v0.2", inserta links al
-  estilo Obsidian (`[[Tutorial Bot LangChain]]`) y mueve la nota de
-  v0.1 a un subdirectorio de archivo o la marca con metadata
-  `obsolete: true`.
-- Adicionalmente agrupa las variables activas en `hot.md` para rápida
-  carga al iniciar un diálogo local de asistente virtual.
+La portabilidad es real: si mañana se abandona LinkAnvil, el
+conocimiento del usuario sigue accesible como archivos `.md` que
+cualquier herramienta (Obsidian, Logseq, grep) puede leer. **No hay
+vendor lock-in**.
 
-> 💡 **¿Por qué un gemelo en Markdown?** Garantía de portabilidad: si
-> mañana decidimos abandonar LinkAnvil, el conocimiento del usuario
-> sigue accesible como archivos `.md` que cualquier herramienta
-> (Obsidian, Logseq, grep) puede leer. **No vendor lock-in**.
-
-### 📁 Si quieres ir al código
-
-- `infra/otel/` — configuración del collector.
-- `infra/prometheus/alert.rules.yml` — alertas activas.
-- `infra/grafana/dashboards/` — dashboards versionados.
-- `ops/cron/` — scripts del exportador LLM Wiki.
+Actualmente el exportador no está cableado a ningún cron ni a ningún
+evento del outbox: se invoca bajo demanda. El movimiento automático
+"mueve la nota v0.1 a subdirectorio `archivo/` o la marca con
+`obsolete: true`" tampoco está implementado todavía; la obsolescencia
+vive solo en Postgres (`estado='expirado'`).
 
 ---
 
@@ -735,18 +759,20 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
   envía al broker tras procesar un mensaje. Sin ACK, RabbitMQ asume
   que el mensaje no llegó y lo *redeliveryea*.
 - **`audit_policy`** — columna JSONB en `usuarios` con 6 keys que
-  define qué hacer con contenido pasado al ingestar. Migración 0007.
+  define qué hacer con contenido pasado al ingestar.
 - **`auto_archive_pending`** — flag booleano en `recursos`. Si true,
   el embedder transiciona a `expirado` tras vectorizar (no `activo`).
-  Migración 0007.
 - **Bloom Filter** — estructura de datos probabilística que dice
   "definitivamente NO he visto esto" o "quizás sí". Ocupa muy poco
-  espacio en memoria; usado en Redis para descartar duplicados sin
-  consultar Postgres.
-- **Chunks** — fragmentos de texto de ~1200 caracteres en los que se
-  trocea un recurso largo. Cada chunk se vectoriza por separado y se
-  guarda en `cerebro_chunks` de Qdrant, para que el RAG pueda recuperar
-  pasajes específicos en vez del documento entero.
+  espacio en memoria; en LinkAnvil se usa **por tenant**
+  (`bf:tenant:{tenant_id}:ingestion`) como hint local, no como cache
+  global.
+- **Chunks** — fragmentos de texto de ~1200 caracteres (con overlap de
+  150 chars) en los que se trocea un recurso largo. Cada chunk se
+  vectoriza por separado y se guarda en la colección Qdrant
+  `cerebro_chunks` (separada de `cerebro_recursos` donde vive el
+  vector "head" del recurso), para que el RAG pueda recuperar pasajes
+  específicos en vez del documento entero.
 - **Cron** — tarea programada para ejecutarse periódicamente
   (LinkAnvil usa `cerebro-n8n` como orquestador visual de crons).
 - **DLQ (Dead Letter Queue)** — cola especial donde RabbitMQ deposita
@@ -755,9 +781,9 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
 - **Embedding** — representación numérica de un texto (vector de
   cientos de dimensiones). Textos parecidos tienen vectores parecidos,
   lo que permite búsqueda semántica.
-- **`evento_pasado`** — nuevo `quarantine_reason` (migración 0006).
-  Indica que el recurso entró en cuarentena porque el LLM detectó que
-  su fecha asociada ya pasó.
+- **`evento_pasado`** — valor de `quarantine_reason`. Indica que el
+  recurso entró en cuarentena porque el LLM detectó que su fecha
+  asociada ya pasó.
 - **Fanout exchange** — tipo de routing en RabbitMQ donde un mensaje
   publicado llega a **TODAS** las colas conectadas al exchange. Útil
   cuando varios workers necesitan ver el mismo evento.
@@ -772,8 +798,8 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
   usuarios.
 - **`motivo`** — campo del payload del notifier que describe la causa
   de la transición (`caducidad`, `colision_semantica`, `manual`,
-  `evento_pasado`, `gracia_agotada`, `auto_archive`). Mapea a un copy
-  humano en `_human_message`.
+  `evento_pasado`, `gracia_agotada`, `auto_archive`). Se mapea a copy
+  humano en el notifier.
 - **OpenTelemetry (OTel)** — estándar abierto unificado para
   trazas + métricas + logs distribuidos. `cerebro-otel` es el
   collector que recibe y reenvía.
@@ -800,7 +826,7 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
   URL. LinkAnvil usa dos estrategias: BasicHTTP (rápida) y Stealth
   Playwright (browser headless con evasión de detección de bots).
 - **Similitud coseno** — medida entre 0 y 1 que compara dos vectores.
-  1 = idénticos, 0 = sin relación. LinkAnvil usa umbral 0.88 para
+  1 = idénticos, 0 = sin relación. LinkAnvil usa umbral **0.92** para
   detectar colisiones semánticas.
 - **SSE (Server-Sent Events)** — canal HTTP de larga duración que el
   servidor mantiene abierto para empujar eventos al browser sin que
@@ -811,11 +837,13 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
   navigator.webdriver, fingerprint, etc.).
 - **Tenant** — cada usuario aislado. LinkAnvil es multi-tenant: los
   datos de un tenant nunca son visibles a otro, aunque vivan en las
-  mismas tablas. Identificado por `tenant_id` (`user_<uuid>`).
+  mismas tablas. Identificado por `tenant_id` con formato
+  `user_<32 hex>` (cuentas registradas) o `demo_<8 hex>` (sub-tenants
+  demo).
 - **`temporal_class`** — clasificación del LLM sobre la naturaleza
   temporal del contenido: `evento` (deadline/feria/oferta),
   `referencia` (descripción de algo pasado), `evergreen` (atemporal
-  como un tutorial). Migración 0006.
+  como un tutorial).
 - **Trace ID** — identificador único de correlación que se propaga
   por todas las llamadas de un mismo flujo (Traefik → ingestion →
   scraper → embedder → LiteLLM…). Permite reconstruir el viaje
@@ -828,7 +856,7 @@ Términos técnicos que aparecen en el documento, en orden alfabético.
 - **`valor_archivistico`** — clasificación del LLM sobre si vale la
   pena guardar el contenido si su fecha es pasada: `alto` (informes
   oficiales, papers), `medio` (prensa estándar), `nulo` (anuncio
-  caducado). Migración 0006.
+  caducado).
 - **Webhook** — callback HTTP que un servicio externo envía a una URL
   nuestra cuando ocurre un evento (ej.: Telegram envía un POST a
   `cerebro-ingestion` cada vez que el bot recibe un mensaje).

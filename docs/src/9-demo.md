@@ -1,4 +1,12 @@
-# El demo público de LinkAnvil
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+# El demo público  — LinkAnvil
+
+</div>
+
 
 > Documentación pedagógica del demo: para qué sirve, cómo está montado,
 > qué simula y qué NO simula. Pensada para que un visitante o un nuevo
@@ -608,47 +616,3 @@ pero recomendable cambiarlas a virtual-keys reales de free-tier
 │   user_demo_landing (los 18 seed) queda intacto                │
 └────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## 📚 Glosario rápido
-
-- **Sub-tenant efímero**: `tenant_id` `demo_<8hex>` creado en cada
-  login del demo. Vive 15 min y se borra con todo su contenido al
-  expirar.
-- **Seed tenant**: `user_demo_landing`, contiene los 18 recursos
-  canónicos del demo. Inmutable. Cada sub-tenant lo une en queries
-  de lectura.
-- **Compresión temporal**: el truco de tener recursos pre-sembrados
-  en estados del lifecycle que en producción tardarían semanas en
-  alcanzarse.
-- **Cleanup task**: corutina dentro de `cerebro-api` que cada 60 s
-  borra sesiones expiradas (BD + Qdrant en cascada).
-- **`demo_expired`**: razón devuelta en el header `X-Auth-Reason`
-  cuando un request llega tras `expires_at`. El frontend lo mapea a
-  un redirect a `/login?demo=expired`.
-- **`demo_already_used_today`**: respuesta 429 del endpoint
-  `/auth/demo-start` cuando la IP ya gastó su sesión del día UTC.
-  Incluye `register_url: /register`.
-- **BYOK** (Bring Your Own Key): trae tu propia virtual-key de
-  LiteLLM. El demo NO permite cambiar la suya; los registrados sí.
-- **Quota per-IP**: cuota diaria del demo escopada por la IP del
-  visitante (5 ingests + 20 chats / día UTC).
-- **Cap global**: tope diario sumado de todos los visitantes del
-  demo (50 ingests + 200 chats / día UTC) como red de seguridad.
-- **Recursos efímeros / staged**: 3 URLs sintéticas
-  (`https://demo.linkanvil.local/staged-<tenant>-<n>`) sembradas al
-  login del demo. Solo viven dentro del sub-tenant; sirven de
-  "actores" para las transiciones del minuto 5.
-- **Eventos programados**: 4 filas en `demo_session_events` con
-  `fires_at` calculado a partir del `created_at` de la sesión.
-  Tres `transition_*` al +5min + un `reminder_expiry_5min` al +10min.
-- **Audit intra-sesión**: función paralela al cron de producción pero
-  con precisión `TIMESTAMPTZ` y scoped por tenant. Reutiliza el mismo
-  helper de outbox que el cron de prod.
-- **Hint inline**: tooltip auto-condicional que se renderiza solo
-  cuando el usuario actual es demo. Sembrado en headers de las vistas
-  reales para añadir contexto sin tocar la lógica.
-- **Línea temporal**: entrada de sidebar exclusiva del demo que
-  apunta a `/demo` — la vista pedagógica con SVG + tabla cronológica
-  + atajos.

@@ -1,4 +1,11 @@
-## Glosario
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+## Glosario  — LinkAnvil
+
+</div>
 
 - **ACK / NACK** — confirmación (o no-confirmación) que un consumidor envía al broker tras procesar un mensaje. Sin ACK, RabbitMQ asume que el mensaje no llegó y lo *redeliveryea*.
 - **API Gateway** — puerta de acceso digital que controla, filtra y organiza el tráfico de datos que entra a un sistema informático.

@@ -1,4 +1,11 @@
-# Ciclo de vida de un recurso en LinkAnvil
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+# Ciclo de vida de un recurso — LinkAnvil
+
+</div>
 
 > Referencia canónica del recorrido completo de una URL desde que el usuario la
 > añade hasta que desaparece del sistema. Documenta todas las transiciones de

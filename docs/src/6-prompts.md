@@ -1,10 +1,16 @@
-# Prompts del sistema LinkAnvil
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+# Prompts del sistema — LinkAnvil
+
+</div>
+
 
 > Referencia canónica de todos los puntos donde LinkAnvil llama a un LLM:
 > qué prompt envía, qué intenta extraer y dónde se invoca a nivel
 > funcional.
->
-> Última actualización: 2026-05-19.
 
 ---
 

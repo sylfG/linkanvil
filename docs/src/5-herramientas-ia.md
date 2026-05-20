@@ -1,4 +1,11 @@
-# Herramientas IA del proyecto
+<div align="center">
+  <img src="/logo-light.png" alt="Logo" width="80" height="80" class="light-only">
+  <img src="/logo-dark.png" alt="Logo" width="80" height="80" class="dark-only">
+
+
+# Herramientas IA del proyecto — LinkAnvil
+
+</div>
 
 > Inventario completo de toda la maquinaria IA que se usó para construir
 > y operar LinkAnvil — desde los **agentes Claude Code** que escribieron

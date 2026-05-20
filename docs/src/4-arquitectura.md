@@ -267,10 +267,10 @@ sequenceDiagram
 
     Cron->>API: POST /admin/audit-cron + X-Admin-Token
     API->>API: ejecuta auditoría temporal
-    Note over API: Fase A — recursos activos con fecha_caducidad <= NOW()<br/>pasan a cuarentena (motivo='caducidad').<br/>Fase B — cuarentenados con > GRACE_PERIOD_DAYS días se expiran.
-    API->>PG: UPDATE recursos SET estado=... (filtrado por temporal_class y audit_policy)
-    API->>PG: INSERT outbox 'recurso.cuarentena' / 'recurso.expirado' (por tenant)
-    Note over PG, MQ: El outbox-publisher emite a RabbitMQ; el notifier<br/>notifica al usuario por feed in-app + Telegram.
+    Note over API: Fase A activos vencidos pasan a cuarentena. Fase B cuarentenados con más de GRACE_PERIOD_DAYS se expiran.
+    API->>PG: UPDATE recursos SET estado (filtrado por temporal_class y audit_policy)
+    API->>PG: INSERT outbox recurso.cuarentena o recurso.expirado por tenant
+    MQ->>MQ: outbox-publisher emite eventos y notifier avisa por feed in-app y Telegram
 ```
 
 La auditoría temporal vive en la API y se autentica con el token `AUDIT_CRON_TOKEN`. n8n actúa **solo como disparador HTTP** del endpoint `/admin/audit-cron` — no ejecuta SQL directo. El cron considera la clasificación temporal del recurso, su valor archivístico y la `audit_policy` JSONB del tenant. El motivo `evento_pasado` se decide al ingestar (introducido por la migración 0006), no aquí.

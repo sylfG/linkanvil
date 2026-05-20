@@ -3,8 +3,6 @@
 > Referencia canónica de todos los puntos donde LinkAnvil llama a un LLM:
 > qué prompt envía, qué intenta extraer y dónde se invoca a nivel
 > funcional.
->
-> Última actualización: 2026-05-19.
 
 ---
 

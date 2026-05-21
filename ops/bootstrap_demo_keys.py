@@ -58,7 +58,9 @@ log = logging.getLogger(__name__)
 
 LITELLM_URL = os.environ.get("LITELLM_URL", "http://litellm:4000").rstrip("/")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
-DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "demo@cerebro.local")
+# Debe coincidir con DEMO_EMAIL en ops/seed_demo_user.py — ambos
+# scripts apuntan al mismo registro en usuarios y se complementan via UPSERT.
+DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "demo@linkanvil.io")
 
 # Aliases que la key debe cubrir — coinciden con infra/litellm/config.yaml
 MODEL_ALIASES = ["cerebro-lite", "cerebro-embeddings", "cerebro-pro"]
@@ -67,7 +69,8 @@ MODEL_ALIASES = ["cerebro-lite", "cerebro-embeddings", "cerebro-pro"]
 def _http_request(
     method: str, path: str, payload: dict[str, Any] | None = None
 ) -> tuple[int, dict[str, Any]]:
-    """POST/GET sencillo contra el proxy LiteLLM."""
+    """POST/GET contra el proxy LiteLLM. Devuelve (status, json_body)
+    incluso para 4xx — no levanta HTTPError para errores controlables."""
     body = json.dumps(payload).encode("utf-8") if payload else None
     req = urllib.request.Request(
         url=f"{LITELLM_URL}{path}",
@@ -78,8 +81,17 @@ def _http_request(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Capturar body del 4xx/5xx para devolverlo al caller con contexto.
+        raw = exc.read().decode("utf-8") if exc.fp else ""
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {"raw": raw}
+        return exc.code, parsed
 
 
 async def _wait_for_litellm(max_wait_s: int = 120) -> None:
@@ -100,8 +112,31 @@ async def _wait_for_litellm(max_wait_s: int = 120) -> None:
     )
 
 
+def _delete_keys_by_alias(alias: str) -> None:
+    """Borra keys huérfanas con el alias indicado. Idempotente: si no
+    existe, /key/delete devuelve deleted_keys=[] sin error."""
+    status, body = _http_request(
+        "POST", "/key/delete", payload={"key_aliases": [alias]}
+    )
+    if status == 200:
+        deleted = body.get("deleted_keys", [])
+        if deleted:
+            log.info("Deleted %d stale key(s) with alias '%s'", len(deleted), alias)
+    else:
+        # No es fatal: si LiteLLM no encuentra el alias, /key/generate
+        # fallará después con un 400 más explícito.
+        log.warning("key/delete returned %s: %s", status, body)
+
+
 def _generate_virtual_key(alias: str) -> str:
-    """Llama a /key/generate y devuelve la sk-... emitida."""
+    """Llama a /key/generate y devuelve la sk-... emitida.
+
+    Limpia keys huérfanas con el mismo alias primero (LiteLLM exige
+    aliases únicos globalmente). Esto cubre el caso de re-creaciones
+    tras una rotación de LLM_KEYS_ENCRYPTION_KEY o BD corrupta.
+    """
+    _delete_keys_by_alias(alias)
+
     status, body = _http_request(
         "POST",
         "/key/generate",

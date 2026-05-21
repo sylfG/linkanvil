@@ -496,6 +496,25 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # 🗂️  QDRANT INIT one-shot: crea colecciones base
+  #    cerebro_recursos (doc-level vectors) + cerebro_chunks (RAG) +
+  #    payload indexes (tenant_id, recurso_id). Idempotente: Qdrant PUT
+  #    devuelve 200 si la colección ya existe.
+  # ---------------------------------------------------------------------------
+  qdrant-init:
+    image: curlimages/curl:8.10.1
+    container_name: cerebro-qdrant-init
+    restart: "no"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./infra/qdrant/init_qdrant.sh:/init_qdrant.sh:ro
+    entrypoint: ["sh", "/init_qdrant.sh", "http://qdrant:6333"]
+    networks:
+      - cerebro-net
+
+  # ---------------------------------------------------------------------------
   # 🤖 LLM GATEWAY — LiteLLM
   #    Fallback automático OpenAI → Anthropic → Local
   #    Circuit Breakers · Multi-provider routing
@@ -593,6 +612,8 @@ services:
       cerebro-migrate:
         condition: service_completed_successfully
       cerebro-seed-demo:
+        condition: service_completed_successfully
+      qdrant-init:
         condition: service_completed_successfully
     volumes:
       - ./ops:/app/ops:ro

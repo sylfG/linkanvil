@@ -511,7 +511,11 @@ services:
           cpus: "1.0"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      # NOTA: ?schema=public es obligatorio. El user `cerebro` tiene
+      # search_path `"$$user", public` y sin override Prisma crearía
+      # las tablas LiteLLM_* en el schema `cerebro` mientras las consulta
+      # con prefijo `public.` → TableNotFoundError en runtime.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}?schema=public
       STORE_MODEL_IN_DB: "True"
 
       GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-placeholder}

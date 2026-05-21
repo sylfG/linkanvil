@@ -544,6 +544,31 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
 
   # ---------------------------------------------------------------------------
+  # 🌱 SEED DEMO one-shot: usuario demo + recursos sembrados
+  #    Crea el usuario demo (demo@linkanvil.io, password linkanvil-demo) y
+  #    siembra los recursos del catálogo en SEED_RESOURCES. Idempotente.
+  #    Gated por SEED_DEMO=true — si la env-var no está, sale exit 0 sin tocar BD.
+  # ---------------------------------------------------------------------------
+  cerebro-seed-demo:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    container_name: cerebro-seed-demo
+    restart: "no"
+    environment:
+      SEED_DEMO: ${SEED_DEMO:-false}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+    networks:
+      - cerebro-net
+    depends_on:
+      cerebro-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./ops:/app/ops:ro
+    command: ["python", "/app/ops/seed_demo_user.py"]
+
+  # ---------------------------------------------------------------------------
   # 🔑 BOOTSTRAP one-shot: virtual-key del demo
   #    Genera una virtual-key contra LiteLLM con permiso sobre los 3 model
   #    groups, la cifra Fernet y la guarda en usuarios.llm_key_* del demo.
@@ -566,6 +591,8 @@ services:
       litellm:
         condition: service_healthy
       cerebro-migrate:
+        condition: service_completed_successfully
+      cerebro-seed-demo:
         condition: service_completed_successfully
     volumes:
       - ./ops:/app/ops:ro

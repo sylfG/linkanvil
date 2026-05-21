@@ -588,6 +588,17 @@ async def upsert_resource(
 
 
 async def main() -> None:
+    # Gate de ejecución: el seed solo corre cuando SEED_DEMO=true.
+    # Permite que en producción el contenedor cerebro-seed-demo arranque
+    # y salga limpio sin tocar BD (idempotente vía exit 0). En dev,
+    # poner SEED_DEMO=true en .env para auto-poblar el demo.
+    if os.getenv("SEED_DEMO", "").lower() not in ("1", "true", "yes"):
+        print(
+            "SEED_DEMO no está activado — saltando seed del demo. "
+            "Setea SEED_DEMO=true para ejecutar."
+        )
+        return
+
     conn = await asyncpg.connect(DB_URL)
     try:
         # RLS forzada — necesitamos seteo de tenant para INSERT en

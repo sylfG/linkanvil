@@ -544,6 +544,34 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
 
   # ---------------------------------------------------------------------------
+  # 🔑 BOOTSTRAP one-shot: virtual-key del demo
+  #    Genera una virtual-key contra LiteLLM con permiso sobre los 3 model
+  #    groups, la cifra Fernet y la guarda en usuarios.llm_key_* del demo.
+  #    Idempotente: si el demo ya tiene una virtual-key válida, no toca nada.
+  # ---------------------------------------------------------------------------
+  bootstrap-demo-keys:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    container_name: cerebro-bootstrap-demo-keys
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      LITELLM_URL: "http://litellm:4000"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+    networks:
+      - cerebro-net
+    depends_on:
+      litellm:
+        condition: service_healthy
+      cerebro-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./ops:/app/ops:ro
+    command: ["python", "/app/ops/bootstrap_demo_keys.py"]
+
+  # ---------------------------------------------------------------------------
   # 🔄 ORQUESTADOR DE WORKFLOWS — n8n
   #    Automatización de pipelines: Ingesta → Scraper → LLM → Store
   #    Curador Nocturno (cron jobs) · Bot Telegram integration

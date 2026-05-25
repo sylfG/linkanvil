@@ -2,11 +2,25 @@
 # up.sh — Bootstrap idempotente de LinkAnvil sobre Docker + Compose.
 # No requiere sudo (asume que install-host.sh corrió antes).
 # Uso:
-#   bash up.sh                       # arranque normal (perfil core)
-#   bash up.sh --with-telegram       # incluye Tailscale Funnel (perfil telegram)
-#   bash up.sh --no-build            # salta docker compose build
-#   bash up.sh --no-wait             # no espera healthchecks
-#   bash up.sh --reconfigure-llm     # reabre el prompt de proveedores LLM
+#   bash up.sh                                    # arranque normal interactivo
+#   bash up.sh --with-telegram                    # incluye Tailscale Funnel
+#   bash up.sh --no-build                         # salta docker compose build
+#   bash up.sh --no-wait                          # no espera healthchecks
+#   bash up.sh --reconfigure-llm                  # reabre el prompt de proveedores LLM
+#
+# Modo no interactivo (CI/Ansible/Terraform):
+#   bash up.sh --non-interactive \
+#              --provider nvidia \
+#              --api-key  nvapi-XXXX \
+#              --embedding-dim 1024
+#
+#   --non-interactive          desactiva prompts; usa valores por defecto + flags
+#   --provider <name>          proveedor LLM primario (nvidia|openai|anthropic|gemini|mistral|cohere|groq|xai|openrouter)
+#                              (puede repetirse o pasar CSV: --provider nvidia,openai)
+#   --api-key <key>            API key del proveedor primario (también admite --api-key VAR=valor para múltiples)
+#   --embedding-dim <N>        dimensión embeddings (default 1024)
+#   --env-key KEY=VALUE        setea cualquier variable de .env (puede repetirse)
+#
 #   bash up.sh -h | --help
 set -euo pipefail
 
@@ -20,16 +34,30 @@ WITH_TELEGRAM=false
 DO_BUILD=true
 DO_WAIT=true
 RECONFIGURE_LLM=false
+NON_INTERACTIVE=false
+CLI_PROVIDERS=""
+CLI_EMBEDDING_DIM=""
+declare -a CLI_API_KEYS=()
+declare -a CLI_ENV_KEYS=()
 
-for arg in "$@"; do
-    case "$arg" in
-        --with-telegram)   WITH_TELEGRAM=true ;;
-        --no-build)        DO_BUILD=false ;;
-        --no-wait)         DO_WAIT=false ;;
-        --reconfigure-llm) RECONFIGURE_LLM=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --with-telegram)    WITH_TELEGRAM=true; shift ;;
+        --no-build)         DO_BUILD=false; shift ;;
+        --no-wait)          DO_WAIT=false; shift ;;
+        --reconfigure-llm)  RECONFIGURE_LLM=true; shift ;;
+        --non-interactive)  NON_INTERACTIVE=true; shift ;;
+        --provider)         [[ -z "${2:-}" ]] && fail "--provider requiere un valor"
+                            CLI_PROVIDERS="$2"; shift 2 ;;
+        --api-key)          [[ -z "${2:-}" ]] && fail "--api-key requiere un valor"
+                            CLI_API_KEYS+=("$2"); shift 2 ;;
+        --embedding-dim)    [[ -z "${2:-}" ]] && fail "--embedding-dim requiere un valor"
+                            CLI_EMBEDDING_DIM="$2"; shift 2 ;;
+        --env-key)          [[ -z "${2:-}" ]] && fail "--env-key requiere KEY=VALUE"
+                            CLI_ENV_KEYS+=("$2"); shift 2 ;;
         -h|--help)
-            sed -n '2,10p' "$0"; exit 0 ;;
-        *) fail "Argumento desconocido: $arg" ;;
+            sed -n '2,22p' "$0"; exit 0 ;;
+        *) fail "Argumento desconocido: $1" ;;
     esac
 done
 
@@ -83,11 +111,79 @@ for var in POSTGRES_PASSWORD REDIS_PASSWORD RABBITMQ_PASS LITELLM_MASTER_KEY \
     fi
 done
 
+# Pre-seed .env desde flags CLI antes de invocar bootstrap-env.sh
+# (idempotente: solo setea si el valor actual está vacío o termina en _CHANGE_ME)
+preseed_env() {
+    local key="$1" value="$2"
+    [[ -z "$value" ]] && return 0
+    local current
+    current=$(grep "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+    if [[ -z "$current" || "$current" == *_CHANGE_ME ]]; then
+        local escaped
+        escaped=$(printf '%s' "$value" | sed -e 's/[\/&]/\\&/g')
+        if grep -q "^${key}=" .env 2>/dev/null; then
+            sed -i "s|^${key}=.*|${key}=${escaped}|" .env
+        else
+            echo "${key}=${value}" >> .env
+        fi
+    fi
+}
+
+if [[ -n "$CLI_PROVIDERS" ]]; then
+    preseed_env LLM_PROVIDERS_PRIORITY "$CLI_PROVIDERS"
+    ok "Proveedores LLM preconfigurados desde --provider: $CLI_PROVIDERS"
+fi
+if [[ -n "$CLI_EMBEDDING_DIM" ]]; then
+    preseed_env EMBEDDINGS_DIM "$CLI_EMBEDDING_DIM"
+fi
+# --api-key admite formato simple "valor" (asigna a la env-var del primer proveedor del CSV)
+# o formato KEY=valor (asigna explícitamente a esa variable).
+for entry in "${CLI_API_KEYS[@]:-}"; do
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" == *=* ]]; then
+        preseed_env "${entry%%=*}" "${entry#*=}"
+    elif [[ -n "$CLI_PROVIDERS" ]]; then
+        first_prov=$(echo "$CLI_PROVIDERS" | cut -d, -f1 | tr -d ' ')
+        envvar=$(python3 -c "
+import yaml
+with open('infra/litellm/providers.yaml') as f:
+    cat = yaml.safe_load(f)
+print(cat['providers'].get('$first_prov', {}).get('env_var', ''))
+")
+        [[ -n "$envvar" ]] && preseed_env "$envvar" "$entry" \
+            || warn "--api-key '$entry' descartado: proveedor '$first_prov' no encontrado en catalog"
+    else
+        warn "--api-key '$entry' descartado: usa --provider antes o el formato KEY=valor"
+    fi
+done
+for entry in "${CLI_ENV_KEYS[@]:-}"; do
+    [[ -z "$entry" ]] && continue
+    [[ "$entry" == *=* ]] || { warn "--env-key debe ser KEY=VALUE, ignorando '$entry'"; continue; }
+    preseed_env "${entry%%=*}" "${entry#*=}"
+done
+
+# Re-evaluar NEEDS_BOOTSTRAP tras el pre-seed CLI
+NEEDS_BOOTSTRAP=false
+for var in POSTGRES_PASSWORD REDIS_PASSWORD RABBITMQ_PASS LITELLM_MASTER_KEY \
+           JWT_SECRET LLM_KEYS_ENCRYPTION_KEY N8N_PASSWORD GRAFANA_PASSWORD AUDIT_CRON_TOKEN \
+           LLM_PROVIDERS_PRIORITY; do
+    val=$(grep "^${var}=" .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+    if [[ -z "$val" || "$val" == *_CHANGE_ME ]]; then
+        NEEDS_BOOTSTRAP=true
+        break
+    fi
+done
+
 if $NEEDS_BOOTSTRAP || $RECONFIGURE_LLM; then
     log "Completando .env (secretos auto-generables + prompts mínimos)..."
-    export WITH_TELEGRAM=$( $WITH_TELEGRAM && echo 1 || echo 0 )
-    export RECONFIGURE_LLM=$( $RECONFIGURE_LLM && echo 1 || echo 0 )
-    bash scripts/bootstrap-env.sh
+    # NOTA: WITH_TELEGRAM/RECONFIGURE_LLM se pasan al hijo como int 1/0 sin reasignar el bool local
+    WITH_TELEGRAM_INT=$( $WITH_TELEGRAM && echo 1 || echo 0 )
+    RECONFIGURE_LLM_INT=$( $RECONFIGURE_LLM && echo 1 || echo 0 )
+    NON_INTERACTIVE_INT=$( $NON_INTERACTIVE && echo 1 || echo 0 )
+    WITH_TELEGRAM=$WITH_TELEGRAM_INT \
+    RECONFIGURE_LLM=$RECONFIGURE_LLM_INT \
+    NON_INTERACTIVE=$NON_INTERACTIVE_INT \
+        bash scripts/bootstrap-env.sh
 else
     ok ".env ya tiene todas las claves críticas"
 fi
@@ -152,7 +248,7 @@ ok "Servicios iniciados$( $WITH_TELEGRAM && echo ' (perfil: telegram)' )"
 # Si el config de LiteLLM cambió, force-recreate solo ese servicio para recargar.
 if $LITELLM_CONFIG_CHANGED; then
     log "Config LiteLLM cambió — recreando cerebro-litellm..."
-    docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate cerebro-litellm
+    docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate litellm
 fi
 
 # ── 7. Healthchecks ─────────────────────────────────────────────────────────

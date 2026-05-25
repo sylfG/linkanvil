@@ -1,0 +1,120 @@
+# Catálogo de proveedores LLM soportados por LinkAnvil.
+# Consumido por:
+#   - scripts/bootstrap-env.sh (UX interactiva)
+#   - scripts/render-litellm-config.py (genera infra/litellm/config.yaml)
+#
+# Cada proveedor define cómo se invoca vía LiteLLM:
+#   env_var          → variable del .env que lleva la API key
+#   register_url     → enlace público para obtener la key (se muestra en el prompt)
+#   prefix           → prefijo LiteLLM ("openai/", "anthropic/", etc.)
+#   api_base         → endpoint OpenAI-compatible (solo si prefix=openai/)
+#   lite_models      → lista de modelos para el group "cerebro-lite"
+#   pro_models       → lista de modelos para el group "cerebro-pro"
+#   embedding_model  → modelo de embeddings (null si el proveedor no tiene)
+#   embedding_dim    → dimensión del vector de embedding (null si no aplica)
+#
+# Añadir proveedores nuevos = añadir una entry aquí. El bootstrap los descubre.
+
+providers:
+  nvidia:
+    env_var: NVIDIA_API_KEY
+    register_url: https://build.nvidia.com/explore/discover
+    prefix: openai/
+    api_base: https://integrate.api.nvidia.com/v1
+    lite_models:
+      - meta/llama-3.1-8b-instruct
+      - mistralai/mixtral-8x7b-instruct-v0.1
+    pro_models:
+      - meta/llama-3.3-70b-instruct
+      - nvidia/llama-3.3-nemotron-super-49b-v1.5
+    embedding_model: nvidia/nv-embedqa-e5-v5
+    embedding_dim: 1024
+    notes: "Chat + embeddings 1024 (free tier)"
+
+  openai:
+    env_var: OPENAI_API_KEY
+    register_url: https://platform.openai.com/api-keys
+    prefix: openai/
+    api_base: null
+    lite_models: [gpt-4o-mini]
+    pro_models: [gpt-4o]
+    embedding_model: text-embedding-3-small
+    embedding_dim: 1536
+    notes: "Chat + embeddings 1536"
+
+  anthropic:
+    env_var: ANTHROPIC_API_KEY
+    register_url: https://console.anthropic.com/settings/keys
+    prefix: anthropic/
+    api_base: null
+    lite_models: [claude-3-5-haiku-latest]
+    pro_models: [claude-sonnet-4-5, claude-opus-4-5]
+    embedding_model: null
+    embedding_dim: null
+    notes: "Chat (sin embeddings)"
+
+  gemini:
+    env_var: GEMINI_API_KEY
+    register_url: https://aistudio.google.com/apikey
+    prefix: gemini/
+    api_base: null
+    lite_models: [gemini-2.5-flash]
+    pro_models: [gemini-2.5-pro]
+    embedding_model: text-embedding-004
+    embedding_dim: 768
+    notes: "Chat + embeddings 768"
+
+  mistral:
+    env_var: MISTRAL_API_KEY
+    register_url: https://console.mistral.ai/api-keys/
+    prefix: mistral/
+    api_base: null
+    lite_models: [mistral-small-latest]
+    pro_models: [mistral-large-latest]
+    embedding_model: mistral-embed
+    embedding_dim: 1024
+    notes: "Chat + embeddings 1024"
+
+  cohere:
+    env_var: COHERE_API_KEY
+    register_url: https://dashboard.cohere.com/api-keys
+    prefix: cohere/
+    api_base: null
+    lite_models: [command-r]
+    pro_models: [command-r-plus]
+    embedding_model: embed-multilingual-v3.0
+    embedding_dim: 1024
+    notes: "Chat + embeddings 1024"
+
+  groq:
+    env_var: GROQ_API_KEY
+    register_url: https://console.groq.com/keys
+    prefix: groq/
+    api_base: null
+    lite_models: [llama-3.1-8b-instant]
+    pro_models: [llama-3.3-70b-versatile]
+    embedding_model: null
+    embedding_dim: null
+    notes: "Chat ultra-rápido (sin embeddings)"
+
+  xai:
+    env_var: XAI_API_KEY
+    register_url: https://console.x.ai/
+    prefix: xai/
+    api_base: null
+    lite_models: [grok-3-mini]
+    pro_models: [grok-3]
+    embedding_model: null
+    embedding_dim: null
+    notes: "Chat (sin embeddings)"
+
+  openrouter:
+    env_var: OPENROUTER_API_KEY
+    register_url: https://openrouter.ai/keys
+    prefix: openrouter/
+    api_base: null
+    lite_models: [meta-llama/llama-3.1-8b-instruct]
+    pro_models: [meta-llama/llama-3.3-70b-instruct]
+    embedding_model: null
+    embedding_dim: null
+    notes: "Multi-proveedor (sin embeddings)"

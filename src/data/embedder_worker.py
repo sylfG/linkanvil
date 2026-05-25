@@ -99,7 +99,24 @@ class EmbedderWorker:
         self.redis = aioredis.from_url(REDIS_URL, decode_responses=True)
         self.http = httpx.AsyncClient(timeout=30.0)
         self.heartbeat_task = start_heartbeat(self.redis, "embedder")
-        self.connection = await aio_pika.connect_robust(RABBIT_URL)
+        # connect_robust con retry silencioso durante warmup: RabbitMQ puede
+        # estar "healthy" según Docker pero todavía no aceptar listener AMQP.
+        # Sin esto se imprime un traceback feo durante los primeros segundos.
+        last_err = None
+        for attempt in range(1, 13):  # ~60s total con backoff 5s
+            try:
+                self.connection = await aio_pika.connect_robust(RABBIT_URL)
+                if attempt > 1:
+                    logger.info(f"Conectado a RabbitMQ en intento #{attempt}")
+                break
+            except Exception as e:
+                last_err = e
+                if attempt == 1:
+                    logger.info("RabbitMQ aún no acepta conexiones, esperando…")
+                await asyncio.sleep(5)
+        else:
+            logger.error(f"RabbitMQ inalcanzable tras 12 intentos: {last_err!r}")
+            raise last_err  # propagar para que el contenedor reinicie
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=10) # Paralelismo
         

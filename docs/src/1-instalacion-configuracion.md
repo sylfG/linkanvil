@@ -34,6 +34,29 @@ Opciones útiles:
 - `bash up.sh --no-wait` — no bloquea esperando healthchecks (útil en CI).
 - `make health` — comprobación rápida del estado del stack.
 
+### ⚡ Quick start no interactivo (CI / Ansible / Terraform)
+
+Si quieres automatizar el despliegue sin que `up.sh` te pida nada por TTY (CI/CD, Ansible, scripts), pasa los proveedores y la API key por flags:
+
+```bash
+sudo bash install-host.sh
+bash up.sh \
+  --non-interactive \
+  --provider nvidia \
+  --api-key   nvapi-XXXXXXXXXXXXXXXXXXXXXXXXXXX \
+  --embedding-dim 1024
+```
+
+Flags relevantes:
+
+- `--non-interactive` — desactiva todos los prompts; los secretos auto-generables se crean igualmente.
+- `--provider <name>` — proveedor LLM primario, o CSV de varios (`--provider nvidia,openai`).
+- `--api-key <key>` — API key del proveedor primario. Para múltiples proveedores usa el formato explícito: `--api-key NVIDIA_API_KEY=nvapi-XXX --api-key OPENAI_API_KEY=sk-XXX`.
+- `--embedding-dim <N>` — 1024 (default NVIDIA/Mistral/Cohere), 1536 (OpenAI), 768 (Gemini).
+- `--env-key KEY=VALUE` — preconfigura cualquier variable de `.env` (repetible).
+
+> Las claves CLI sólo escriben en `.env` si la variable está vacía o termina en `_CHANGE_ME` (idempotente: re-ejecutar el comando no sobreescribe valores reales).
+
 ---
 
 ## Tabla de contenidos
@@ -82,6 +105,19 @@ Estos requisitos son **bloqueantes**: si te faltan, `up.sh` arrancará pero algo
   - **80** (Traefik HTTP) — siempre.
   - **443** (Traefik HTTPS) — solo si vas a [producción con TLS](#fase-6-despliegue-en-producción).
   - **3001** (frontend), **8001** (API), **3000** (Grafana), **5678** (n8n) — solo si quieres acceder directamente sin pasar por Traefik. En producción mantenlos cerrados.
+
+### 0.2.1 (Si despliegas en LXC: Proxmox / Incus)
+
+Para que Docker arranque dentro de un contenedor LXC no privilegiado, habilita en la config del CT:
+
+```
+features: nesting=1,keyctl=1
+```
+
+- `nesting=1` es **obligatorio**: sin esto, Docker no podrá montar cgroups.
+- `keyctl=1` es **muy recomendado**: mejora la compatibilidad del storage driver `overlay2` que usa Docker.
+
+En Proxmox: edita `/etc/pve/lxc/<vmid>.conf` y reinicia el CT (`pct restart <vmid>`).
 
 ### 0.3 Cuenta y API key en al menos un proveedor LLM (BLOQUEANTE)
 
@@ -163,7 +199,16 @@ Con esto cubierto, sigue a la FASE 1.
 
 ### 1.1 Software indispensable
 
-> **En Debian 12 / Ubuntu 22.04+ todos los paquetes de esta sección se instalan automáticamente con `sudo bash install-host.sh`**. Sigue leyendo solo si trabajas en macOS / Windows o si quieres entender qué se instala y por qué.
+::: tip ATAJO Debian 12 / Ubuntu 22.04+
+**Ejecuta `sudo bash install-host.sh` y salta directamente a la [sección 1.3](#13-clonar-el-repositorio)**. El script instala automáticamente Docker + Compose, git, Python 3, jq, openssl y python3-cryptography. Idempotente: puedes re-ejecutarlo sin riesgo.
+
+```bash
+git clone https://github.com/sylfG/linkanvil && cd linkanvil
+sudo bash install-host.sh
+```
+
+Solo continúa leyendo esta sección si trabajas en **macOS o Windows** (no soportados por `install-host.sh`), o si quieres entender qué se instala y por qué.
+:::
 
 Instala las siguientes herramientas antes de continuar. Las **runtime obligatorias** son `git` y Docker. El resto solo son necesarias para los MCP servers de Claude Code (Node.js, uv).
 
@@ -571,9 +616,14 @@ docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 
 Si `SEED_DEMO=true` (default del bootstrap interactivo), el stack viene con un usuario demo listo para entrar sin registrarte:
 
-- **Email**: `demo@linkanvil.io`
-- **Password**: `linkanvil-demo`
+- **Email interno**: `demo@linkanvil.io` (gestionado por el sistema)
 - **Recursos**: 18 ejemplos pre-cargados (recetas, papers, repos, eventos pasados/futuros) cubriendo todos los estados del ciclo de vida.
+
+::: warning Acceso al demo: usa el botón, no `/auth/login`
+El acceso al demo es vía el botón **"Probar demo"** en la landing del frontend ([http://localhost:3001](http://localhost:3001)), que abre una sesión efímera con la virtual-key auto-provisionada por `bootstrap-demo-keys`.
+
+`POST /auth/login` con `demo@linkanvil.io` devuelve **403 `demo_use_dedicated_endpoint`** **por diseño** — no es un fallo de instalación: la cuenta demo no permite login directo para evitar que un usuario público se quede con su sesión.
+:::
 
 Si pusiste `SEED_DEMO=false`, regístrate normalmente desde la pantalla de login.
 

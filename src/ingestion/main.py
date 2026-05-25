@@ -107,7 +107,7 @@ app.add_middleware(
 async def health_check():
     return {"status": "healthy"}
 
-@app.post("/ingest", response_model=IngestionResponse)
+@app.post("/ingest", response_model=IngestionResponse, status_code=202)
 @trace_operation("ingest_url")
 async def ingest_url(request: IngestionRequest):
     """

@@ -10,22 +10,47 @@
 
 Bienvenidos a la guía práctica para inicializar LinkAnvil, tu backend soberano de conocimiento estructurado. Este tutorial paso a paso está diseñado para instalar la plataforma en local o tu cloud personal, entender el flujo de datos y enviar tu primer enlace de conocimiento para asegurar que todo funciona.
 
+## ⚡ Quick start (Debian 12 / Ubuntu 22.04+)
+
+Si estás en un servidor Linux limpio con los requisitos de la [FASE 0](#fase-0-antes-de-empezar) cubiertos, los 3 comandos siguientes son todo lo que necesitas:
+
+```bash
+git clone https://github.com/sylfG/linkanvil && cd linkanvil
+sudo bash install-host.sh   # 1. instala Docker, Compose, git, python3, jq
+bash up.sh                  # 2. configura .env + arranca el stack
+```
+
+`up.sh` es **idempotente**: copia `.env.example` → `.env`, auto-genera passwords y claves Fernet/JWT, regenera el hash de RabbitMQ, hace pull/build/up de los contenedores y espera a que los healthchecks pasen. Las únicas interacciones humanas son:
+
+- Elegir 1 o varios **proveedores LLM** en un menú numérico (NVIDIA, OpenAI, Anthropic, Gemini, Mistral, Cohere, Groq, xAI, OpenRouter).
+- Pegar la **API key** de cada uno (las generas previamente en sus webs — ver [FASE 0](#fase-0-antes-de-empezar)).
+- Confirmar la **dimensión de embeddings** (default 1024).
+
+Opciones útiles:
+
+- `bash up.sh --with-telegram` — añade Tailscale Funnel para webhooks Telegram (pide `TS_AUTHKEY`).
+- `bash up.sh --reconfigure-llm` — reabre el menú de proveedores para añadir/cambiar uno.
+- `bash up.sh --no-build` — salta `docker compose build` en re-arranques.
+- `bash up.sh --no-wait` — no bloquea esperando healthchecks (útil en CI).
+- `make health` — comprobación rápida del estado del stack.
+
 ---
 
 ## Tabla de contenidos
 
-1. [FASE 1: Preparación del Entorno](#fase-1-preparación-del-entorno)
+1. [FASE 0: Antes de empezar](#fase-0-antes-de-empezar) — requisitos previos sin los que no podrás arrancar
+2. [FASE 1: Preparación del Entorno](#fase-1-preparación-del-entorno)
    - 1.1 [Software indispensable](#11-software-indispensable)
    - 1.2 [Verificación rápida de prerrequisitos](#12-verificación-rápida-de-prerrequisitos)
    - 1.3 [Clonar el repositorio](#13-clonar-el-repositorio)
-2. [FASE 2: Tokens de Inteligencia Artificial y `.env`](#fase-2-tokens-de-inteligencia-artificial-y-env)
-3. [FASE 3: Despliegue e Inicialización (Bootstrapping)](#fase-3-despliegue-e-inicialización-bootstrapping)
-4. [FASE 3b: Migraciones de Schema (automáticas)](#fase-3b-migraciones-de-schema-automáticas)
-5. [FASE 3c: Resetear el Stack Completo](#fase-3c-resetear-el-stack-completo)
-6. [FASE 4: Verificación del Ecosistema](#fase-4-verificación-del-ecosistema)
-7. [FASE 5: Acceso a la Plataforma y Dashboards](#fase-5-acceso-a-la-plataforma-y-dashboards)
+3. [FASE 2: Tokens de Inteligencia Artificial y `.env`](#fase-2-tokens-de-inteligencia-artificial-y-env)
+4. [FASE 3: Despliegue e Inicialización (Bootstrapping)](#fase-3-despliegue-e-inicialización-bootstrapping)
+5. [FASE 3b: Migraciones de Schema (automáticas)](#fase-3b-migraciones-de-schema-automáticas)
+6. [FASE 3c: Resetear el Stack Completo](#fase-3c-resetear-el-stack-completo)
+7. [FASE 4: Verificación del Ecosistema](#fase-4-verificación-del-ecosistema)
+8. [FASE 5: Acceso a la Plataforma y Dashboards](#fase-5-acceso-a-la-plataforma-y-dashboards)
    - [Tu primera ingesta](#tu-primera-ingesta)
-8. [FASE 6: Despliegue en Producción](#fase-6-despliegue-en-producción)
+9. [FASE 6: Despliegue en Producción](#fase-6-despliegue-en-producción)
    - 6.1 [Prerrequisitos](#61-prerrequisitos)
    - 6.2 [Levantar con el overlay de producción](#62-levantar-con-el-overlay-de-producción)
    - 6.3 [Variables críticas para producción](#63-variables-críticas-para-producción)
@@ -34,11 +59,113 @@ Bienvenidos a la guía práctica para inicializar LinkAnvil, tu backend soberano
 
 ---
 
+## FASE 0: Antes de empezar
+
+Estos requisitos son **bloqueantes**: si te faltan, `up.sh` arrancará pero algo no funcionará. Marca esta checklist antes de seguir.
+
+### 0.1 Hardware del servidor (donde correrá Docker)
+
+| Recurso | Mínimo | Recomendado |
+|---|---|---|
+| **CPU** | 2 cores (x86_64 o ARM64) | 4+ cores |
+| **RAM** | 4 GB | 8 GB |
+| **Disco libre** | 10 GB | 20+ GB |
+| **SO** | Debian 12 / Ubuntu 22.04+ (para `install-host.sh`) o cualquier Linux/macOS con Docker manual |
+
+> Si vas a alojar también LLMs locales con Ollama, suma los recursos del modelo (p.ej. +8 GB RAM para Llama 3 8B).
+
+### 0.2 Acceso al servidor
+
+- **SSH** con tu usuario y permiso de `sudo` (lo necesitas para `install-host.sh`).
+- **Conexión a internet desde el servidor** — el stack hace pulls de Docker Hub, registros de GitHub Container Registry, y llamadas a los proveedores LLM.
+- Si el servidor está **detrás de un firewall cloud** (DigitalOcean, AWS, Hetzner, etc.), abre los puertos:
+  - **80** (Traefik HTTP) — siempre.
+  - **443** (Traefik HTTPS) — solo si vas a [producción con TLS](#fase-6-despliegue-en-producción).
+  - **3001** (frontend), **8001** (API), **3000** (Grafana), **5678** (n8n) — solo si quieres acceder directamente sin pasar por Traefik. En producción mantenlos cerrados.
+
+### 0.3 Cuenta y API key en al menos un proveedor LLM (BLOQUEANTE)
+
+Sin al menos **un** proveedor LLM con embeddings, LinkAnvil no podrá vectorizar ni hacer chat. Crea la cuenta y genera la API key antes de ejecutar `up.sh`:
+
+| Proveedor | Free tier | Tiene embeddings | Dim | URL de registro |
+|---|:---:|:---:|:---:|---|
+| **NVIDIA NIM** | ✅ generoso | ✅ (1024) | 1024 | https://build.nvidia.com/explore/discover |
+| **Mistral** | ✅ limitado | ✅ (1024) | 1024 | https://console.mistral.ai/api-keys/ |
+| **Cohere** | ✅ trial | ✅ (1024) | 1024 | https://dashboard.cohere.com/api-keys |
+| **OpenAI** | ❌ de pago | ✅ (1536) | 1536 | https://platform.openai.com/api-keys |
+| **Anthropic** | ❌ de pago | ❌ (solo chat) | — | https://console.anthropic.com/settings/keys |
+| **Gemini** | ✅ generoso | ✅ (768) | 768 | https://aistudio.google.com/apikey |
+| **Groq** | ✅ rate-limited | ❌ (solo chat) | — | https://console.groq.com/keys |
+| **xAI** | ❌ de pago | ❌ (solo chat) | — | https://console.x.ai/ |
+| **OpenRouter** | ✅ trial | ❌ (solo chat) | — | https://openrouter.ai/keys |
+
+> **Recomendación**: empieza con **NVIDIA NIM** — free tier amplio y trae embeddings 1024 dim que es el default del stack. Puedes añadir más proveedores luego con `bash up.sh --reconfigure-llm`.
+
+> **Importante**: si solo usas proveedores **sin embeddings** (Anthropic, Groq, xAI, OpenRouter), el chat funcionará pero la ingesta de URLs no podrá vectorizar. Combina al menos uno con embeddings.
+
+### 0.4 (Opcional) Cuenta de Tailscale — solo si quieres webhooks de Telegram
+
+Necesario únicamente si vas a usar `bash up.sh --with-telegram`:
+
+1. Cuenta gratis en https://login.tailscale.com (plan Personal).
+2. Activar HTTPS: Admin Console → DNS → `Enable HTTPS`.
+3. Generar auth-key reusable: Admin Console → Settings → Keys → `Generate auth key` con `Reusable=ON`, `Ephemeral=OFF`. Copia el `tskey-auth-...`.
+
+Detalles en [FASE 6.4](#64-webhooks-de-telegram-tailscale-funnel).
+
+### 0.5 (Opcional) Bot de Telegram
+
+Solo si quieres ingestar URLs desde Telegram:
+
+1. Abre chat con [@BotFather](https://t.me/BotFather) en Telegram.
+2. `/newbot` → da nombre y username → recibes el token (`123456:ABC-DEF...`).
+3. Guárdalo: lo pegarás en `TELEGRAM_BOT_TOKEN` en el `.env` (o desde la UI tras el primer login).
+
+### 0.6 (Opcional) Dominio público + DNS — solo para producción
+
+Si vas a desplegar accesible desde internet con HTTPS:
+
+- Un dominio con un registro **A** apuntando a la IP pública del servidor (p.ej. `linkanvil.tu-dominio.com → 1.2.3.4`).
+- Puertos 80 y 443 accesibles públicamente (Let's Encrypt necesita el 80 para validar).
+- Un email para las notificaciones de Let's Encrypt (`ACME_EMAIL` en `.env`).
+
+### 0.7 (Solo Windows / macOS estricto) Resolución de `*.localhost`
+
+La mayoría de Linux (con `systemd-resolved`) y macOS 11+ resuelven `*.localhost → 127.0.0.1` automáticamente. **En Windows o en macOS antiguos**, añade a tu archivo hosts:
+
+- Windows: `C:\Windows\System32\drivers\etc\hosts`
+- macOS/Linux: `/etc/hosts`
+
+```
+127.0.0.1  cerebro.localhost ingest.localhost n8n.localhost rabbitmq.localhost
+127.0.0.1  grafana.localhost prometheus.localhost qdrant.localhost jaeger.localhost
+127.0.0.1  llm.localhost traefik.localhost
+```
+
+Sin esto, los enlaces `http://<servicio>.localhost` de la [FASE 5](#fase-5-acceso-a-la-plataforma-y-dashboards) no funcionarán.
+
+### Checklist de FASE 0
+
+Antes de seguir, comprueba que tienes:
+
+- [ ] Acceso SSH al servidor con `sudo` (o terminal local).
+- [ ] Internet en el servidor + puertos 80 abiertos en el firewall cloud (si aplica).
+- [ ] Al menos 1 API key de un proveedor LLM con embeddings compatibles.
+- [ ] (Opcional) `tskey-auth-...` de Tailscale si vas a usar Telegram.
+- [ ] (Opcional) Token de @BotFather si vas a usar Telegram.
+- [ ] (Producción) Dominio con DNS apuntando al servidor + puerto 443 abierto.
+
+Con esto cubierto, sigue a la FASE 1.
+
+---
+
 ## FASE 1: Preparación del Entorno
 
 ### 1.1 Software indispensable
 
-Instala las siguientes herramientas antes de continuar. Todas son necesarias para levantar el stack y los MCP servers de Claude Code.
+> **En Debian 12 / Ubuntu 22.04+ todos los paquetes de esta sección se instalan automáticamente con `sudo bash install-host.sh`**. Sigue leyendo solo si trabajas en macOS / Windows o si quieres entender qué se instala y por qué.
+
+Instala las siguientes herramientas antes de continuar. Las **runtime obligatorias** son `git` y Docker. El resto solo son necesarias para los MCP servers de Claude Code (Node.js, uv).
 
 ---
 
@@ -71,7 +198,7 @@ git --version   # debe devolver 2.x o superior
 #### Docker Engine + Docker Compose V2
 
 Docker Compose V2 viene incluido con Docker Engine ≥ 24 y Docker Desktop.
-Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando los **21 servicios long-running** del stack (más 2 contenedores one-shot de inicialización — `cerebro-migrate` y `cerebro-n8n-bootstrap` — y el sidecar opcional `tailscale-funnel`, que solo arranca con el perfil `telegram`) en contenedores aislados.
+Se utilizan para automatizar el despliegue de la infraestructura local, empaquetando los **22 servicios long-running** del stack (más **5 contenedores one-shot de inicialización** — `cerebro-migrate`, `qdrant-init`, `cerebro-seed-demo`, `bootstrap-demo-keys`, `n8n-bootstrap` — y el sidecar opcional `tailscale-funnel`, que solo arranca con el perfil `telegram`) en contenedores aislados.
 A través del fichero declarativo de Compose, permite levantar e interconectar todos los servicios dentro de la red privada `cerebro-net` y gestionar el ciclo de vida con un solo comando, garantizando que la plataforma funcione exactamente igual en cualquier entorno de desarrollo o producción.
 
 ::: code-group
@@ -234,63 +361,115 @@ El repositorio contiene la configuración declarativa de los contenedores del st
 
 ---
 
-## FASE 2: Tokens de Inteligencia Artificial y `.env`
+## FASE 2: Proveedores LLM y `.env`
 
-El núcleo de extracción y vectorización de URLs funciona gracias al enrutador **LiteLLM**. Necesitarás proporcionar credenciales seguras.
+El núcleo de extracción y vectorización funciona gracias a **LiteLLM**, que actúa de gateway frente a 1 o N proveedores LLM. El bootstrap te deja elegir cuáles activar y en qué orden — el primero es el primario, el resto entra en la cadena de fallback estricta.
 
-1. Copia la plantilla a tu fichero local secreto (este fichero **NUNCA** debe subirse a un repositorio público):
+### Proveedores soportados de fábrica
+
+| Proveedor | Chat | Embeddings | Dim | Registro |
+|---|:---:|:---:|:---:|---|
+| **nvidia** | ✅ | ✅ | 1024 | https://build.nvidia.com/explore/discover |
+| **openai** | ✅ | ✅ | 1536 | https://platform.openai.com/api-keys |
+| **anthropic** | ✅ | ❌ | — | https://console.anthropic.com/settings/keys |
+| **gemini** | ✅ | ✅ | 768 | https://aistudio.google.com/apikey |
+| **mistral** | ✅ | ✅ | 1024 | https://console.mistral.ai/api-keys/ |
+| **cohere** | ✅ | ✅ | 1024 | https://dashboard.cohere.com/api-keys |
+| **groq** | ✅ | ❌ | — | https://console.groq.com/keys |
+| **xai** | ✅ | ❌ | — | https://console.x.ai/ |
+| **openrouter** | ✅ | ❌ | — | https://openrouter.ai/keys |
+
+Catálogo completo (modelos lite/pro por proveedor, endpoint, etc.): [`infra/litellm/providers.yaml`](../../infra/litellm/providers.yaml). Para añadir un proveedor nuevo basta con añadir una entry — `bootstrap-env.sh` y `render-litellm-config.py` la descubren.
+
+### Opción A: dejar que `up.sh` haga el trabajo (recomendado)
+
+`bash up.sh` detecta si falta el `.env` (lo crea desde `.env.example`), auto-genera todos los secretos (passwords, JWT, clave Fernet) y luego te pregunta interactivamente:
+
+1. **Qué proveedores activar** — CSV en orden de prioridad. Ejemplo: `nvidia,anthropic,openai`.
+2. **API key de cada uno** — solo para los marcados.
+3. **Dimensión de embeddings** — default 1024. Si la cambias y ya existían colecciones en Qdrant, se recrean (destructivo).
+4. **Proveedor de embeddings** — `auto` elige el primero de la lista que tenga embeddings con la dim correcta.
+
+El script renderiza `infra/litellm/config.yaml` con el `model_list` y las reglas `router_settings.fallbacks` correctas y reinicia LiteLLM si la config cambió.
+
+Para cambiar la lista de proveedores más tarde: edita `.env` y vuelve a ejecutar `bash up.sh`, o invoca `bash up.sh --reconfigure-llm` para que te abra otra vez el prompt.
+
+### Opción B: edición manual del `.env`
+
+Si prefieres revisar línea a línea o estás en un entorno donde `up.sh` no aplica:
+
+1. Copia la plantilla (este fichero **NUNCA** debe subirse a un repositorio público):
 
    ```bash
    cp .env.example .env
    ```
 
-2. Edita `.env` con un editor como Nano, Vim o VS Code:
+2. Edita `.env` y rellena al menos:
 
-   * **Variables de API (*CRÍTICAS*)**: proporciona la llave de OpenRouter. Es posible registrar proveedores adicionales en la configuración de LiteLLM, pero la plantilla general exige al menos:
-
+   * **Proveedores LLM**. Lista priorizada + API keys correspondientes:
      ```env
-     OPENROUTER_API_KEY=sk-or-xxxxxx...
+     LLM_PROVIDERS_PRIORITY=nvidia,anthropic
+     EMBEDDINGS_PROVIDER=auto
+     EMBEDDINGS_DIM=1024
+     NVIDIA_API_KEY=nvapi-xxxxxx...
+     ANTHROPIC_API_KEY=sk-ant-xxxxxx...
      ```
 
-   * **Contraseña del Gateway Local**: una llave propia que protege las llamadas internas al gateway. El default es `sk-cerebro-master-key`, pero es muy recomendable cambiarla por seguridad (y usar la nueva en todas las peticiones).
-
-     ```env
-     LITELLM_MASTER_KEY=sk-tullave-privada-y-segura
-     ```
-
-   * **Clave de cifrado de las BYOK keys (*CRÍTICA — obligatoria*)**: requerida para que la API de LinkAnvil arranque. La validación al arrancar el stack fallará inmediatamente si está vacía. Genera y pega:
+   * **`LLM_KEYS_ENCRYPTION_KEY`** (*CRÍTICA*). Clave Fernet que cifra las BYOK keys en la BD. `cerebro-api` no arranca si está vacía. Genera con:
 
      ```bash
      python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
      ```
 
-     ```env
-     LLM_KEYS_ENCRYPTION_KEY=<el-valor-generado-arriba>
-     ```
+   * **`LITELLM_MASTER_KEY`** — token administrativo del gateway. El default `sk-cerebro-master-key-CHANGE_ME` no es production-safe.
 
-   * **Contraseñas del resto del Stack**: modifica las contraseñas predefinidas (RabbitMQ, Postgres, Redis, Grafana...). En la plantilla llevan el sufijo `_CHANGE_ME` intencionalmente para forzar al usuario a editarlas — no son production-safe.
+   * **Passwords del stack** — placeholders `_CHANGE_ME` (`POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `RABBITMQ_PASS`, `N8N_PASSWORD`, `GRAFANA_PASSWORD`) deben cambiarse a valores aleatorios.
 
-     ```env
-     POSTGRES_PASSWORD=cerebro_db_pass_CHANGE_ME   # ⚠ debes cambiarlo
-     RABBITMQ_PASS=cerebro_pass_CHANGE_ME          # ⚠ debes cambiarlo
-     REDIS_PASSWORD=cerebro_redis_pass_CHANGE_ME
-     GRAFANA_PASSWORD=cerebro_grafana_pass_CHANGE_ME
-     N8N_PASSWORD=cerebro_n8n_pass_CHANGE_ME
-     ```
+   * **`JWT_SECRET`** — `python3 -c "import secrets; print(secrets.token_hex(32))"`.
 
-> Las variables `DEMO_KEY_LITE`, `DEMO_KEY_EMBEDDINGS` y `DEMO_KEY_PRO` que aparecen en la plantilla son virtual-keys de LiteLLM que usa el usuario demo. Si las dejas vacías, se aplica fallback automático a `LITELLM_MASTER_KEY` y el demo funcionará sin configuración adicional.
+   * **`AUDIT_CRON_TOKEN`** — `openssl rand -hex 32`.
+
+3. Renderiza el config de LiteLLM y arranca:
+
+   ```bash
+   python3 scripts/render-litellm-config.py
+   docker compose up -d
+   ```
+
+> Las variables `DEMO_KEY_LITE`, `DEMO_KEY_EMBEDDINGS` y `DEMO_KEY_PRO` son virtual-keys de LiteLLM para el usuario demo. Si las dejas vacías y `SEED_DEMO=true`, el one-shot `bootstrap-demo-keys` las genera automáticamente contra LiteLLM en el primer arranque y las guarda cifradas con Fernet en la BD del usuario demo.
+
+### Cómo funciona el fallback en LiteLLM
+
+El renderizador genera, por cada proveedor activo, una entrada `model_name: cerebro-lite__<provider>` y `cerebro-pro__<provider>` en `model_list`. El primer proveedor de la lista también recibe el alias canónico `cerebro-lite`/`cerebro-pro` — es lo que el código de la app invoca. En `router_settings.fallbacks` se declara la cadena estricta: si el primario falla más de N veces (config: `allowed_fails`), LiteLLM lo saca temporalmente del pool y prueba el siguiente. Es determinista — no round-robin entre proveedores.
+
+Para embeddings no hay fallback: se elige un solo proveedor compatible con la dimensión configurada. Mezclar dimensiones rompería Qdrant.
 
 ---
 
 ## FASE 3: Despliegue e Inicialización (Bootstrapping)
 
-Con las llaves configuradas, Docker Compose descargará las imágenes, creará la red interna `cerebro-net`, levantará los 21 contenedores long-running y aplicará el bootstrap SQL inicial (que crea el schema `cerebro` y todas las tablas en Postgres).
+Con las llaves configuradas, levanta el stack. Hay dos vías equivalentes:
 
 ```bash
+# Opción A — recomendada: wrapper idempotente con healthchecks y mensajes claros
+bash up.sh
+
+# Opción B — directo con compose (sin completar .env automáticamente y sin esperar healthchecks)
 docker compose up -d
 ```
 
-> **Nota:** la primera ejecución tarda varios minutos. Puedes seguir los logs con `docker compose logs -f`.
+`up.sh` se encarga de:
+
+1. Validar que Docker está disponible.
+2. Completar el `.env` (passwords, JWT, Fernet) si hay placeholders pendientes — invoca [`scripts/bootstrap-env.sh`](../../scripts/bootstrap-env.sh).
+3. Sincronizar el hash de RabbitMQ en `infra/rabbitmq/definitions.json` con la nueva `RABBITMQ_PASS`.
+4. `docker compose pull` + `build` + `up -d`.
+5. Esperar healthchecks de los servicios runtime (timeout 240s) vía [`scripts/wait-healthy.sh`](../../scripts/wait-healthy.sh).
+6. Imprimir endpoints y credenciales demo.
+
+El stack arranca **22 contenedores long-running** + **5 one-shot de inicialización** (`cerebro-migrate`, `qdrant-init`, `cerebro-seed-demo`, `bootstrap-demo-keys`, `n8n-bootstrap`). Estos últimos terminan en `Exited (0)` — es lo esperado: son init containers, no fallos.
+
+> **Nota:** la primera ejecución tarda varios minutos (build de las 4 imágenes locales + pull de las 16 externas). Puedes seguir los logs con `docker compose logs -f`.
 
 > **Nota sobre versiones**: todas las imágenes externas están pinneadas a versión exacta o a digest SHA-256, salvo `tailscale/tailscale:stable` (opcional, sidecar de Telegram). Esto garantiza reproducibilidad entre entornos.
 
@@ -325,77 +504,106 @@ docker compose run --rm cerebro-migrate
 
 ## FASE 3c: Resetear el Stack Completo
 
-El script `./reset.sh` devuelve el entorno de desarrollo a un estado totalmente limpio de forma automática. Destruye todos los contenedores Docker, borra los volúmenes de datos en disco y regenera las configuraciones de acceso de la plataforma. Es una herramienta crítica en pruebas que permite solucionar problemas de corrupción o cambios estructurales mayores, perdiendo toda la información guardada.
+El script `bash reset.sh` devuelve el entorno a un estado totalmente limpio. Destruye todos los contenedores, borra los volúmenes de datos en disco y vuelve a construir las imágenes locales desde cero. Útil para solucionar problemas de corrupción o cambios estructurales mayores — **perderás toda la información guardada**.
 
 ```bash
-./reset.sh
+bash reset.sh                  # reset completo (borra volúmenes + re-build)
+bash reset.sh --keep-images    # omite el pull/rebuild de imágenes externas (más rápido)
 ```
 
-Este script:
+El script:
 
 1. Para y elimina todos los contenedores del proyecto.
-2. Elimina los volúmenes de datos (`postgres-data`, `qdrant-data`, etc.).
-3. Opcionalmente elimina las imágenes locales (pregunta confirmación).
-4. Rehasea la contraseña de RabbitMQ en sus definiciones desde `.env`.
-5. Vuelve a levantar todo con `docker compose up -d`.
-6. Espera a que los servicios con healthcheck estén `healthy`.
+2. Elimina los volúmenes nombrados (`postgres-data`, `qdrant-data`, etc.).
+3. Borra las imágenes construidas localmente (`linkanvil-*`).
+4. Opcionalmente borra las imágenes externas para forzar pull fresco (salvo `--keep-images`).
+5. Regenera el hash de RabbitMQ en `definitions.json` ([`scripts/regen-rabbitmq-hash.sh`](../../scripts/regen-rabbitmq-hash.sh)).
+6. `docker compose pull` + `build --no-cache` + `up -d`.
+7. Espera healthchecks ([`scripts/wait-healthy.sh`](../../scripts/wait-healthy.sh)).
 
-> **Importante:** `reset.sh` borra todos los datos. Las sesiones de chat, recursos capturados y embeddings se perderán. Usar solo en desarrollo o cuando se quiera un estado completamente limpio.
+> **Diferencia con `up.sh`**: `up.sh` es idempotente (se puede correr N veces sin destruir nada). `reset.sh` es destructivo (borra estado para empezar de cero). En el día a día usa `up.sh`; reserva `reset.sh` para problemas serios o cambios mayores en la BD.
 
 ---
 
 ## FASE 4: Verificación del Ecosistema
 
-Mediante el comando `docker compose ps` se puede realizar una auditoría rápida de salud que confirme que los servicios están operativos. El sistema evalúa el estado de las conexiones internas y los componentes en segundo plano, marcando cada módulo como `(healthy)` una vez activo. Esta comprobación garantiza que la plataforma está preparada para recibir enlaces y responder consultas sin fallos.
+Hay tres comandos de verificación, en orden creciente de profundidad.
+
+### a) Healthcheck rápido del stack
 
 ```bash
-docker compose ps
+make health
+# o bien:
+bash scripts/wait-healthy.sh --once
 ```
 
-Todos los servicios con healthcheck deben mostrar `(healthy)`. Los workers (`cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`) se marcan como healthy una vez que su heartbeat en Redis está activo (puede tardar hasta 60 segundos).
+Imprime el estado healthcheck de los 19 servicios runtime. Devuelve exit 0 si todos están `healthy`, 1 si alguno está `unhealthy` o `missing`.
 
-Para ver los logs en tiempo real:
+### b) Listado completo de contenedores
+
+```bash
+docker compose ps        # solo runtime
+docker compose ps -a     # incluye los 5 one-shot Exited(0)
+make ps-oneshot          # estado de los init containers
+```
+
+Los workers (`cerebro-scraper`, `cerebro-embedder`, `cerebro-outbox`, `cerebro-notifier`) se marcan healthy una vez que su heartbeat en Redis está activo (hasta 60s tras arrancar).
+
+### c) Smoke test inter-servicio
+
+```bash
+python3 infra/test_health.py
+```
+
+Script en Python puro (solo stdlib, sin dependencias) que verifica conectividad real entre servicios — no solo el estado del contenedor. Comprueba endpoints HTTP, colas RabbitMQ, conexiones a Postgres/Redis/Qdrant y targets de Prometheus.
+
+### Logs en tiempo real
 
 ```bash
 docker compose logs -f cerebro-api cerebro-ingestion cerebro-scraper
 ```
 
-Para un smoke test más profundo que verifica la conectividad inter-servicio (no solo el estado del contenedor), LinkAnvil incluye un script de diagnóstico ejecutable directamente:
-
-```bash
-python3 -m linkanvil.health
-```
-
-> El smoke test usa exclusivamente la stdlib de Python, así que no requiere instalar dependencias.
-
 ---
 
 ## FASE 5: Acceso a la Plataforma y Dashboards
 
-| Servicio | URL | Credenciales (`.env`) |
+### Usuario demo pre-cargado
+
+Si `SEED_DEMO=true` (default del bootstrap interactivo), el stack viene con un usuario demo listo para entrar sin registrarte:
+
+- **Email**: `demo@linkanvil.io`
+- **Password**: `linkanvil-demo`
+- **Recursos**: 18 ejemplos pre-cargados (recetas, papers, repos, eventos pasados/futuros) cubriendo todos los estados del ciclo de vida.
+
+Si pusiste `SEED_DEMO=false`, regístrate normalmente desde la pantalla de login.
+
+### Endpoints del stack
+
+| Servicio | URL | Credenciales |
 |:--- |:--- |:--- |
-| **App Principal** | [http://localhost:3001](http://localhost:3001) | Registro en la propia app |
+| **App Principal** | [http://localhost:3001](http://localhost:3001) | demo o registro |
 | **API Backend** | [http://localhost:8001/docs](http://localhost:8001/docs) | JWT (Swagger UI) |
 | **Ingestion API** | [http://ingest.localhost/health](http://ingest.localhost/health) (vía Traefik) | Libre |
-| **LiteLLM Gateway** | [http://localhost:4000](http://localhost:4000) | `LITELLM_MASTER_KEY` |
-| **Orquestador (n8n)** | [http://localhost:5678](http://localhost:5678) | `N8N_USER` & `N8N_PASSWORD` |
-| **Colas (RabbitMQ)** | [http://localhost:15672](http://localhost:15672) | `RABBITMQ_USER` & `RABBITMQ_PASS` |
-| **Métricas (Grafana)** | [http://localhost:3000](http://localhost:3000) | `GRAFANA_USER` & `GRAFANA_PASSWORD` |
+| **LiteLLM Gateway** | [http://localhost:4000](http://localhost:4000) | `LITELLM_MASTER_KEY` en `.env` |
+| **Orquestador (n8n)** | [http://localhost:5678](http://localhost:5678) | `N8N_USER` / `N8N_PASSWORD` en `.env` |
+| **Colas (RabbitMQ)** | [http://localhost:15672](http://localhost:15672) | `RABBITMQ_USER` / `RABBITMQ_PASS` en `.env` |
+| **Métricas (Grafana)** | [http://localhost:3000](http://localhost:3000) | `GRAFANA_USER` / `GRAFANA_PASSWORD` en `.env` |
 | **Trazas Visuales (Jaeger)** | [http://localhost:16686](http://localhost:16686) | Libre |
 | **BD Vectorial (Qdrant)** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Libre |
 | **API Gateway (Traefik)** | [http://localhost:8080](http://localhost:8080) | Libre (solo local) |
 
-> **Tip:** Traefik enruta por `Host` header, así que los subdominios `*.localhost` (`cerebro.localhost`, `ingest.localhost`, `n8n.localhost`, etc.) son la vía canónica. La mayoría de sistemas (Linux con `systemd-resolved`, macOS 11+) resuelven `*.localhost` a `127.0.0.1` automáticamente (RFC 6761). En Windows o en sistemas con resolución estricta, añade entradas explícitas en `/etc/hosts` (o `C:\Windows\System32\drivers\etc\hosts`):
->
+> Para recuperar las credenciales auto-generadas:
+> ```bash
+> grep -E "^(N8N_PASSWORD|GRAFANA_PASSWORD|RABBITMQ_PASS|LITELLM_MASTER_KEY)=" .env
 > ```
-> 127.0.0.1  cerebro.localhost ingest.localhost n8n.localhost rabbitmq.localhost \
->            grafana.localhost prometheus.localhost qdrant.localhost jaeger.localhost \
->            llm.localhost traefik.localhost
-> ```
+
+### Primer login en n8n y Grafana
+
+Si es la primera vez que abres estas UIs, **el bootstrap ya creó las credenciales** — no te pide registrar ningún usuario nuevo, solo introducir las del `.env`. Si tras introducirlas Grafana te pide cambiar la contraseña, puedes hacerlo en su UI sin tocar el `.env` (Grafana mantiene su propia BD).
 
 ### Tu primera ingesta
 
-Crea una cuenta en `http://localhost:3001`, inicia sesión y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API.
+Entra en `http://localhost:3001` con el usuario demo y envía una URL desde la interfaz. Alternativamente, puedes probar directamente la Ingestion API.
 
 > ⚠ El servicio `cerebro-ingestion` **no expone puertos al host** — solo es accesible vía Traefik (PathPrefix `/ingest` o Host header `ingest.localhost`). Un `curl http://localhost:8000/ingest` desde el host falla con *connection refused*.
 
@@ -455,33 +663,36 @@ Consulta la guía de producción del proyecto para Docker secrets, configuració
 
 El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entregar los mensajes. Si trabajas en local detrás de un router doméstico, no la tienes por defecto. Solución gratis y persistente: **Tailscale Funnel** como sidecar de Docker. Sobrevive a `docker compose down/up` y a reconstrucciones del entorno.
 
-#### Pasos one-time en Tailscale
+> **Prerrequisitos** (cubiertos en [FASE 0.4](#04-opcional-cuenta-de-tailscale-solo-si-quieres-webhooks-de-telegram) y [FASE 0.5](#05-opcional-bot-de-telegram)): cuenta Tailscale con HTTPS activo + `tskey-auth-...` reusable + token del bot de @BotFather.
 
-1. **Cuenta**: regístrate gratis en https://login.tailscale.com (plan Personal).
-2. **Activar HTTPS**: Admin Console → DNS → `Enable HTTPS`. Imprescindible para que Funnel pueda emitir certificados.
-3. **Permitir Funnel**: Admin Console → Access Controls. La política por defecto en cuentas personales lo permite. Si no, añade:
+#### Atajo automatizado
 
-   ```jsonc
-   "nodeAttrs": [
-     { "target": ["*"], "attr": ["funnel"] }
-   ]
-   ```
+```bash
+bash up.sh --with-telegram
+```
 
-4. **Auth-key reusable**: Admin Console → Settings → Keys → `Generate auth key`. Marca:
-   - Reusable ✓
-   - Ephemeral ✗
-   - Pre-approved ✓ (si usas device approval)
+El script te pedirá:
 
-   Copia el valor `tskey-auth-...` — solo se muestra una vez.
+1. `TS_AUTHKEY` — el `tskey-auth-...` de Tailscale (generado en FASE 0.4).
+2. (Resto del flujo de proveedores LLM como siempre).
 
-#### Configurar el túnel
+Y arrancará el stack con el perfil `telegram` activo. Tras eso solo te quedan los pasos 3-5 de abajo (descubrir URL pública, conectar bot).
 
-1. **Edita `.env`**:
+#### Variables que entran en `.env`
 
-   ```env
-   TS_AUTHKEY=tskey-auth-XXXXXXXXXXXXXXXXXX
-   PUBLIC_INGESTION_URL=                # se rellena tras el primer arranque
-   ```
+```env
+TS_AUTHKEY=tskey-auth-XXXXXXXXXXXXXXXXXX   # generado en FASE 0.4
+PUBLIC_INGESTION_URL=                       # se rellena tras el primer arranque
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...        # token de @BotFather (FASE 0.5)
+```
+
+`TELEGRAM_BOT_TOKEN` también puede dejarse vacío en el `.env` y configurarse desde la UI tras el primer login (más cómodo si quieres rotarlo sin tocar archivos).
+
+#### Configuración manual (paso a paso)
+
+Si prefieres no usar `--with-telegram` o necesitas reconfigurar:
+
+1. **Edita `.env`** con las variables de arriba.
 
 2. **Levanta el túnel** (sin tocar el resto de servicios):
 
@@ -510,12 +721,13 @@ El bot de Telegram requiere una URL HTTPS pública a la que Telegram pueda entre
    # → {"status":"healthy"}
    ```
 
-#### Registrar el bot en la app
+#### Conectar el bot a la app
 
-1. Crea un bot con `@BotFather` en Telegram → guarda el token.
-2. En la UI, ve a `/profile`, pega el token y guarda.
-3. La respuesta del `PUT /profile/telegram` debe incluir `webhook_url` apuntando al subdominio público.
-4. Manda una URL al bot — debería aparecer en tu KB tras unos segundos.
+Si ya pusiste `TELEGRAM_BOT_TOKEN` en `.env` antes de arrancar, el webhook se registra automáticamente. Si no:
+
+1. En la UI (`http://localhost:3001`), ve a `/profile`, pega el token del bot y guarda.
+2. La respuesta del `PUT /profile/telegram` debe incluir `webhook_url` apuntando al subdominio público.
+3. Manda una URL al bot desde tu cuenta de Telegram — debería aparecer en tu KB tras unos segundos.
 
 #### Persistencia entre rebuilds
 

@@ -9,11 +9,11 @@
     <a href="https://sylfg.github.io/linkanvil"><strong>Explora la Documentación »</strong></a>
     <br />
     <br />
-    <a href="docs/src/8_instalacion_y_configuracion.md">Ver Instalación</a>
+    <a href="docs/src/1-instalacion-configuracion.md">Ver Instalación</a>
     ·
-    <a href="docs/src/1_epics_and_features.md">Reportar un Bug</a>
+    <a href="https://github.com/sylfG/linkanvil/issues/new">Reportar un Bug</a>
     ·
-    <a href="docs/src/1_epics_and_features.md">Proponer Funcionalidad</a>
+    <a href="docs/src/Extractor_de_Requisitos/1_epics_and_features.md">Roadmap</a>
   </p>
 
   [![VitePress](https://img.shields.io/badge/docs-VitePress-blue)](https://sylfg.github.io/linkanvil)
@@ -69,11 +69,39 @@ LinkAnvil está compuesto por una arquitectura de microservicios ligera que pued
 
 ---
 
-## 🚀 Empezar: Instalación y Pruebas
+## 🚀 Quick Start (servidor limpio Debian 12 / Ubuntu 22.04+)
 
-Para mantener este README conciso, la guía completa paso a paso con configuración de variables, arranque de contenedores, scripts de health-check e inyección de la primera URL, se encuentra en nuestra documentación:
+```bash
+# 1. Clonar
+git clone https://github.com/sylfG/linkanvil && cd linkanvil
 
-👉 **[Ir al Tutorial Paso a Paso: Guía de Instalación y Configuración](docs/src/8_instalacion_y_configuracion.md)**
+# 2. Dependencias del SO (una vez por máquina, requiere sudo)
+sudo bash install-host.sh
+
+# 3. Arrancar la app (interactivo: te pregunta qué proveedor(es) LLM activar)
+bash up.sh
+```
+
+`up.sh` te dejará elegir 1 o varios proveedores LLM en orden de prioridad (NVIDIA, OpenAI, Anthropic, Gemini, Mistral, Cohere, Groq, xAI, OpenRouter). El primero es el primario; el resto entra en la cadena de fallback de LiteLLM. Detalles en [`infra/litellm/providers.yaml`](infra/litellm/providers.yaml).
+
+Tras `up.sh`:
+
+| Servicio | URL |
+|---|---|
+| Frontend | http://localhost:3001  *(demo: `demo@linkanvil.io` / `linkanvil-demo`)* |
+| API docs | http://localhost:8001/docs |
+| n8n | http://localhost:5678 |
+| Grafana | http://localhost:3000 |
+| Jaeger | http://localhost:16686 |
+
+**Opciones:**
+- `bash up.sh --with-telegram` — incluye Tailscale Funnel para webhooks Telegram (pide `TS_AUTHKEY`).
+- `bash up.sh --no-build` — salta el build de imágenes locales (más rápido en re-arranques).
+- `bash up.sh --reconfigure-llm` — reabre el prompt para cambiar la lista/orden de proveedores LLM.
+- `bash reset.sh` — reset destructivo (borra volúmenes + reconstruye todo).
+- `make health` — comprobación rápida de healthchecks.
+
+Para una guía detallada, ver **[Guía de Instalación](docs/src/1-instalacion-configuracion.md)**.
 
 ---
 
@@ -81,9 +109,9 @@ Para mantener este README conciso, la guía completa paso a paso con configuraci
 
 Toda la arquitectura, diagramas e hitos de desarrollo residen en [VitePress](https://vitepress.dev/) y GitHub Pages. Si eres desarrollador, te sugerimos leer:
 
-* 🏛️ **[Arquitectura y Diseño de Sistemas](docs/src/6_arquitectura.md)**
-* 📐 **[Diagramas C4 de Componentes](docs/src/3_c4_diagrams.md)**
-* 📋 **[Planificación y Registro de Épicas](docs/src/1_epics_and_features.md)**
+* 🏛️ **[Arquitectura y Diseño de Sistemas](docs/src/4-arquitectura.md)**
+* 📐 **[Diagramas C4 de Componentes](docs/src/Extractor_de_Requisitos/3_c4_diagrams.md)**
+* 📋 **[Planificación y Registro de Épicas](docs/src/Extractor_de_Requisitos/1_epics_and_features.md)**
 
 ---
 

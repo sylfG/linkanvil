@@ -8,12 +8,10 @@ import asyncpg
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
-    raise RuntimeError(
-        "Missing env-var DATABASE_URL. Configurarla en .env "
-        "(formato: postgresql://USER:PASSWORD@HOST:5432/DB). "
-        "Sin valor en el entorno, el módulo no puede arrancar — esto evita "
-        "que un fallback con credenciales débiles se use por error."
-    )
+    # Fail-fast: sin variable de entorno el módulo no debe arrancar.
+    # Evita que un fallback con valores triviales se cuele por error.
+    # Configurar la cadena de conexión Postgres en .env (ver .env.example).
+    raise RuntimeError("Missing env-var DATABASE_URL — ver .env.example")
 
 # Slice 5: tenant inmutable que aloja los 18 recursos seed del demo.
 # Los sub-tenants efímeros del demo (demo_<8hex>) hacen UNION con este

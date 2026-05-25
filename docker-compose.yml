@@ -508,6 +508,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+    environment:
+      EMBEDDINGS_DIM: ${EMBEDDINGS_DIM:-1024}
     volumes:
       - ./infra/qdrant/init_qdrant.sh:/init_qdrant.sh:ro
     entrypoint: ["sh", "/init_qdrant.sh", "http://qdrant:6333"]

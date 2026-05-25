@@ -4,7 +4,19 @@ COMPOSE := docker compose -f docker-compose.yml
 # Se excluyen del listado por defecto para reducir ruido visual.
 ONE_SHOT := cerebro-migrate qdrant-init cerebro-seed-demo bootstrap-demo-keys n8n-bootstrap
 
-.PHONY: ps ps-all ps-oneshot up down restart logs health
+.PHONY: bootstrap reset ps ps-all ps-oneshot up down restart logs health
+
+# Bootstrap idempotente desde cero (interactivo solo para NVIDIA_API_KEY)
+bootstrap:
+	bash up.sh
+
+# Bootstrap incluyendo perfil telegram (Tailscale Funnel)
+bootstrap-telegram:
+	bash up.sh --with-telegram
+
+# Reset destructivo (borra volúmenes + reconstruye todo)
+reset:
+	bash reset.sh
 
 # Listado limpio: solo servicios runtime (oculta init containers terminados)
 ps:
@@ -32,4 +44,4 @@ logs:
 
 # Resumen rápido del health de servicios runtime
 health:
-	@$(COMPOSE) ps --format 'table {{.Name}}\t{{.Status}}' | grep -v 'Exited'
+	@bash scripts/wait-healthy.sh --once

@@ -13,4 +13,4 @@ MAX_DIFF_CHARS: int = 8_000
 
 # Refs probed (in order) to find a merge-base for new-branch pushes.
 # Override here if your org uses `trunk`, `develop`, etc.
-NEW_BRANCH_BASE_REFS: tuple[str, ...] = ("origin/main", "origin/master", "main", "master")
+NEW_BRANCH_BASE_REFS: tuple[str, ...] = ("origin/develop", "origin/main", "origin/master", "develop", "main", "master")

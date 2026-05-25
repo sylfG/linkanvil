@@ -6,10 +6,14 @@ from typing import Optional
 
 import asyncpg
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://cerebro:cerebro_db_pass@postgres:5432/cerebro_brain",
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "Missing env-var DATABASE_URL. Configurarla en .env "
+        "(formato: postgresql://USER:PASSWORD@HOST:5432/DB). "
+        "Sin valor en el entorno, el módulo no puede arrancar — esto evita "
+        "que un fallback con credenciales débiles se use por error."
+    )
 
 # Slice 5: tenant inmutable que aloja los 18 recursos seed del demo.
 # Los sub-tenants efímeros del demo (demo_<8hex>) hacen UNION con este

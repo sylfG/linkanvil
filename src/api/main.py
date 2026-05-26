@@ -819,7 +819,7 @@ async def login(
     _=Depends(rate_limit_login),
 ):
     user = await db.get_user_by_email(req.email)
-    if not user or not verify_password(req.password, user["password_hash"]):
+    if not user:
         raise HTTPException(401, "Credenciales incorrectas")
 
     # Slice 6 — Separación total demo ↔ registered.
@@ -828,6 +828,12 @@ async def login(
     # el botón "Probar demo" de la landing (sin credenciales visibles).
     # Aquí rechazamos para que `/login` quede como vista exclusiva de
     # usuarios registrados y no haya credenciales demo expuestas.
+    #
+    # NOTA: este check debe ir ANTES de verify_password — el usuario demo
+    # puede tener un password_hash placeholder ("!bootstrap-no-login!")
+    # cuando `bootstrap_demo_keys.py` lo crea sin que `seed_demo_user.py`
+    # haya corrido (caso SEED_DEMO=false). bcrypt sobre ese placeholder
+    # lanza ValueError("Invalid salt") y la API devuelve 500.
     if user.get("is_demo"):
         raise HTTPException(
             403,
@@ -840,6 +846,9 @@ async def login(
                 "redirect": "/demo",
             },
         )
+
+    if not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Credenciales incorrectas")
 
     token = _access_token_for(user)
     csrf = _set_session_cookies(response, token)

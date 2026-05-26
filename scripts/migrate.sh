@@ -31,6 +31,24 @@ if [[ ! -d "$MIGRATIONS_DIR" ]]; then
     exit 1
 fi
 
+# Esperar a que Postgres ACEPTE conexiones TCP.
+# El healthcheck de docker-compose puede marcar postgres como healthy
+# antes de que el listener TCP esté abierto en algunos entornos LXC,
+# provocando "Connection refused" inmediatamente al arrancar migrate.
+# Usar pg_isready en lugar de psql evita ruido durante el polling.
+for attempt in {1..30}; do
+    if pg_isready -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$PGDATABASE" -q; then
+        [[ $attempt -gt 1 ]] && echo "migrate: postgres listo en intento #$attempt"
+        break
+    fi
+    if [[ $attempt -eq 30 ]]; then
+        echo "migrate: postgres no acepta conexiones tras 30 intentos (60s)" >&2
+        exit 2
+    fi
+    [[ $attempt -eq 1 ]] && echo "migrate: esperando a que postgres acepte conexiones..."
+    sleep 2
+done
+
 # Ensure the bookkeeping table exists.
 psql -v ON_ERROR_STOP=1 -q -c "
     CREATE SCHEMA IF NOT EXISTS cerebro;

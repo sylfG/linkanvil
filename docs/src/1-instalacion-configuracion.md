@@ -34,6 +34,8 @@ Opciones útiles:
 - `bash up.sh --no-wait` — no bloquea esperando healthchecks (útil en CI).
 - `make health` — comprobación rápida del estado del stack.
 
+> **¿Stack arriba y no sabes a dónde ir?** Salta directamente a [Endpoints del stack](#endpoints-del-stack) — tabla completa de URLs (Frontend, Swagger UI `/docs`, n8n, Grafana, Qdrant, Jaeger, Traefik) con sus credenciales.
+
 ### ⚡ Quick start no interactivo (CI / Ansible / Terraform)
 
 Si quieres automatizar el despliegue sin que `up.sh` te pida nada por TTY (CI/CD, Ansible, scripts), pasa los proveedores y la API key por flags:
@@ -646,6 +648,21 @@ Si pusiste `SEED_DEMO=false`, regístrate normalmente desde la pantalla de login
 > ```bash
 > grep -E "^(N8N_PASSWORD|GRAFANA_PASSWORD|RABBITMQ_PASS|LITELLM_MASTER_KEY)=" .env
 > ```
+
+### Explorar la API: Swagger UI
+
+La API de LinkAnvil expone documentación interactiva **OpenAPI/Swagger** en [http://localhost:8001/docs](http://localhost:8001/docs). Es la referencia canónica y siempre está sincronizada con el código (se genera automáticamente desde los modelos Pydantic y los handlers FastAPI).
+
+Lo que puedes hacer desde Swagger:
+
+- **Ver todos los endpoints** agrupados por área (`auth`, `recursos`, `chat`, `admin`, etc.) con su método HTTP, ruta, parámetros y respuestas tipadas.
+- **Probar endpoints en vivo** ("Try it out" → "Execute") sin escribir un `curl`. Útil para descubrir errores de validación, ver el shape exacto de la respuesta y entender los códigos de estado.
+- **Inspeccionar los modelos de datos** (sección "Schemas" al final) — qué campos lleva un `IngestionRequest`, qué devuelve `LoginResponse`, etc.
+- **Autenticarte para endpoints protegidos**: pulsa el candado 🔒 arriba a la derecha, pega un JWT obtenido con `POST /auth/login` (usuario registrado, no demo), y Swagger lo añadirá a todas las peticiones posteriores como header `Authorization: Bearer ...`.
+
+> El esquema OpenAPI bruto está en [http://localhost:8001/openapi.json](http://localhost:8001/openapi.json) — útil para generar clientes con `openapi-generator`, importar a Postman/Insomnia, o auditar la superficie pública de la API.
+
+**Para la API de ingestión** (que no expone puertos al host, va por Traefik), no hay Swagger separado: el único endpoint público es `POST /ingest` y está descrito en la sección [Tu primera ingesta](#tu-primera-ingesta) más abajo.
 
 ### Primer login en n8n y Grafana
 

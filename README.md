@@ -88,11 +88,13 @@ Tras `up.sh`:
 
 | Servicio | URL |
 |---|---|
-| Frontend | http://localhost:3001  *(demo: `demo@linkanvil.io` / `linkanvil-demo`)* |
-| API docs | http://localhost:8001/docs |
-| n8n | http://localhost:5678 |
-| Grafana | http://localhost:3000 |
+| Frontend | http://localhost:3001  *(botón **"Probar demo"** en la landing — no usar `/auth/login`)* |
+| API docs (Swagger) | http://localhost:8001/docs |
+| n8n | http://localhost:5678  *(`admin` / `N8N_PASSWORD` del `.env`)* |
+| Grafana | http://localhost:3000  *(`admin` / `GRAFANA_PASSWORD` del `.env`)* |
+| RabbitMQ | http://localhost:15672  *(`cerebro` / `RABBITMQ_PASS` del `.env`)* |
 | Jaeger | http://localhost:16686 |
+| Qdrant | http://localhost:6333/dashboard |
 
 **Opciones:**
 - `bash up.sh --with-telegram` — incluye Tailscale Funnel para webhooks Telegram (pide `TS_AUTHKEY`).

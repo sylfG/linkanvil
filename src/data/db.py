@@ -80,8 +80,16 @@ class DatabaseManager:
                     tenant_id,
                 )
             raw = row["audit_policy"] if row else None
-            if isinstance(raw, str):
-                raw = json.loads(raw)
+            # Defensa frente a filas con doble-encoding historico (el writer
+            # antiguo en api/main.py hacia json.dumps + codec.encoder=json.dumps
+            # y guardaba un JSONB string que envolvia el objeto). Tambien
+            # cubre el caso normal en pools sin codec, donde asyncpg
+            # devuelve el JSONB como str y requiere UN solo loads.
+            while isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (TypeError, ValueError):
+                    break
             if isinstance(raw, dict):
                 # Solo aceptamos keys y values conocidos; el resto se ignora
                 # para no propagar configuraciones rotas a la decisión.

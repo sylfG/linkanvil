@@ -1186,12 +1186,16 @@ async def update_audit_policy(
     comparte memoria, así que la invalidación local del API es
     cosmética; el escalado real depende del TTL de 60s.
     """
-    policy_json = json.dumps(req.policy)
+    # asyncpg pool ya tiene registrado un codec JSONB con encoder=json.dumps
+    # (ver src/api/database.py::_init_conn). Si pasamos json.dumps(policy) el
+    # codec lo encodea OTRA vez y la columna acaba con doble-encoding (un
+    # JSONB string conteniendo el objeto). Pasar el dict directo deja que
+    # el codec haga una sola conversion y guarda el objeto JSONB correcto.
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE usuarios SET audit_policy = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
-            policy_json, str(user["id"]),
+            req.policy, str(user["id"]),
         )
     try:
         from src.data.db import DatabaseManager

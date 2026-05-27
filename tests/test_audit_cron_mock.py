@@ -6,31 +6,36 @@ from src.data.audit_cron import run_audit_cron
 
 @pytest.mark.asyncio
 async def test_audit_cron_two_phase():
-    """El cron en dos fases (F-05.1 + F-05.2):
+    """El cron en dos fases (F-05.1 + F-05.2) tras migración 0012:
 
     Fase A — caducidad → cuarentena:
-      1. UPDATE recursos ... SET estado='cuarentena' RETURNING id, url
-      2. Por cada recurso → SELECT tenants en usuario_recursos
-      3. Por cada tenant → INSERT outbox_eventos 'recurso.cuarentena'
+      1. UPDATE usuario_recursos FROM recursos … SET estado='cuarentena'
+         RETURNING ur.tenant_id, r.id, r.url
+      2. Por cada fila → INSERT outbox_eventos 'recurso.cuarentena'
 
     Fase B — gracia agotada → expirado:
-      4. UPDATE recursos ... SET estado='expirado' RETURNING id, url
-      5. Por cada recurso → SELECT tenants
-      6. Por cada tenant → INSERT outbox_eventos 'recurso.expirado'
+      3. UPDATE usuario_recursos … SET estado='expirado'
+         RETURNING ur.tenant_id, r.id, r.url
+      4. Por cada fila → INSERT outbox_eventos 'recurso.expirado'
     """
-    cuarentena_row = {"id": "11111111-1111-1111-1111-111111111111", "url": "http://stale.com"}
-    expira_row = {"id": "22222222-2222-2222-2222-222222222222", "url": "http://very-stale.com"}
-    tenant_row = {"tenant_id": "tenant_A"}
+    cuarentena_row = {
+        "tenant_id": "tenant_A",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "url": "http://stale.com",
+    }
+    expira_row = {
+        "tenant_id": "tenant_A",
+        "id": "22222222-2222-2222-2222-222222222222",
+        "url": "http://very-stale.com",
+    }
 
     mock_conn = AsyncMock()
-    # Orden esperado:
-    #   fetch[0] = UPDATE → cuarentena (devuelve 1 fila)
-    #   fetch[1] = SELECT tenants para esa fila
-    #   fetch[2] = UPDATE → expirado (devuelve 1 fila)
-    #   fetch[3] = SELECT tenants para esa fila
+    # Orden esperado (migración 0012):
+    #   fetch[0] = UPDATE → cuarentena (devuelve 1 fila con tenant ya incluido)
+    #   fetch[1] = UPDATE → expirado (devuelve 1 fila)
     mock_conn.fetch.side_effect = [
-        [cuarentena_row], [tenant_row],
-        [expira_row], [tenant_row],
+        [cuarentena_row],
+        [expira_row],
     ]
 
     mock_acquire_context = AsyncMock()
@@ -48,16 +53,17 @@ async def test_audit_cron_two_phase():
 
         result = await run_audit_cron()
 
-        # Fase A — UPDATE a cuarentena
+        # Fase A — UPDATE a cuarentena (sobre usuario_recursos, no recursos)
         update_a_sql = mock_conn.fetch.call_args_list[0][0][0]
-        assert "UPDATE recursos" in update_a_sql
+        assert "UPDATE usuario_recursos" in update_a_sql
         assert "estado = 'cuarentena'" in update_a_sql
         assert "quarantine_reason = 'caducidad'" in update_a_sql
-        assert "estado = 'activo'" in update_a_sql
+        assert "ur.estado = 'activo'" in update_a_sql
+        assert "RETURNING ur.tenant_id" in update_a_sql
 
         # Fase B — UPDATE a expirado
-        update_b_sql = mock_conn.fetch.call_args_list[2][0][0]
-        assert "UPDATE recursos" in update_b_sql
+        update_b_sql = mock_conn.fetch.call_args_list[1][0][0]
+        assert "UPDATE usuario_recursos" in update_b_sql
         assert "estado = 'expirado'" in update_b_sql
         assert "quarantine_grace_until" in update_b_sql
 

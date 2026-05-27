@@ -22,9 +22,8 @@ async def test_audit_cron_two_phase_lifecycle():
             fresh_id = await conn.fetchval(
                 """
                 INSERT INTO recursos (url, url_hash, titulo, volatilidad,
-                                       fecha_caducidad, estado)
-                VALUES ($1, $2, 'fresh', 'baja',
-                        NOW() + INTERVAL '10 day', 'activo')
+                                       temporal_class)
+                VALUES ($1, $2, 'fresh', 'baja', 'evento')
                 ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                 RETURNING id
                 """,
@@ -35,9 +34,8 @@ async def test_audit_cron_two_phase_lifecycle():
             stale_id = await conn.fetchval(
                 """
                 INSERT INTO recursos (url, url_hash, titulo, volatilidad,
-                                       fecha_caducidad, estado)
-                VALUES ($1, $2, 'stale', 'alta',
-                        NOW() - INTERVAL '1 day', 'activo')
+                                       temporal_class)
+                VALUES ($1, $2, 'stale', 'alta', 'evento')
                 ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                 RETURNING id
                 """,
@@ -48,23 +46,38 @@ async def test_audit_cron_two_phase_lifecycle():
             grace_expired_id = await conn.fetchval(
                 """
                 INSERT INTO recursos (url, url_hash, titulo, volatilidad,
-                                       estado, quarantined_at, quarantine_reason,
-                                       quarantine_grace_until)
-                VALUES ($1, $2, 'grace_expired', 'media',
-                        'cuarentena', NOW() - INTERVAL '40 day',
-                        'caducidad', (NOW() - INTERVAL '1 day')::DATE)
+                                       temporal_class)
+                VALUES ($1, $2, 'grace_expired', 'media', 'evento')
                 ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                 RETURNING id
                 """,
                 "http://grace-expired.example.com", "hash_two_phase_grace",
             )
 
-            for rid in (fresh_id, stale_id, grace_expired_id):
-                await conn.execute(
-                    """INSERT INTO usuario_recursos (tenant_id, recurso_id)
-                       VALUES ($1, $2) ON CONFLICT DO NOTHING""",
-                    tenant_id, rid,
-                )
+            # Migración 0012: estado y fechas viven en usuario_recursos.
+            await conn.execute(
+                """INSERT INTO usuario_recursos (
+                        tenant_id, recurso_id, estado, fecha_caducidad
+                    ) VALUES ($1, $2, 'activo', (NOW() + INTERVAL '10 day')::DATE)""",
+                tenant_id, fresh_id,
+            )
+            await conn.execute(
+                """INSERT INTO usuario_recursos (
+                        tenant_id, recurso_id, estado, fecha_caducidad
+                    ) VALUES ($1, $2, 'activo', (NOW() - INTERVAL '1 day')::DATE)""",
+                tenant_id, stale_id,
+            )
+            await conn.execute(
+                """INSERT INTO usuario_recursos (
+                        tenant_id, recurso_id, estado,
+                        quarantined_at, quarantine_reason, quarantine_grace_until
+                    ) VALUES (
+                        $1, $2, 'cuarentena',
+                        NOW() - INTERVAL '40 day', 'caducidad',
+                        (NOW() - INTERVAL '1 day')::DATE
+                    )""",
+                tenant_id, grace_expired_id,
+            )
 
         result = await run_audit_cron()
         assert result["cuarentenados"] >= 1
@@ -72,20 +85,26 @@ async def test_audit_cron_two_phase_lifecycle():
 
         async with db.pool.acquire() as conn:
             fresh_state = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1", fresh_id,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, fresh_id,
             )
             assert fresh_state == "activo"
 
             stale_row = await conn.fetchrow(
                 """SELECT estado, quarantine_reason, quarantine_grace_until
-                   FROM recursos WHERE id = $1""", stale_id,
+                   FROM usuario_recursos
+                   WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, stale_id,
             )
             assert stale_row["estado"] == "cuarentena"
             assert stale_row["quarantine_reason"] == "caducidad"
             assert stale_row["quarantine_grace_until"] is not None
 
             expired_state = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1", grace_expired_id,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, grace_expired_id,
             )
             assert expired_state == "expirado"
 

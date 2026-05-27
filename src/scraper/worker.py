@@ -208,6 +208,18 @@ class ScraperWorker:
                         tenant_id, recurso_id, decision,
                     )
                     await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
+                    # Si la policy del tenant aplica cuarentena al reusar,
+                    # emitir tambien recurso.cuarentena para que el notifier
+                    # cree la campanita. El badge de cuarentena ya cuenta
+                    # bien (usuario_recursos.estado), pero sin este evento
+                    # la campana se queda muda hasta el siguiente refresh
+                    # de fallback (1 min).
+                    if decision["estado"] == "cuarentena":
+                        await self.db.emit_quarantine_event_for_reuse(
+                            tenant_id, trace_id, recurso_id, url,
+                            motivo=decision["quarantine_reason"] or "evento_pasado",
+                            titulo=existing.get("titulo"),
+                        )
                     logger.info(
                         f"[{trace_id}] Recurso reusado ({recurso_id}) — saltando scrape+LLM; "
                         f"estado={decision['estado']} auto_archive={decision['auto_archive_pending']}"

@@ -209,7 +209,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, temporal_class, valor_archivistico, fecha_evento,
+                SELECT id, titulo, temporal_class, valor_archivistico, fecha_evento,
                        useful_life_days,
                        (contenido IS NOT NULL AND length(contenido) > 0) AS has_contenido
                 FROM recursos WHERE url_hash = $1
@@ -434,6 +434,46 @@ class DatabaseManager:
 
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")
         return recurso_id
+
+    async def emit_quarantine_event_for_reuse(
+        self,
+        tenant_id: str,
+        trace_id: str,
+        recurso_id: str,
+        url: str,
+        motivo: str,
+        titulo: str | None = None,
+    ) -> None:
+        """Emite outbox `recurso.cuarentena` cuando el scraper fast-path
+        ha aplicado la policy y el resultado es cuarentena.
+
+        El emit_reuse_event va siempre (lo consume el embedder para
+        copiar el vector Qdrant). Pero el notifier-worker filtra por
+        RELEVANT_EVENTS = {cuarentena, expirado, rescatado} y NO crea
+        notificacion para `recurso.reusado`. Sin este evento extra, la
+        campana queda muda aunque la fila usuario_recursos este en
+        cuarentena."""
+        if not self.pool:
+            await self.connect()
+        payload = {
+            "event_origin": "scraper_worker_reuse",
+            "trace_id": trace_id,
+            "recurso_id": str(recurso_id),
+            "url": url,
+            "motivo": motivo,
+            "titulo": titulo,
+        }
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO outbox_eventos (
+                    tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
+                ) VALUES (
+                    $1, 'recurso', $2::uuid, 'recurso.cuarentena', $3::jsonb
+                )
+                """,
+                tenant_id, recurso_id, json.dumps(payload),
+            )
 
     async def emit_reuse_event(self, tenant_id: str, trace_id: str, recurso_id: str, url: str) -> None:
         """Emite un evento outbox `recurso.reusado` para que el embedder copie

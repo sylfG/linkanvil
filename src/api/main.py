@@ -1752,6 +1752,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                         "vector": vector,
                         "filter": {"must": [tenant_filter]},
                         "limit": 10,
+                        "score_threshold": 0.40,
                         "with_payload": True,
                     }
                     # Buscamos chunks de contenido (no resúmenes de recurso):

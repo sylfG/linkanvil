@@ -430,13 +430,34 @@ class EmbedderWorker:
 
                     await self._inject_to_qdrant(recurso_id, tenant_id, vector, ext_info, url, trace_id)
                     await self._compute_semantic_collisions(recurso_id, tenant_id, vector, ext_info, trace_id)
-                    # `estado` es global: ya estará en 'activo' por el primer tenant.
 
                     # Clonar chunks RAG desde el tenant origen (si existen);
                     # si no, re-chunkear `contenido` desde Postgres.
                     await self._replicate_or_build_chunks(
                         recurso_id, tenant_id, url, ext_info.get("title", ""), trace_id,
                     )
+
+                    # Migracion 0012: `estado` es PER-TENANT (usuario_recursos),
+                    # no global. El scraper fast-path ya escribio la fila con
+                    # 'procesando' / 'cuarentena' / 'expirado' segun la policy
+                    # del nuevo tenant. Si quedo en 'procesando' (caso evergreen
+                    # o evento futuro), nos toca cerrar la transicion al final
+                    # del embedding igual que en la rama normal.
+                    # `update_recurso_estado` tiene guards (WHERE estado='procesando')
+                    # asi que no pisa cuarentena/expirado ya escritos por el
+                    # scraper bajo politica estricta.
+                    auto_archive = await self._fetch_auto_archive_flag(tenant_id, recurso_id)
+                    target_estado = "expirado" if auto_archive else "activo"
+                    await self.db.update_recurso_estado(tenant_id, recurso_id, target_estado)
+                    logger.info(
+                        f"[{trace_id}] [reused] Estado per-tenant actualizado a '{target_estado}' "
+                        f"para ID {recurso_id} (auto_archive={auto_archive})"
+                    )
+                    if auto_archive:
+                        await self._emit_auto_archive_event(
+                            tenant_id, recurso_id, url,
+                            ext_info.get("title") or url, trace_id,
+                        )
                 else:
                     # Rama normal: nuevo recurso global, generar embedding desde cero.
                     keywords_str = ','.join(ext_info.get('keywords', []))

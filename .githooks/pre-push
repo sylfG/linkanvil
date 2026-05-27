@@ -6,6 +6,7 @@ Fail-open si LiteLLM no responde.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -154,7 +155,10 @@ def main() -> None:
         )
         sys.exit(1)
 
-    response = litellm_client.send_prompt(prompt)
+    # Pre-push uses a stronger model by default to avoid false positives that
+    # would otherwise block legitimate pushes. Override with PRE_PUSH_MODEL.
+    model = os.getenv("PRE_PUSH_MODEL", "cerebro-pro")
+    response = litellm_client.send_prompt(prompt, model=model, max_tokens=900)
 
     if response is None:
         sys.exit(0)

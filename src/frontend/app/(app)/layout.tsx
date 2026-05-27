@@ -559,8 +559,8 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
       if (document.visibilityState === "visible") refreshCounts();
     };
     document.addEventListener("visibilitychange", onVis);
-    // Red de seguridad (5 min) ahora que SSE está activo.
-    const interval = setInterval(refreshCounts, 5 * 60_000);
+    // Red de seguridad (1 min) — solo dispara si el SSE se cae.
+    const interval = setInterval(refreshCounts, 60_000);
     return () => {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);

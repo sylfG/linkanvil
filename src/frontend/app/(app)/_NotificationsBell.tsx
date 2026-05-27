@@ -94,8 +94,8 @@ export function NotificationsBell({ token }: { token: string | null }) {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVis);
-    // Polling como red de seguridad (5 min) ahora que SSE está activo.
-    const interval = setInterval(refresh, 5 * 60_000);
+    // Red de seguridad (1 min) — solo dispara si el SSE se cae.
+    const interval = setInterval(refresh, 60_000);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       clearInterval(interval);

@@ -60,7 +60,7 @@ class OutboxPublisher:
                         )
 
                         if not rows:
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(0.5)
                             continue
 
                         exchange = await self.channel.get_exchange(self.exchange_name)

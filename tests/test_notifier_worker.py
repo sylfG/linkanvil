@@ -40,8 +40,8 @@ async def test_process_inserts_notification_and_skips_telegram_when_no_chat():
         # Recurso del que extrae el título
         async with db.pool.acquire() as conn:
             rid = await conn.fetchval(
-                """INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado)
-                   VALUES ($1, $2, 'Worker test', 'media', 'activo')
+                """INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+                   VALUES ($1, $2, 'Worker test', 'media')
                    ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                    RETURNING id""",
                 "http://worker-test.example/1", "hash_worker_no_chat",
@@ -108,8 +108,8 @@ async def test_process_continues_when_redis_publish_fails():
     try:
         async with db.pool.acquire() as conn:
             rid = await conn.fetchval(
-                """INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado)
-                   VALUES ($1, $2, 'Pub fail', 'media', 'activo')
+                """INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+                   VALUES ($1, $2, 'Pub fail', 'media')
                    ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                    RETURNING id""",
                 "http://worker-test.example/pubfail", "hash_worker_pubfail",
@@ -169,8 +169,8 @@ async def test_process_sends_telegram_when_user_has_chat_id():
                 user_email, tenant_id,
             )
             rid = await conn.fetchval(
-                """INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado)
-                   VALUES ($1, $2, 'Test con chat', 'media', 'activo')
+                """INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+                   VALUES ($1, $2, 'Test con chat', 'media')
                    ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                    RETURNING id""",
                 "http://worker-test.example/2", "hash_worker_with_chat",

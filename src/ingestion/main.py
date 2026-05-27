@@ -224,6 +224,9 @@ async def telegram_webhook_user(token_hash: str, request: Request):
         result = await ingest_url(ingest_req)
         return {"status": "processed", "result": result}
 
+    except HTTPException:
+        # 404 por token desconocido — re-emitir tal cual; no debe ser tragado por el catch-all.
+        raise
     except Exception as e:
         logger.error(f"Error en telegram_webhook_user: {e}")
         return {"status": "error", "detail": str(e)}

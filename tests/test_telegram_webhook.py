@@ -59,6 +59,9 @@ def test_telegram_webhook_valid_url(mock_redis, mock_deduplicator, mock_rabbit):
     en la cola de ingesta con el tenant_id resuelto desde Redis."""
     mock_redis.get = AsyncMock(return_value=TENANT_FOR_TOKEN)
     mock_redis.set = AsyncMock(return_value=None)
+    # ingest_url usa redis_client.incr/expire para rate-limit; mockear async.
+    mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.expire = AsyncMock(return_value=True)
     mock_rabbit.publish_ingestion_message = AsyncMock()
     mock_deduplicator.is_new_item = AsyncMock(return_value=True)
 
@@ -91,6 +94,8 @@ def test_telegram_webhook_no_urls(mock_redis, mock_deduplicator, mock_rabbit):
     """Edge case: el mensaje no contiene URLs → ignored sin publicar."""
     mock_redis.get = AsyncMock(return_value=TENANT_FOR_TOKEN)
     mock_redis.set = AsyncMock(return_value=None)
+    mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.expire = AsyncMock(return_value=True)
     mock_rabbit.publish_ingestion_message = AsyncMock()
     mock_deduplicator.is_new_item = AsyncMock(return_value=True)
 

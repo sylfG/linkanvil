@@ -30,14 +30,20 @@ def test_f002_api_gateway_happy_path_headers():
     # Mockeamos el RabbitMQPublisher y el Deduplicator para no depender de infraestructura viva en el test unitario.
     with patch('src.ingestion.main.deduplicator') as mock_dedup, \
          patch('src.ingestion.main.rabbit_publisher') as mock_pub:
-        
-        mock_dedup.is_new_item.return_value = True
+
+        # `is_new_item` es async — debe ser AsyncMock, no MagicMock con return_value
+        # (de lo contrario el endpoint falla con "object bool can't be used in
+        # 'await' expression").
+        mock_dedup.is_new_item = AsyncMock(return_value=True)
         mock_pub.publish_ingestion_message = AsyncMock()
 
         response = client.post("/ingest", json=payload, headers=headers)
-        
-        assert response.status_code == 200, "Happy Path debería retornar HTTP 200/202 desde el Gateway simulado."
-        
+
+        # /ingest declara status_code=202 (Accepted). Aceptamos 200/202 por
+        # compatibilidad futura.
+        assert response.status_code in (200, 202), \
+            f"Happy Path debería retornar 200/202, fue {response.status_code}"
+
         data = response.json()
         assert data["trace_id"] == trace_id, "Debe mantener la traza Trace ID (Requisito Técnico)."
         assert data["status"] == "Accepted & Published"
@@ -61,11 +67,13 @@ def test_f002_api_gateway_edge_case_fallback_dlq():
 
     with patch('src.ingestion.main.deduplicator') as mock_dedup, \
          patch('src.ingestion.main.rabbit_publisher') as mock_pub:
-        
-        mock_dedup.is_new_item.return_value = True
-        
+
+        mock_dedup.is_new_item = AsyncMock(return_value=True)
+
         # Simulamos que la publicación normal falla (Caída del puente/LLM/Network)
-        mock_pub.publish_ingestion_message.side_effect = Exception("RabbitMQ Connection Reset by Peer")
+        mock_pub.publish_ingestion_message = AsyncMock(
+            side_effect=Exception("RabbitMQ Connection Reset by Peer"),
+        )
 
         response = client.post("/ingest", json=payload)
         

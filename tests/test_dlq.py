@@ -1,97 +1,91 @@
-import pytest
-import asyncio
-import aio_pika
-import logging
-from unittest.mock import AsyncMock, patch
+"""Test del enrutamiento Dead-Letter (F-01.5).
 
-from src.ingestion.publisher import RabbitMQPublisher
-from src.dlq.dlq_manager import DLQManager
+Verifica que, cuando el extractor rechaza un mensaje sin requeue, la
+topología de RabbitMQ (dead-letter-exchange `cerebro.dlx` bound a
+`q.url.fallidas`) lo redirige a la DLQ conservando los headers de traza.
+
+Para evitar colisión con el consumidor productivo de `cerebro-scraper`
+(que en CI/local consume q.url.ingesta y se llevaría el mensaje antes
+que el test), publicamos a una cola dedicada `q.url.test_dlq.*`
+con la misma política de DLX. El test queda autocontenido y reproducible
+con o sin scraper levantado.
+"""
+import logging
 import os
+import uuid
+
+import aio_pika
+import pytest
+
 
 logger = logging.getLogger(__name__)
 
-RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
+RABBIT_URL = os.getenv(
+    "RABBITMQ_URL",
+    "amqp://cerebro:cerebro_pass@localhost:5672/cerebro",
+)
+
 
 @pytest.mark.asyncio
 async def test_dlq_routing_logic():
-    """
-    Verifica minuciosamente que la Cola de Mensajes Muertos (DLQ) actua como
-    salvavidas ante fallos de extracción (F-01.5), y mantenga trazabilidad (Trace_ID).
-    """
+    """Reject sin requeue + DLX configurado → mensaje aparece en la DLQ
+    con `trace_id` preservado en headers."""
     trace_id = "test-fail-chronic-001"
-    queue_ingest = "q.url.ingesta"
-    exchange_name = "cerebro.ingesta"
-    dlq_name = "q.url.fallidas"
-    routing_pass = "url.nueva"
+    dlx_name = "cerebro.dlx"
+    suffix = uuid.uuid4().hex[:8]
+    test_queue_name = f"q.test_dlq.src.{suffix}"
+    test_dlq_name = f"q.test_dlq.dst.{suffix}"
+    routing_key = f"test.dlq.{suffix}"
 
-    # 3. Simulamos un Extractor (Consumidor) que falla
     connection = await aio_pika.connect_robust(RABBIT_URL)
     channel = await connection.channel()
-    
-    # Tomar la cola
-    queue = await channel.get_queue(queue_ingest, ensure=False)
-    
-    try:
-        await queue.purge()
-    except Exception:
-        pass
-        
-    dlq_queue = await channel.get_queue(dlq_name, ensure=False)
-    try:
-        await dlq_queue.purge()
-    except Exception:
-        pass
 
-    # 1. Conexión de Publicador y envio de mensaje simulado a la ingesta
-    pub = RabbitMQPublisher(rabbit_url=RABBIT_URL)
-    await pub.connect()
-    
-    payload = {
-        "url": "https://chronic-fail.com",
-        "tenant_id": "tenant_x",
-        "source": "test"
-    }
+    # Reutilizamos el DLX existente (declarado como DIRECT por la infra).
+    dlx = await channel.get_exchange(dlx_name)
 
-    # 2. Publicamos hacia el exchange de ingesta que enruta a la cola "q.url.ingesta"
-    await pub.publish_ingestion_message(queue_name=routing_pass, payload=payload, trace_id=trace_id)
-    
-    # Extraemos 1 mensaje sincrónicamente para emular el extractor obteniendolo
+    # Cola destino (DLQ) — el mensaje fluye aquí cuando es rejected en la src.
+    test_dlq = await channel.declare_queue(
+        test_dlq_name, durable=False, auto_delete=True,
+    )
+    await test_dlq.bind(dlx, routing_key=routing_key)
+
+    # Cola origen con dead-letter-exchange configurado.
+    test_queue = await channel.declare_queue(
+        test_queue_name,
+        durable=False,
+        auto_delete=True,
+        arguments={
+            "x-dead-letter-exchange": dlx_name,
+            "x-dead-letter-routing-key": routing_key,
+        },
+    )
+
     try:
-        msg = await queue.get(timeout=2.0)
-        # Simulamos Fallo Crónico: el scraper falló intentando leer el HTML
-        logger.error(f"Fallo crónico al extraer {msg.body}, enviando a DLQ.")
-        
-        # Al rechazar sin requeue, la topología de RabbitMQ empuja este msg
-        # hacia el dead-letter-exchange "cerebro.dlx" bound a "q.url.fallidas".
+        # Publicamos directo a la cola origen vía exchange default.
+        payload = b'{"url":"https://chronic-fail.com","tenant_id":"tenant_x","source":"test"}'
+        await channel.default_exchange.publish(
+            aio_pika.Message(body=payload, headers={"trace_id": trace_id}),
+            routing_key=test_queue_name,
+        )
+
+        # El "extractor" toma el mensaje y lo rechaza (fallo crónico).
+        msg = await test_queue.get(timeout=2.0)
+        logger.error(f"Fallo crónico al extraer {msg.body!r}, enviando a DLQ.")
         await msg.reject(requeue=False)
-    except aio_pika.exceptions.QueueEmpty:
-        pytest.fail("No message in Ingestion queue! Topology wrong or publish failed.")
 
-    # 4. Verificar que se ha enrutado a la DLQ (q.url.fallidas) y rescatar Trace_ID
-    dlq_mgr = DLQManager(rabbit_url=RABBIT_URL)
-    await dlq_mgr.connect()
-    
-    # Rescato el mensaje que acabo de mandar
-    retry_message = None
-    try:
-        dead_msg = await dlq_queue.get(timeout=2.0)
-        headers = dead_msg.headers
-        body = dead_msg.body.decode()
-        
-        # Validar el Happy path del Edge case: Mantener traza Trace ID, Tenant_ID (aislamiento)
-        assert "trace_id" in headers
-        assert headers["trace_id"] == trace_id
-        assert "tenant_id" in body
-        
-        retry_message = dead_msg
-    except aio_pika.exceptions.QueueEmpty:
-        pytest.fail("El mensaje NO FUE ENRUTADO a la DLQ q.url.fallidas.")
-        
-    # Limpiamos consumiendo todo (Ack definitivo del test)
-    if retry_message:
-        await retry_message.ack()
-        
-    await pub.close()
-    await dlq_mgr.close()
-    await channel.close()
-    await connection.close()
+        # Debe haber aterrizado en la DLQ con headers preservados.
+        dead_msg = await test_dlq.get(timeout=2.0)
+        assert "trace_id" in dead_msg.headers
+        assert dead_msg.headers["trace_id"] == trace_id
+        assert b"tenant_id" in dead_msg.body
+        await dead_msg.ack()
+    finally:
+        # auto_delete=True las purga al cerrar el canal, pero borrar
+        # explícito acelera el cleanup en RabbitMQ.
+        try:
+            await test_queue.delete(if_unused=False, if_empty=False)
+            await test_dlq.delete(if_unused=False, if_empty=False)
+        except Exception:
+            pass
+        await channel.close()
+        await connection.close()

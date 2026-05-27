@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.scraper.strategy import ScraperContext, BlockedContentError
 from src.scraper._retry import with_retries
 from src.data.db import DatabaseManager
+from src.data.audit_decision import compute_audit_decision
 from src.data.heartbeat import start_heartbeat
 from src.telemetry import configure_telemetry, trace_operation
 
@@ -185,28 +186,34 @@ class ScraperWorker:
 
                 logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Recibida URL: {url}")
 
-                # 0. Reuso global: si la URL ya existe en `recursos` con estado='activo'
-                # y la caducidad está lejos, asociarla al tenant y pedir al embedder
-                # que copie el punto Qdrant existente — saltamos scrape + LLM.
+                # 0. Reuso global: si la URL ya existe en `recursos`, evitamos
+                # re-scrape + re-LLM. Pero la DECISIÓN DE AUDITORÍA es
+                # per-tenant (migración 0012): aplicamos la policy del nuevo
+                # tenant sobre la metadata almacenada (temporal_class,
+                # valor_archivistico, fecha_evento, useful_life_days). Sin
+                # esto, el segundo tenant heredaría silenciosamente el
+                # estado del primero (issue #123 escenario B).
                 existing = await self.db.find_existing_recurso_by_url(url)
-                margin = timedelta(days=REUSE_FRESHNESS_MARGIN_DAYS)
-                if existing and existing["estado"] == "activo":
-                    fecha_cad = existing["fecha_caducidad"]
-                    fresh = (fecha_cad is None) or (fecha_cad > (datetime.utcnow().date() + margin))
-                    # No reusamos si el recurso aún no tiene `contenido`: los
-                    # ingestados antes del chunking carecen de él y, sin
-                    # contenido, el RAG por chunks no puede responder. Forzar
-                    # un re-scrape los rellena en el primer reuso.
-                    has_contenido = bool(existing.get("has_contenido"))
-                    if fresh and has_contenido:
-                        recurso_id = str(existing["id"])
-                        await self.db.link_user_to_recurso(tenant_id, recurso_id)
-                        await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
-                        logger.info(
-                            f"[{trace_id}] Recurso reusado ({recurso_id}) — saltando scrape+LLM"
-                        )
-                        await message.ack()
-                        return
+                if existing and existing.get("has_contenido"):
+                    policy = await self.db._get_user_audit_policy(tenant_id)
+                    decision = compute_audit_decision(
+                        temporal_class=existing.get("temporal_class") or "evento",
+                        valor_archivistico=existing.get("valor_archivistico") or "medio",
+                        fecha_evento=existing.get("fecha_evento"),
+                        useful_life_days=existing.get("useful_life_days"),
+                        policy=policy,
+                    )
+                    recurso_id = str(existing["id"])
+                    await self.db.upsert_usuario_recurso_estado(
+                        tenant_id, recurso_id, decision,
+                    )
+                    await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
+                    logger.info(
+                        f"[{trace_id}] Recurso reusado ({recurso_id}) — saltando scrape+LLM; "
+                        f"estado={decision['estado']} auto_archive={decision['auto_archive_pending']}"
+                    )
+                    await message.ack()
+                    return
 
                 # 0.5 Pre-insert placeholder para feedback visual inmediato en KB.
                 # save_with_outbox lo enriquecerá vía ON CONFLICT DO UPDATE.
@@ -230,7 +237,7 @@ class ScraperWorker:
                     # no es un fallo técnico recuperable).
                     if placeholder_id:
                         try:
-                            await self.db.quarantine_recurso_blocked(placeholder_id)
+                            await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
                         except Exception as qe:
                             logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
                     logger.info(f"[{trace_id}] Recurso bloqueado por anti-bot, en cuarentena: {url}")
@@ -247,7 +254,7 @@ class ScraperWorker:
                 if len(clean_text.strip()) < 300:
                     if placeholder_id:
                         try:
-                            await self.db.quarantine_recurso_blocked(placeholder_id)
+                            await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
                         except Exception as qe:
                             logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
                     logger.info(
@@ -284,7 +291,7 @@ class ScraperWorker:
                 # visible para que el usuario decida (rescatar / eliminar).
                 if placeholder_id:
                     try:
-                        await self.db.quarantine_recurso_blocked(placeholder_id)
+                        await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
                         logger.info(f"[{trace_id}] Placeholder movido a cuarentena tras fallo: {url}")
                     except Exception as qe:
                         logger.error(f"[{trace_id}] Fallo marcando cuarentena post-error: {qe}")

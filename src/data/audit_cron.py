@@ -60,28 +60,22 @@ async def _emit_outbox_per_tenant(
     motivo: str,
     trace_id: str,
 ):
-    """Emite un evento outbox por cada tenant que tenga linkeado el recurso.
+    """Emite un evento outbox por cada transición per-tenant.
 
-    Usado por el cron de producción (`run_audit_cron`), donde una sola
-    transición puede afectar a varios tenants que comparten el recurso.
-    Internamente delega en `_emit_outbox_for_tenant` para un único
-    formato canónico de payload.
+    Migración 0012: el cron ahora hace UPDATE … RETURNING tenant_id,
+    así que cada row ya incluye el tenant cuyo estado cambió. No hace
+    falta buscar todos los tenants linkeados.
     """
     for row in rows:
-        tenants = await conn.fetch(
-            "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
+        await _emit_outbox_for_tenant(
+            conn,
+            row["tenant_id"],
             row["id"],
+            row["url"],
+            evento_tipo,
+            motivo,
+            trace_id,
         )
-        for t in tenants:
-            await _emit_outbox_for_tenant(
-                conn,
-                t["tenant_id"],
-                row["id"],
-                row["url"],
-                evento_tipo,
-                motivo,
-                trace_id,
-            )
 
 
 async def run_audit_cron() -> dict:
@@ -111,17 +105,19 @@ async def run_audit_cron() -> dict:
             # ----------------------------------------------------------------
             cuarentena_rows = await conn.fetch(
                 """
-                UPDATE recursos
+                UPDATE usuario_recursos ur
                 SET estado = 'cuarentena',
                     quarantined_at = NOW(),
                     quarantine_reason = 'caducidad',
                     quarantine_grace_until = (NOW() + ($1::int * INTERVAL '1 day'))::DATE,
                     updated_at = NOW()
-                WHERE estado = 'activo'
-                  AND temporal_class = 'evento'
-                  AND fecha_caducidad IS NOT NULL
-                  AND fecha_caducidad <= NOW()::DATE
-                RETURNING id, url
+                FROM recursos r
+                WHERE ur.recurso_id = r.id
+                  AND ur.estado = 'activo'
+                  AND r.temporal_class = 'evento'
+                  AND ur.fecha_caducidad IS NOT NULL
+                  AND ur.fecha_caducidad <= NOW()::DATE
+                RETURNING ur.tenant_id, r.id, r.url
                 """,
                 GRACE_PERIOD_DAYS,
             )
@@ -147,13 +143,15 @@ async def run_audit_cron() -> dict:
             # ----------------------------------------------------------------
             expira_rows = await conn.fetch(
                 """
-                UPDATE recursos
+                UPDATE usuario_recursos ur
                 SET estado = 'expirado',
                     updated_at = NOW()
-                WHERE estado = 'cuarentena'
-                  AND quarantine_grace_until IS NOT NULL
-                  AND quarantine_grace_until <= NOW()::DATE
-                RETURNING id, url
+                FROM recursos r
+                WHERE ur.recurso_id = r.id
+                  AND ur.estado = 'cuarentena'
+                  AND ur.quarantine_grace_until IS NOT NULL
+                  AND ur.quarantine_grace_until <= NOW()::DATE
+                RETURNING ur.tenant_id, r.id, r.url
                 """
             )
             expirados = len(expira_rows)
@@ -230,18 +228,25 @@ async def run_demo_audit_for_session(tenant_id: str, conn) -> dict:
             # `RETURNING url` permite emitir el outbox sin un segundo
             # query, y el guard `estado = 'activo'` hace la transición
             # idempotente si por alguna razón el recurso ya cambió.
+            # Migración 0012: el estado per-tenant vive en usuario_recursos.
+            # El demo intra-session aplica la transición solo al tenant
+            # de la sesión (no al recurso global compartido por seed).
             row = await conn.fetchrow(
                 """
-                UPDATE recursos
+                UPDATE usuario_recursos ur
                    SET estado = 'cuarentena',
                        quarantined_at = NOW(),
-                       quarantine_reason = $2,
+                       quarantine_reason = $3,
                        quarantine_grace_until = (NOW() + INTERVAL '30 days')::DATE,
                        updated_at = NOW()
-                 WHERE id = $1::uuid AND estado = 'activo'
-                 RETURNING id, url
+                  FROM recursos r
+                 WHERE ur.tenant_id = $2
+                   AND ur.recurso_id = $1::uuid
+                   AND ur.recurso_id = r.id
+                   AND ur.estado = 'activo'
+                 RETURNING r.id, r.url
                 """,
-                recurso_id, motivo or "caducidad",
+                recurso_id, tenant_id, motivo or "caducidad",
             )
             if row:
                 await _emit_outbox_for_tenant(
@@ -256,14 +261,18 @@ async def run_demo_audit_for_session(tenant_id: str, conn) -> dict:
         elif kind == "transition_expirado":
             row = await conn.fetchrow(
                 """
-                UPDATE recursos
+                UPDATE usuario_recursos ur
                    SET estado = 'expirado',
                        auto_archive_pending = false,
                        updated_at = NOW()
-                 WHERE id = $1::uuid AND estado IN ('activo', 'cuarentena')
-                 RETURNING id, url
+                  FROM recursos r
+                 WHERE ur.tenant_id = $2
+                   AND ur.recurso_id = $1::uuid
+                   AND ur.recurso_id = r.id
+                   AND ur.estado IN ('activo', 'cuarentena')
+                 RETURNING r.id, r.url
                 """,
-                recurso_id,
+                recurso_id, tenant_id,
             )
             if row:
                 await _emit_outbox_for_tenant(

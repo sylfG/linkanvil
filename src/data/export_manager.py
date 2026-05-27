@@ -25,7 +25,7 @@ class VaultExporter:
             rows = await conn.fetch(
                 """
                 SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
-                       r.volatilidad, r.estado, ur.created_at, r.fecha_caducidad
+                       r.volatilidad, ur.estado, ur.created_at, ur.fecha_caducidad
                 FROM recursos r
                 JOIN usuario_recursos ur ON ur.recurso_id = r.id
                 WHERE ur.tenant_id = $1

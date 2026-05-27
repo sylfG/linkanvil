@@ -461,10 +461,10 @@ class EmbedderWorker:
                     # autoritativa; el payload lo lleva como hint.
                     auto_archive = bool(payload.get("auto_archive_pending"))
                     if not auto_archive:
-                        auto_archive = await self._fetch_auto_archive_flag(recurso_id)
+                        auto_archive = await self._fetch_auto_archive_flag(tenant_id, recurso_id)
                     target_estado = "expirado" if auto_archive else "activo"
 
-                    await self.db.update_recurso_estado(recurso_id, target_estado)
+                    await self.db.update_recurso_estado(tenant_id, recurso_id, target_estado)
                     logger.info(
                         f"[{trace_id}] Estado actualizado a '{target_estado}' para ID {recurso_id} "
                         f"(auto_archive={auto_archive})"
@@ -524,16 +524,19 @@ class EmbedderWorker:
             return ""
         return (row["contenido"] or row["resumen"] or "") or ""
 
-    async def _fetch_auto_archive_flag(self, recurso_id: str) -> bool:
-        """Migración 0007: lee la columna `auto_archive_pending`. Se usa
-        cuando el evento outbox no llevaba el flag en el payload (rama
-        defensiva ante eventos antiguos en cola tras un deploy)."""
+    async def _fetch_auto_archive_flag(self, tenant_id: str, recurso_id: str) -> bool:
+        """Migración 0012: el flag es per-tenant. Lee
+        `usuario_recursos.auto_archive_pending` para (tenant_id, recurso_id).
+        Se usa cuando el evento outbox no llevaba el flag en el payload
+        (rama defensiva ante eventos antiguos en cola tras un deploy)."""
         if not self.db.pool:
             await self.db.connect()
         async with self.db.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT auto_archive_pending FROM recursos WHERE id = $1::uuid",
-                recurso_id,
+                """SELECT auto_archive_pending
+                     FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_id, recurso_id,
             )
         return bool(row and row["auto_archive_pending"])
 

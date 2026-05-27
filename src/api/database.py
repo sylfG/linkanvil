@@ -143,12 +143,9 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                     """
                     INSERT INTO recursos (
                         url, url_hash, titulo, resumen, categoria,
-                        estado, volatilidad, temporal_class,
-                        fecha_caducidad
+                        volatilidad, temporal_class
                     ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        'activo', 'media', 'evento',
-                        NULL
+                        $1, $2, $3, $4, $5, 'media', 'evento'
                     )
                     RETURNING id
                     """,
@@ -156,10 +153,13 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                     spec["categoria"],
                 )
                 recurso_ids.append(r_row["id"])
+                # Migración 0012: estado per-tenant en usuario_recursos.
+                # Los recursos staged arrancan en 'activo' — los demo_audit
+                # events los transicionarán a cuarentena/expirado a +5min.
                 await conn.execute(
                     """
-                    INSERT INTO usuario_recursos (tenant_id, recurso_id)
-                    VALUES ($1, $2)
+                    INSERT INTO usuario_recursos (tenant_id, recurso_id, estado)
+                    VALUES ($1, $2, 'activo')
                     """,
                     tenant_id, r_row["id"],
                 )
@@ -512,8 +512,9 @@ async def get_resources(
     `estado='_all'` que sí los incluye."""
     tenants = _as_tenant_list(tenant_id)
     p = await get_pool()
+    # Migración 0012: estado y fecha_caducidad son per-tenant.
     base = """SELECT r.id, r.url, r.titulo, r.resumen, r.categoria, r.tags,
-                     r.estado, r.volatilidad, r.fecha_caducidad,
+                     ur.estado, r.volatilidad, ur.fecha_caducidad,
                      ur.created_at, r.updated_at
               FROM recursos r
               JOIN usuario_recursos ur ON ur.recurso_id = r.id
@@ -525,12 +526,12 @@ async def get_resources(
         )
     elif estado and estado != "todos":
         rows = await p.fetch(
-            base + " AND r.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
+            base + " AND ur.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
             tenants, estado, limit,
         )
     else:
         rows = await p.fetch(
-            base + " AND r.estado NOT IN ('cuarentena','expirado')"
+            base + " AND ur.estado NOT IN ('cuarentena','expirado')"
                    " ORDER BY ur.created_at DESC LIMIT $2",
             tenants, limit,
         )
@@ -559,7 +560,7 @@ async def get_active_resource_ids(
         FROM recursos r
         JOIN usuario_recursos ur ON ur.recurso_id = r.id
         WHERE ur.tenant_id = ANY($1::text[])
-          AND r.estado = ANY($2::text[])
+          AND ur.estado = ANY($2::text[])
           AND r.id = ANY($3::uuid[])
         """,
         tenants, allowed_states, ids,
@@ -580,7 +581,7 @@ async def get_resources_for_rag(tenant_id, ids: list[str]) -> list[dict]:
         FROM recursos r
         JOIN usuario_recursos ur ON ur.recurso_id = r.id
         WHERE ur.tenant_id = ANY($1::text[])
-          AND r.estado = 'activo'
+          AND ur.estado = 'activo'
           AND r.id = ANY($2::uuid[])
         """,
         tenants, ids,
@@ -603,14 +604,14 @@ async def list_quarantine(tenant_id, limit: int = 100) -> list[dict]:
     p = await get_pool()
     rows = await p.fetch(
         """SELECT DISTINCT r.id, r.url, r.titulo, r.resumen, r.categoria,
-                  r.volatilidad, r.fecha_caducidad,
-                  r.quarantined_at, r.quarantine_reason, r.quarantine_grace_until,
-                  GREATEST(0, (r.quarantine_grace_until - NOW()::DATE))::int AS dias_restantes,
+                  r.volatilidad, ur.fecha_caducidad,
+                  ur.quarantined_at, ur.quarantine_reason, ur.quarantine_grace_until,
+                  GREATEST(0, (ur.quarantine_grace_until - NOW()::DATE))::int AS dias_restantes,
                   ur.created_at
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'cuarentena'
-           ORDER BY r.quarantine_grace_until ASC NULLS LAST
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'cuarentena'
+           ORDER BY ur.quarantine_grace_until ASC NULLS LAST
            LIMIT $2""",
         tenants, limit,
     )
@@ -624,7 +625,7 @@ async def count_quarantine(tenant_id) -> int:
         """SELECT COUNT(DISTINCT r.id) AS n
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'cuarentena'""",
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'cuarentena'""",
         tenants,
     )
     return int(row["n"])
@@ -636,16 +637,16 @@ async def list_expired(tenant_id, limit: int = 100) -> list[dict]:
     p = await get_pool()
     rows = await p.fetch(
         """SELECT DISTINCT r.id, r.url, r.titulo, r.resumen, r.categoria,
-                  r.volatilidad, r.fecha_caducidad,
-                  r.quarantined_at, r.quarantine_reason,
-                  CASE WHEN r.fecha_caducidad IS NULL THEN NULL
-                       ELSE GREATEST(0, (NOW()::DATE - r.fecha_caducidad))::int
+                  r.volatilidad, ur.fecha_caducidad,
+                  ur.quarantined_at, ur.quarantine_reason,
+                  CASE WHEN ur.fecha_caducidad IS NULL THEN NULL
+                       ELSE GREATEST(0, (NOW()::DATE - ur.fecha_caducidad))::int
                   END AS dias_desde_expiracion,
                   ur.created_at, r.updated_at
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'expirado'
-           ORDER BY r.fecha_caducidad DESC NULLS LAST
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'expirado'
+           ORDER BY ur.fecha_caducidad DESC NULLS LAST
            LIMIT $2""",
         tenants, limit,
     )
@@ -659,7 +660,7 @@ async def count_expired(tenant_id) -> int:
         """SELECT COUNT(DISTINCT r.id) AS n
            FROM recursos r
            JOIN usuario_recursos ur ON ur.recurso_id = r.id
-           WHERE ur.tenant_id = ANY($1::text[]) AND r.estado = 'expirado'""",
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'expirado'""",
         tenants,
     )
     return int(row["n"])
@@ -768,15 +769,18 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
         async with conn.transaction():
             if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
                 return None
+            # Migración 0012: rescue per-tenant. Solo el link del caller
+            # cambia; los otros tenants linkeados mantienen su estado.
+            # Recalcula fecha_caducidad desde volatilidad (sin LLM).
             row = await conn.fetchrow(
-                """UPDATE recursos
+                """UPDATE usuario_recursos ur
                    SET estado = 'activo',
                        quarantined_at = NULL,
                        quarantine_reason = NULL,
                        quarantine_grace_until = NULL,
                        fecha_caducidad = (NOW() + (
                            COALESCE(
-                               CASE volatilidad
+                               CASE r.volatilidad
                                    WHEN 'baja' THEN 365
                                    WHEN 'media' THEN 180
                                    WHEN 'alta' THEN 60
@@ -786,31 +790,25 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
                            ) * INTERVAL '1 day'
                        ))::DATE,
                        updated_at = NOW()
-                   WHERE id = $1::uuid AND estado IN ('cuarentena','expirado')
-                   RETURNING id, url, fecha_caducidad""",
-                recurso_id,
+                   FROM recursos r
+                   WHERE ur.recurso_id = r.id
+                     AND ur.tenant_id = $1
+                     AND ur.recurso_id = $2::uuid
+                     AND ur.estado IN ('cuarentena','expirado')
+                   RETURNING r.id, r.url, ur.fecha_caducidad""",
+                tenant_id, recurso_id,
             )
             if not row:
                 return None
-            # Fanout multi-tenant: emite outbox por cada tenant linkeado al
-            # recurso global — un recurso puede estar compartido entre N
-            # tenants (mismo patrón que quarantine_recurso y expire_recurso
-            # más arriba). Antes del audit 2026-05-19 esta función notificaba
-            # solo al caller, dejando huérfanos a otros tenants linkeados.
-            tenants = await conn.fetch(
-                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
-                row["id"],
+            await _emit_outbox(
+                conn, tenant_id, row["id"], "recurso.rescatado",
+                {
+                    "recurso_id": str(row["id"]),
+                    "url": row["url"],
+                    "rescued_by": tenant_id,
+                    "fecha_caducidad": row["fecha_caducidad"].isoformat(),
+                },
             )
-            for t in tenants:
-                await _emit_outbox(
-                    conn, t["tenant_id"], row["id"], "recurso.rescatado",
-                    {
-                        "recurso_id": str(row["id"]),
-                        "url": row["url"],
-                        "rescued_by": tenant_id,
-                        "fecha_caducidad": row["fecha_caducidad"].isoformat(),
-                    },
-                )
             return dict(row)
 
 
@@ -827,33 +825,34 @@ async def quarantine_recurso(
         async with conn.transaction():
             if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
                 return None
+            # Migración 0012: cuarentena manual per-tenant. Solo afecta el
+            # link del caller; otros tenants mantienen su estado.
             row = await conn.fetchrow(
-                """UPDATE recursos
+                """UPDATE usuario_recursos ur
                    SET estado = 'cuarentena',
                        quarantined_at = NOW(),
                        quarantine_reason = 'manual',
-                       quarantine_grace_until = (NOW() + ($2::int * INTERVAL '1 day'))::DATE,
+                       quarantine_grace_until = (NOW() + ($3::int * INTERVAL '1 day'))::DATE,
                        updated_at = NOW()
-                   WHERE id = $1::uuid AND estado IN ('activo','procesando')
-                   RETURNING id, url, quarantine_grace_until""",
-                recurso_id, grace_days,
+                   FROM recursos r
+                   WHERE ur.recurso_id = r.id
+                     AND ur.tenant_id = $1
+                     AND ur.recurso_id = $2::uuid
+                     AND ur.estado IN ('activo','procesando')
+                   RETURNING r.id, r.url, ur.quarantine_grace_until""",
+                tenant_id, recurso_id, grace_days,
             )
             if not row:
                 return None
-            tenants = await conn.fetch(
-                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
-                row["id"],
+            await _emit_outbox(
+                conn, tenant_id, row["id"], "recurso.cuarentena",
+                {
+                    "recurso_id": str(row["id"]),
+                    "url": row["url"],
+                    "motivo": "manual",
+                    "quarantined_by": tenant_id,
+                },
             )
-            for t in tenants:
-                await _emit_outbox(
-                    conn, t["tenant_id"], row["id"], "recurso.cuarentena",
-                    {
-                        "recurso_id": str(row["id"]),
-                        "url": row["url"],
-                        "motivo": "manual",
-                        "quarantined_by": tenant_id,
-                    },
-                )
             return dict(row)
 
 
@@ -866,29 +865,30 @@ async def expire_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
         async with conn.transaction():
             if not await _tenant_owns_recurso(conn, tenant_id, recurso_id):
                 return None
+            # Migración 0012: expire per-tenant. Solo el link del caller pasa
+            # a 'expirado'; otros tenants mantienen su estado.
             row = await conn.fetchrow(
-                """UPDATE recursos
+                """UPDATE usuario_recursos ur
                    SET estado = 'expirado', updated_at = NOW()
-                   WHERE id = $1::uuid AND estado != 'expirado'
-                   RETURNING id, url""",
-                recurso_id,
+                   FROM recursos r
+                   WHERE ur.recurso_id = r.id
+                     AND ur.tenant_id = $1
+                     AND ur.recurso_id = $2::uuid
+                     AND ur.estado != 'expirado'
+                   RETURNING r.id, r.url""",
+                tenant_id, recurso_id,
             )
             if not row:
                 return None
-            tenants = await conn.fetch(
-                "SELECT tenant_id FROM usuario_recursos WHERE recurso_id = $1",
-                row["id"],
+            await _emit_outbox(
+                conn, tenant_id, row["id"], "recurso.expirado",
+                {
+                    "recurso_id": str(row["id"]),
+                    "url": row["url"],
+                    "motivo": "manual",
+                    "expired_by": tenant_id,
+                },
             )
-            for t in tenants:
-                await _emit_outbox(
-                    conn, t["tenant_id"], row["id"], "recurso.expirado",
-                    {
-                        "recurso_id": str(row["id"]),
-                        "url": row["url"],
-                        "motivo": "manual",
-                        "expired_by": tenant_id,
-                    },
-                )
             return dict(row)
 
 

@@ -162,9 +162,16 @@ export default function ChatPage() {
   // La sesión se crea en lazy desde send() al primer mensaje, así
   // recargar la página sin escribir no genera conversaciones huérfanas.
 
-  // Load messages when active session changes (lazy)
+  // Load messages when active session changes (lazy).
+  // Distinguimos "sesión sin cargar" (messagesMap[id] === undefined)
+  // de "sesión cargada vacía" (messagesMap[id] === []). Sin esta
+  // distinción, una sesión recién creada localmente disparaba un GET
+  // /chats/id/messages que devolvía [] y sobreescribía el primer envío
+  // a mitad del streaming (banner reaparecía y la respuesta se perdía).
   useEffect(() => {
-    if (activeId && token && getMessages(activeId).length === 0) {
+    if (!activeId || !token) return;
+    const { messagesMap } = useChatStore.getState();
+    if (messagesMap[activeId] === undefined) {
       loadMessages(activeId, token).catch(() => {});
     }
   }, [activeId, token]);

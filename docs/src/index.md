@@ -10,6 +10,9 @@ hero:
       text: Empezar
       link: /0-resumen
     - theme: alt
+      text: ▶ Ver video
+      link: https://youtu.be/MVeKcTZOXS8
+    - theme: alt
       text: Épicas y Features
       link: /Extractor_de_Requisitos/1_epics_and_features
     - theme: alt

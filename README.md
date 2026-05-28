@@ -26,6 +26,18 @@
 
 ---
 
+## 🎬 Video de presentación
+
+<div align="center">
+  <a href="https://youtu.be/MVeKcTZOXS8" title="LinkAnvil — clic para ver en YouTube">
+    <img src="https://img.youtube.com/vi/MVeKcTZOXS8/maxresdefault.jpg" alt="LinkAnvil — video de presentación" width="640">
+  </a>
+  <br>
+  <sub>Recorrido por la arquitectura, el flujo de ingesta y la demo pública. ▶ <a href="https://youtu.be/MVeKcTZOXS8">Ver en YouTube</a></sub>
+</div>
+
+---
+
 ## 📑 Contenido
 
 - [a. Descripción general](#-descripcion-general) · [b. Stack tecnológico](#-stack-tecnologico) · [c. Instalación y ejecución](#-instalacion-y-ejecucion) · [d. Estructura del proyecto](#-estructura-del-proyecto) · [e. Funcionalidades principales](#-funcionalidades-principales)

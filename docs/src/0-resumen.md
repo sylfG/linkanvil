@@ -11,6 +11,23 @@
 
 ---
 
+## 🎬 Video de presentación
+
+<div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; margin: 1.5em 0;">
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/MVeKcTZOXS8"
+    title="LinkAnvil — video de presentación"
+    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; border-radius: 8px;"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    referrerpolicy="strict-origin-when-cross-origin"
+    allowfullscreen>
+  </iframe>
+</div>
+
+> Si el video no carga en tu navegador, ábrelo directamente en [YouTube](https://youtu.be/MVeKcTZOXS8).
+
+---
+
 ## Tabla de contenidos
 
 1. [Visión General del Proyecto](#visión-general-del-proyecto)

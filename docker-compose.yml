@@ -394,7 +394,9 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cerebro}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cerebro_pass}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-cerebro}
-      RABBITMQ_ERLANG_COOKIE: cerebro_erlang_cookie_secret
+      # Cookie de autenticacion entre nodos (single-node, no cluster).
+      # Obligatoria via .env para que no quede un literal en el repo.
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE must be set in .env}
       RABBITMQ_MANAGEMENT_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
     ports:
       - "127.0.0.1:5672:5672"    # AMQP

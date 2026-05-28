@@ -67,6 +67,7 @@ declare -A AUTO_VARS=(
     [POSTGRES_PASSWORD]="password:24:32"
     [REDIS_PASSWORD]="password:24:32"
     [RABBITMQ_PASS]="password:24:32"
+    [RABBITMQ_ERLANG_COOKIE]="hex:32"
     [N8N_PASSWORD]="password:18:24"
     [GRAFANA_PASSWORD]="password:18:24"
     [JWT_SECRET]="hex:32"

@@ -79,6 +79,22 @@ class DatabaseManager:
                     "SELECT audit_policy FROM usuarios WHERE tenant_id = $1",
                     tenant_id,
                 )
+                # Demo sub-tenants (demo_XXXXX) no tienen su propia fila en
+                # usuarios — comparten el row del owner "user_demo_landing".
+                # Resolvemos via demo_sessions.user_id. Sin este fallback el
+                # scraper SIEMPRE ve DEFAULT_AUDIT_POLICY (Equilibrado)
+                # para sesiones demo aunque el usuario haya cambiado a
+                # Estricto/Permisivo via /profile (porque el endpoint
+                # escribe en user_demo_landing pero el scraper consulta
+                # por demo_XXXXX).
+                if row is None and tenant_id.startswith("demo_"):
+                    row = await conn.fetchrow(
+                        """SELECT u.audit_policy
+                           FROM usuarios u
+                           JOIN demo_sessions ds ON ds.user_id = u.id
+                           WHERE ds.tenant_id = $1""",
+                        tenant_id,
+                    )
             raw = row["audit_policy"] if row else None
             # Defensa frente a filas con doble-encoding historico (el writer
             # antiguo en api/main.py hacia json.dumps + codec.encoder=json.dumps

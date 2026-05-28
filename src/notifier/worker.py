@@ -1,5 +1,5 @@
 """Notifier worker (F-05.3) — Avisa al usuario de transiciones del ciclo
-de obsolescencia: `recurso.cuarentena` y `recurso.expirado`.
+de obsolescencia: `recurso.cuarentena`, `recurso.expirado` y `recurso.rescatado`. Tambien `recurso.activado` cuando un recurso entra por primera vez en la BC.
 
 Consume de la fanout `cerebro.procesamiento` (a través de la cola dedicada
 `q.notifications`), crea una fila en `notificaciones` (feed in-app) y, si el
@@ -40,7 +40,7 @@ QUEUE_NAME = os.getenv("NOTIFIER_QUEUE", "q.notifications")
 REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
 
 # Sólo nos interesan estos eventos. El resto los ack-eamos sin tocar BD.
-RELEVANT_EVENTS = {"recurso.cuarentena", "recurso.expirado", "recurso.rescatado"}
+RELEVANT_EVENTS = {"recurso.cuarentena", "recurso.expirado", "recurso.rescatado", "recurso.activado"}
 
 REASON_LABELS = {
     "caducidad": "ha caducado",
@@ -81,6 +81,11 @@ def _human_message(evento_tipo: str, motivo: Optional[str], titulo: Optional[str
         )
     if evento_tipo == "recurso.rescatado":
         return f"♻️ Has rescatado \"{label}\" — vuelve a estar activo.\n{url}"
+    if evento_tipo == "recurso.activado":
+        return (
+            f"📚 Tu recurso \"{label}\" se ha añadido a tu Base de Conocimiento.\n"
+            f"{url}"
+        )
     return f"{evento_tipo}: {label}"
 
 

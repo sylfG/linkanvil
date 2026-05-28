@@ -1398,6 +1398,26 @@ async def get_resources(
 
 
 # ---------------------------------------------------------------------------
+# Base de Conocimiento — recursos `activo` del tenant + seed (badge sidebar)
+# ---------------------------------------------------------------------------
+
+@app.get("/resources/kb")
+async def list_kb(
+    count_only: bool = False,
+    limit: int = Query(100, gt=0, le=500),
+    user=Depends(get_current_user),
+):
+    """Lista o cuenta de recursos en estado `activo` linkeados al tenant.
+    Para sesiones demo incluye también el seed (`_tenant_ids_for` añade
+    `user_demo_landing`)."""
+    tenants = _tenant_ids_for(user)
+    if count_only:
+        return {"count": await db.count_active(tenants)}
+    items = await db.list_active(tenants, limit)
+    return {"items": items, "count": len(items)}
+
+
+# ---------------------------------------------------------------------------
 # Bandeja de cuarentena (F-05.2)
 # ---------------------------------------------------------------------------
 

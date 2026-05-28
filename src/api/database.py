@@ -666,6 +666,39 @@ async def count_expired(tenant_id) -> int:
     return int(row["n"])
 
 
+async def list_active(tenant_id, limit: int = 100) -> list[dict]:
+    """Recursos en `activo` linkeados al tenant. Slice 5: str|list.
+    Misma forma que list_quarantine — feed para sidebar/KB count."""
+    tenants = _as_tenant_list(tenant_id)
+    p = await get_pool()
+    rows = await p.fetch(
+        """SELECT DISTINCT r.id, r.url, r.titulo, r.resumen, r.categoria,
+                  r.volatilidad, ur.fecha_caducidad, ur.created_at
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'activo'
+           ORDER BY ur.created_at DESC
+           LIMIT $2""",
+        tenants, limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def count_active(tenant_id) -> int:
+    """Recursos `activo` para el badge "BC" del sidebar. Incluye seed
+    tenant para sesiones demo (UNION via _as_tenant_list)."""
+    tenants = _as_tenant_list(tenant_id)
+    p = await get_pool()
+    row = await p.fetchrow(
+        """SELECT COUNT(DISTINCT r.id) AS n
+           FROM recursos r
+           JOIN usuario_recursos ur ON ur.recurso_id = r.id
+           WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'activo'""",
+        tenants,
+    )
+    return int(row["n"])
+
+
 # ── notificaciones in-app (F-05.3) ────────────────────────────────────────────
 
 async def list_notifications(

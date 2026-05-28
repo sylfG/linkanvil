@@ -458,6 +458,11 @@ class EmbedderWorker:
                             tenant_id, recurso_id, url,
                             ext_info.get("title") or url, trace_id,
                         )
+                    else:
+                        await self._emit_activated_event(
+                            tenant_id, recurso_id, url,
+                            ext_info.get("title") or url, trace_id,
+                        )
                 else:
                     # Rama normal: nuevo recurso global, generar embedding desde cero.
                     keywords_str = ','.join(ext_info.get('keywords', []))
@@ -500,6 +505,10 @@ class EmbedderWorker:
                     # que el recurso fue archivado.
                     if auto_archive:
                         await self._emit_auto_archive_event(
+                            tenant_id, recurso_id, url, ext_info.get("title") or url, trace_id,
+                        )
+                    else:
+                        await self._emit_activated_event(
                             tenant_id, recurso_id, url, ext_info.get("title") or url, trace_id,
                         )
 
@@ -604,6 +613,49 @@ class EmbedderWorker:
             # sin notificación al usuario — molestia, no inconsistencia.
             logger.warning(
                 f"[{trace_id}] Fallo emitiendo outbox auto_archive para {recurso_id}: {e}"
+            )
+
+    async def _emit_activated_event(
+        self,
+        tenant_id: str,
+        recurso_id: str,
+        url: str,
+        titulo: str,
+        trace_id: str,
+    ) -> None:
+        """Tras transición procesando → activo del embedder, inserta en
+        outbox_eventos un evento `recurso.activado` para que el notifier
+        avise al usuario (feed in-app + SSE + Telegram). Sin esto, la
+        primera entrada de un recurso a la BC pasa silenciosa — solo
+        las transiciones del ciclo de vida (cuarentena/archivado/rescate)
+        notificaban. No se emite cuando el destino es 'expirado'
+        (auto-archive ya tiene su propio evento)."""
+        if not self.db.pool:
+            await self.db.connect()
+        payload = {
+            "event_origin": "embedder_worker",
+            "trace_id": trace_id,
+            "recurso_id": str(recurso_id),
+            "url": url,
+            "titulo": titulo,
+        }
+        try:
+            async with self.db.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO outbox_eventos (
+                        tenant_id, agregado_tipo, agregado_id,
+                        evento_tipo, payload
+                    ) VALUES (
+                        $1, 'recurso', $2::uuid, 'recurso.activado', $3::jsonb
+                    )
+                    """,
+                    tenant_id, recurso_id, json.dumps(payload),
+                )
+            logger.info(f"[{trace_id}] Outbox event recurso.activado emitido")
+        except Exception as e:
+            logger.warning(
+                f"[{trace_id}] Fallo emitiendo outbox recurso.activado para {recurso_id}: {e}"
             )
 
     async def _build_chunks_from_text(

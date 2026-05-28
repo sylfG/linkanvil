@@ -32,7 +32,7 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   label: string;
-  badge?: "quarantine" | "expired";
+  badge?: "quarantine" | "expired" | "kb";
 };
 
 // NAV base — compartido por demo y registered. Slice 6.2 añade
@@ -42,7 +42,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
-  { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
+  { href: "/kb", icon: BookOpen, label: "Base de Conocimiento", badge: "kb" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
   { href: "/expired", icon: CalendarX, label: "Archivados", badge: "expired" },
 ];
@@ -537,16 +537,19 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [quarantineCount, setQuarantineCount] = useState(0);
   const [expiredCount, setExpiredCount] = useState(0);
+  const [kbCount, setKbCount] = useState(0);
 
   const refreshCounts = useCallback(async () => {
     if (!token) return;
     try {
-      const [q, e] = await Promise.all([
+      const [q, e, k] = await Promise.all([
         apiCall<{ count: number }>("/resources/quarantine?count_only=true", {}, token),
         apiCall<{ count: number }>("/resources/expired?count_only=true", {}, token),
+        apiCall<{ count: number }>("/resources/kb?count_only=true", {}, token),
       ]);
       setQuarantineCount(q.count);
       setExpiredCount(e.count);
+      setKbCount(k.count);
     } catch {
       /* el badge es opcional, no rompemos el sidebar si la API falla */
     }
@@ -626,11 +629,14 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
           const active = pathname === href;
           const badgeCount =
             badge === "quarantine" ? quarantineCount :
-            badge === "expired" ? expiredCount : 0;
+            badge === "expired" ? expiredCount :
+            badge === "kb" ? kbCount : 0;
           const showBadge = !!badge && badgeCount > 0;
           const badgeCls =
             badge === "expired"
               ? "bg-red-700/40 text-red-200 border border-red-600/40"
+              : badge === "kb"
+              ? "bg-emerald-700/40 text-emerald-200 border border-emerald-600/40"
               : "bg-amber-700/40 text-amber-200 border border-amber-600/40";
           return (
             <Link

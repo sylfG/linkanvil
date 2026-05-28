@@ -215,8 +215,12 @@ inmediatamente — toda la ingesta es asíncrona.
      expirado, el embedder no lo resucita.
 
 **Resultado**: recurso en `activo`, vectores en dos colecciones de
-Qdrant, evento `recurso.procesado` propagado al notifier (que no emite
-nada visible para este tipo).
+Qdrant. El embedder emite además un evento `recurso.activado` (rama
+normal y rama reused) que el notifier convierte en notificación
+in-app + SSE + Telegram con el copy "📚 Tu recurso ... se ha añadido a
+tu Base de Conocimiento". Sin este evento, la primera entrada de un
+recurso a la BC pasaba silenciosa — solo las transiciones de
+cuarentena/archivado/rescate notificaban.
 
 ---
 
@@ -508,6 +512,7 @@ La única transición que toca Qdrant **eliminando** datos sigue siendo
 | `DELETE /resources/{id}` | JWT + CSRF | Limpia Qdrant si era el último tenant |
 | `POST /resources/audit-now` | JWT + CSRF | Rate-limit 5/min por tenant |
 | `POST /admin/audit-cron` | `X-Admin-Token` | Para n8n cron |
+| `GET /resources/kb` | JWT | Lista los recursos `activo` del tenant (+ seed en demo). Acepta `?count_only=true` → `{count}` (lo usa el badge "Base de Conocimiento" del sidebar). |
 | `GET /resources/quarantine` | JWT | Lista para UI `/quarantine`. Acepta `?count_only=true` → `{count}` (lo usa el badge del sidebar). |
 | `GET /resources/expired` | JWT | Lista para UI `/expired`. Acepta `?count_only=true` → `{count}` (lo usa el badge del sidebar). |
 
@@ -550,6 +555,7 @@ La única transición que toca Qdrant **eliminando** datos sigue siendo
 | `evento_tipo` | Lo emite | Lo consume |
 |---|---|---|
 | `recurso.procesado` | La transacción de ingesta tras el `INSERT` | **embedder** (whitelist), notifier (silencioso) |
+| `recurso.activado` | El embedder tras la transición `procesando → activo` (rama normal y rama reused) | notifier (in-app + Telegram), frontend (SSE) |
 | `recurso.reusado` | El emisor de reuso cuando aplica reuso cross-tenant | **embedder** (whitelist, copia vector) |
 | `recurso.cuarentena` | Fase A del cron, cuarentena manual, cuarentena por scrape bloqueado, colisión semántica | notifier (in-app + Telegram), frontend (SSE) |
 | `recurso.expirado` (motivos `gracia_agotada` / `manual` / `auto_archive`) | Fase B del cron (`gracia_agotada`), `expire` manual (`manual`), auto-archive del embedder (`auto_archive`) | notifier, frontend |
@@ -575,10 +581,10 @@ Telegram del tenant si está configurado.
 | `recurso.cuarentena` | `evento_pasado` | "tiene fecha pasada y requiere revisión" |
 | `recurso.expirado` | `gracia_agotada` | "agotó su período de gracia" |
 | `recurso.expirado` | `auto_archive` | Etiqueta corta: "tiene fecha pasada y se archivó automáticamente". Copy completo en Telegram: "se archivó automáticamente al detectar valor archivístico alto. Recuperable en el chat con el toggle Archivo ON." |
+| `recurso.activado` | — | "se ha añadido a tu Base de Conocimiento" |
 | `recurso.rescatado` | — | "vuelve a estar activo" |
 
-El icono en la campana también diferencia: 📦 para `auto_archive`,
-⚠️ para cuarentena, 🗑 para `gracia_agotada`, ♻️ para rescate.
+El icono en la campana también diferencia: 📚 para `recurso.activado` (entrada nueva a la BC), 📦 para `auto_archive`, ⚠️ para cuarentena, 🗑 para `gracia_agotada`, ♻️ para rescate.
 
 ### Pipeline de propagación de la notificación
 

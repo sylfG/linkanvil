@@ -9,9 +9,12 @@ import { startDemoSession } from "@/lib/demo";
 import HeroPattern from "@/components/illustrations/HeroPattern";
 
 // Vídeo de demostración del producto, abierto en modal vía el botón
-// "Ver cómo funciona". Cuando exista el asset definitivo, sustituir
-// /demo.mp4 por la URL final (puede ser un embed también).
-const DEMO_VIDEO_SRC = "/demo.mp4";
+// "Ver cómo funciona" → modal con el vídeo de demostración del producto.
+// Embebido como iframe de youtube-nocookie con autoplay=1 (justificado por
+// click explícito en el botón, no autoplay-on-load).
+const DEMO_VIDEO_ID = "wwhE5e3iO8Y";
+const DEMO_VIDEO_EMBED = `https://www.youtube-nocookie.com/embed/${DEMO_VIDEO_ID}?autoplay=1&rel=0&modestbranding=1`;
+const DEMO_VIDEO_WATCH = `https://youtu.be/${DEMO_VIDEO_ID}`;
 
 // Vídeo de presentación general (embebido inline en el hero como
 // reemplazo del antiguo ChatPreviewFrame). Usa youtube-nocookie
@@ -231,12 +234,22 @@ function VideoModal({ onClose }: { onClose: () => void }) {
         className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm"
         onClick={onClose}
       />
+      {/* Modal sizing — clave para que el 16:9 quepa entero:
+          · max-h-[92vh]: deja 8vh de aire arriba/abajo
+          · w-[min(96vw,1280px)]: ancho cap a 1280px en desktop, 96vw en
+            pantallas pequenas; 1280 da margen suficiente para que el
+            video no quede ridiculamente pequeno en monitores 4K
+          · flex flex-col + header/footer flex-shrink-0 + video wrapper
+            flex-1 min-h-0: el video crece y SE ENCOGE para llenar el
+            espacio libre verticalmente, manteniendo 16:9 via aspect-video
+            sobre un wrapper centrado dentro del flex-1
+      */}
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 20 }}
         transition={{ duration: 0.2 }}
-        className="fixed inset-4 md:inset-x-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[min(96vw,1100px)] md:max-h-[88vh] z-[61] bg-card border border-border rounded-2xl overflow-hidden flex flex-col"
+        className="fixed inset-4 md:inset-x-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[min(96vw,1280px)] md:max-h-[92vh] z-[61] bg-card border border-border rounded-2xl overflow-hidden flex flex-col"
       >
         <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-2 text-sm text-slate-200">
@@ -251,29 +264,41 @@ function VideoModal({ onClose }: { onClose: () => void }) {
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="relative bg-black aspect-video w-full">
-          <video
-            src={DEMO_VIDEO_SRC}
-            controls
-            playsInline
-            preload="metadata"
-            className="absolute inset-0 w-full h-full object-contain"
-          >
-            {/* Si el navegador no puede reproducirlo o el archivo no
-                existe todavía, se muestra el fallback de abajo. */}
-          </video>
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center px-6">
+
+        {/* Zona del video: flex-1 ocupa la altura libre del modal,
+            min-h-0 permite shrink dentro del flex column. Wrapper
+            interno con aspect-ratio: 16/9 + width 100% + max-h 100%
+            → si la altura derivada (W*9/16) excede el container, el
+            navegador clamps la altura y aspect-ratio shrinks el width
+            proporcionalmente. Resultado: el vídeo entero siempre
+            visible, centrado con letterboxing horizontal cuando el
+            modal es muy alto. */}
+        <div className="flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
+          <div className="relative aspect-video w-full max-h-full">
+            <iframe
+              src={DEMO_VIDEO_EMBED}
+              title="LinkAnvil — demostración"
+              className="absolute inset-0 w-full h-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              referrerPolicy="strict-origin-when-cross-origin"
+              allowFullScreen
+            />
             <noscript>
-              <p className="text-sm text-muted">
-                Necesitas JavaScript activado para ver el vídeo.
-              </p>
+              <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
+                <p className="text-sm text-muted">
+                  Necesitas JavaScript para ver el vídeo.{" "}
+                  <a href={DEMO_VIDEO_WATCH} className="text-accent-light hover:underline">
+                    Ábrelo en YouTube
+                  </a>
+                  .
+                </p>
+              </div>
             </noscript>
           </div>
         </div>
-        <div className="px-5 py-3 border-t border-border bg-bg/40 text-xs text-muted flex items-center justify-between gap-4">
-          <span>
-            ¿Sin sonido? Activa los altavoces. Duración aproximada: 90s.
-          </span>
+
+        <div className="px-5 py-3 border-t border-border bg-bg/40 text-xs text-muted flex items-center justify-between gap-4 flex-shrink-0">
+          <span>¿Sin sonido? Activa los altavoces.</span>
           <Link
             href="/login"
             className="text-accent-light hover:underline whitespace-nowrap"

@@ -3,10 +3,13 @@
 # No requiere sudo (asume que install-host.sh corrió antes).
 # Uso:
 #   bash up.sh                                    # arranque normal interactivo
-#   bash up.sh --with-telegram                    # incluye Tailscale Funnel
+#   bash up.sh --with-telegram                    # incluye Tailscale Funnel para webhook Telegram
+#   bash up.sh --public                           # expone frontend público vía Tailscale Funnel
+#   bash up.sh --private                          # fuerza modo privado (sin prompt público)
 #   bash up.sh --no-build                         # salta docker compose build
 #   bash up.sh --no-wait                          # no espera healthchecks
 #   bash up.sh --reconfigure-llm                  # reabre el prompt de proveedores LLM
+#   bash up.sh --reconfigure-public               # reabre el prompt de modo público (re-pide authkey)
 #
 # Modo no interactivo (CI/Ansible/Terraform):
 #   bash up.sh --non-interactive \
@@ -31,6 +34,8 @@ warn() { echo -e "${YELLOW}⚠${RESET}  $*"; }
 fail() { echo -e "${RED}✖ ERROR:${RESET} $*" >&2; exit 1; }
 
 WITH_TELEGRAM=false
+WITH_PUBLIC_FLAG=""           # "true" / "false" / "" (preguntar)
+RECONFIGURE_PUBLIC=false
 DO_BUILD=true
 DO_WAIT=true
 RECONFIGURE_LLM=false
@@ -42,7 +47,10 @@ declare -a CLI_ENV_KEYS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --with-telegram)    WITH_TELEGRAM=true; shift ;;
+        --with-telegram)        WITH_TELEGRAM=true; shift ;;
+        --public)               WITH_PUBLIC_FLAG=true; shift ;;
+        --private)              WITH_PUBLIC_FLAG=false; shift ;;
+        --reconfigure-public)   RECONFIGURE_PUBLIC=true; shift ;;
         --no-build)         DO_BUILD=false; shift ;;
         --no-wait)          DO_WAIT=false; shift ;;
         --reconfigure-llm)  RECONFIGURE_LLM=true; shift ;;
@@ -238,12 +246,104 @@ else
     warn "Skip build (--no-build)"
 fi
 
+# ── 5b. Modo público / privado (Tailscale Funnel frontend) ──────────────────
+upsert_env_key() {
+    local key="$1" value="$2"
+    local escaped
+    escaped=$(printf '%s' "$value" | sed -e 's/[\\/&|]/\\&/g')
+    if grep -q "^${key}=" .env 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${escaped}|" .env
+    else
+        echo "${key}=${value}" >> .env
+    fi
+}
+
+prompt_public_mode() {
+    local resp existing_hostname existing_authkey
+    existing_hostname=$(grep '^TS_PUBLIC_HOSTNAME=' .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+    existing_authkey=$(grep '^TS_AUTHKEY_WEB=' .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+
+    echo ""
+    echo -e "${BOLD}━━━ Modo de despliegue ━━━${RESET}"
+
+    if [[ -n "$existing_authkey" && -n "$existing_hostname" && "$RECONFIGURE_PUBLIC" == false ]]; then
+        echo "Tailscale Funnel ya está configurado:"
+        echo "  hostname: ${existing_hostname}"
+        echo "  authkey:  ${existing_authkey:0:18}…"
+        read -rp "¿Arrancar en modo público? [S/n]: " resp
+        [[ "$resp" =~ ^[nN] ]] && return 1
+        return 0
+    fi
+
+    echo ""
+    echo "LinkAnvil puede levantarse en dos modos:"
+    echo ""
+    echo -e "  ${BOLD}privado${RESET} → solo accesible desde la red interna del host (default)."
+    echo -e "  ${BOLD}público${RESET}  → frontend expuesto vía Tailscale Funnel en"
+    echo "            https://<hostname>.<tu-tailnet>.ts.net (HTTPS automático)."
+    echo "            Requiere un authkey de Tailscale."
+    echo ""
+
+    read -rp "¿Modo público? [s/N]: " resp
+    [[ ! "$resp" =~ ^[sSyY] ]] && return 1
+
+    echo ""
+    echo "Genera un authkey en: https://login.tailscale.com/admin/settings/keys"
+    echo "  · Reusable: ON   · Ephemeral: OFF"
+    echo ""
+
+    local new_hostname new_authkey
+    local default_hostname="${existing_hostname:-linkanvil}"
+    read -rp "Hostname Tailscale (sin .ts.net) [${default_hostname}]: " new_hostname
+    new_hostname="${new_hostname:-$default_hostname}"
+
+    while true; do
+        read -rp "Authkey (tskey-...): " new_authkey
+        if [[ "$new_authkey" =~ ^tskey- ]]; then
+            break
+        fi
+        warn "Formato inválido — debe empezar por 'tskey-'."
+    done
+
+    upsert_env_key "TS_PUBLIC_HOSTNAME" "$new_hostname"
+    upsert_env_key "TS_AUTHKEY_WEB" "$new_authkey"
+    ok "TS_PUBLIC_HOSTNAME y TS_AUTHKEY_WEB guardados en .env"
+    return 0
+}
+
+WITH_PUBLIC=false
+if [[ "$WITH_PUBLIC_FLAG" == "true" ]]; then
+    existing_hostname=$(grep '^TS_PUBLIC_HOSTNAME=' .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+    existing_authkey=$(grep '^TS_AUTHKEY_WEB=' .env 2>/dev/null | head -1 | cut -d= -f2- || echo "")
+    if [[ -z "$existing_hostname" || -z "$existing_authkey" ]]; then
+        if [[ "$NON_INTERACTIVE" == true ]]; then
+            fail "--public requiere TS_PUBLIC_HOSTNAME y TS_AUTHKEY_WEB en .env (modo non-interactive)."
+        fi
+        prompt_public_mode && WITH_PUBLIC=true
+    else
+        WITH_PUBLIC=true
+        ok "Modo público activado (config existente en .env)"
+    fi
+elif [[ "$WITH_PUBLIC_FLAG" == "false" ]]; then
+    WITH_PUBLIC=false
+    log "Modo privado forzado (--private)"
+elif [[ "$NON_INTERACTIVE" == true ]]; then
+    WITH_PUBLIC=false
+    log "Modo privado (default en non-interactive)"
+else
+    prompt_public_mode && WITH_PUBLIC=true
+fi
+
 # ── 6. Up ────────────────────────────────────────────────────────────────────
 log "Levantando servicios..."
 COMPOSE_ARGS=()
 $WITH_TELEGRAM && COMPOSE_ARGS+=(--profile telegram)
+$WITH_PUBLIC   && COMPOSE_ARGS+=(--profile public)
 docker compose "${COMPOSE_ARGS[@]}" up -d
-ok "Servicios iniciados$( $WITH_TELEGRAM && echo ' (perfil: telegram)' )"
+profiles_msg=""
+$WITH_TELEGRAM && profiles_msg+=" telegram"
+$WITH_PUBLIC   && profiles_msg+=" public"
+ok "Servicios iniciados${profiles_msg:+ (perfiles:${profiles_msg})}"
 
 # Si el config de LiteLLM cambió, force-recreate solo ese servicio para recargar.
 if $LITELLM_CONFIG_CHANGED; then
@@ -263,6 +363,20 @@ if $DO_WAIT; then
     fi
 else
     warn "Skip wait (--no-wait)"
+fi
+
+# ── 7b. URL pública (si modo público) ───────────────────────────────────────
+if $WITH_PUBLIC; then
+    log "Esperando a que Tailscale Funnel registre el nodo (~10 s)..."
+    sleep 10
+    funnel_url=$(docker logs cerebro-tailscale-web 2>&1 | grep -oE 'https://[a-zA-Z0-9.-]+\.ts\.net' | head -1 || true)
+    echo ""
+    if [[ -n "$funnel_url" ]]; then
+        echo -e "${GREEN}${BOLD}🌐 URL pública:${RESET}  ${funnel_url}"
+    else
+        warn "No se pudo extraer la URL Funnel del log del sidecar."
+        warn "Revisa: docker logs cerebro-tailscale-web"
+    fi
 fi
 
 # ── 8. Resumen ──────────────────────────────────────────────────────────────

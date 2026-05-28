@@ -937,6 +937,36 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
+  # 🔌 TAILSCALE FUNNEL — frontend público (cerebro-web)
+  #    Profile "public" → solo se levanta con: up.sh --public  o
+  #    `docker compose --profile public up -d`. NO se activa por defecto.
+  # ---------------------------------------------------------------------------
+  tailscale-web:
+    image: tailscale/tailscale:stable
+    container_name: cerebro-tailscale-web
+    profiles: ["public"]
+    restart: unless-stopped
+    hostname: ${TS_PUBLIC_HOSTNAME:-linkanvil}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY_WEB:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve-web.json
+      TS_HOSTNAME: ${TS_PUBLIC_HOSTNAME:-linkanvil}
+    volumes:
+      - tailscale-web-state:/var/lib/tailscale
+      - ./infra/tailscale/serve-web.json:/config/serve-web.json:ro
+    networks:
+      - cerebro-net
+    depends_on:
+      cerebro-web:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "tailscale status >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # 🔌 TAILSCALE FUNNEL — URL pública persistente para webhooks de Telegram
   #    Profile "telegram" para no levantarlo en entornos que no lo necesitan.
   # ---------------------------------------------------------------------------
@@ -981,6 +1011,8 @@ volumes:
   playwright-profile:
   tailscale-state:
     name: cerebro-tailscale-state
+  tailscale-web-state:
+    name: cerebro-tailscale-web-state
 
 # =============================================================================
 # NETWORK — todos los servicios comparten la misma red interna

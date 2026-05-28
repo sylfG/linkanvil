@@ -16,6 +16,10 @@ services:
       context: .
       dockerfile: infra/ingestion.Dockerfile
     container_name: cerebro-ingestion
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -55,6 +59,14 @@ services:
       context: .
       dockerfile: infra/scraper.Dockerfile
     container_name: cerebro-scraper
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777,size=512m
+      - /run:size=64m
     restart: unless-stopped
     shm_size: '1gb'
     deploy:
@@ -93,6 +105,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.data.outbox_publisher"]
     container_name: cerebro-outbox
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -125,6 +141,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.notifier.worker"]
     container_name: cerebro-notifier
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -157,6 +177,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.data.embedder_worker"]
     container_name: cerebro-embedder
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -219,6 +243,10 @@ services:
       context: .
       dockerfile: infra/api.Dockerfile
     container_name: cerebro-api
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -268,6 +296,10 @@ services:
       args:
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
     container_name: cerebro-web
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:

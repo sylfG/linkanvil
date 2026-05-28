@@ -30,6 +30,7 @@ TTL 60s in-process por ``user_id``. Mismo patrón que
 manual la dispara ``PUT /profile/llm-keys`` llamando a
 ``invalidate_llm_key_cache(user_id)`` tras el UPDATE.
 """
+
 from __future__ import annotations
 
 import time
@@ -56,9 +57,7 @@ def invalidate_llm_key_cache(user_id: str) -> None:
     _CACHE.pop(str(user_id), None)
 
 
-async def _load_keys(
-    conn: asyncpg.Connection, user_id: str
-) -> dict:
+async def _load_keys(conn: asyncpg.Connection, user_id: str) -> dict:
     row = await conn.fetchrow(
         """
         SELECT is_demo,
@@ -87,9 +86,7 @@ async def _load_keys(
     }
 
 
-async def resolve_llm_key(
-    conn: asyncpg.Connection, user_id: str, kind: KeyKind
-) -> str:
+async def resolve_llm_key(conn: asyncpg.Connection, user_id: str, kind: KeyKind) -> str:
     """Devuelve la virtual key del usuario para el alias ``kind``.
 
     Levanta ``HTTPException(402)`` si el user no es demo y no tiene

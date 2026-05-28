@@ -8,6 +8,7 @@ from typing import Optional
 from src.data.db import DatabaseManager
 
 from src.observability.logging import configure_json_logging
+
 configure_json_logging("audit-cron")
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,10 @@ async def _emit_outbox_for_tenant(
             $1, 'recurso', $2, $3, $4::jsonb
         )
         """,
-        tenant_id, recurso_id, evento_tipo, json.dumps(payload),
+        tenant_id,
+        recurso_id,
+        evento_tipo,
+        json.dumps(payload),
     )
 
 
@@ -135,7 +139,11 @@ async def run_audit_cron() -> dict:
                     f"[{trace_id}] {cuarentenados} recursos movidos a cuarentena."
                 )
                 await _emit_outbox_per_tenant(
-                    conn, cuarentena_rows, "recurso.cuarentena", "caducidad", trace_id,
+                    conn,
+                    cuarentena_rows,
+                    "recurso.cuarentena",
+                    "caducidad",
+                    trace_id,
                 )
 
             # ----------------------------------------------------------------
@@ -160,13 +168,15 @@ async def run_audit_cron() -> dict:
                     f"[{trace_id}] {expirados} recursos expirados tras período de gracia."
                 )
                 await _emit_outbox_per_tenant(
-                    conn, expira_rows, "recurso.expirado", "gracia_agotada", trace_id,
+                    conn,
+                    expira_rows,
+                    "recurso.expirado",
+                    "gracia_agotada",
+                    trace_id,
                 )
 
             if not cuarentena_rows and not expira_rows:
-                logger.info(
-                    f"[{trace_id}] Auditoría sin transiciones (BD al día)."
-                )
+                logger.info(f"[{trace_id}] Auditoría sin transiciones (BD al día).")
 
     except Exception as e:
         logger.error(f"[{trace_id}] Error durante la auditoría cron: {e}")
@@ -246,13 +256,20 @@ async def run_demo_audit_for_session(tenant_id: str, conn) -> dict:
                    AND ur.estado = 'activo'
                  RETURNING r.id, r.url
                 """,
-                recurso_id, tenant_id, motivo or "caducidad",
+                recurso_id,
+                tenant_id,
+                motivo or "caducidad",
             )
             if row:
                 await _emit_outbox_for_tenant(
-                    conn, tenant_id, row["id"], row["url"],
-                    "recurso.cuarentena", motivo or "caducidad",
-                    trace_id, event_origin="demo_audit",
+                    conn,
+                    tenant_id,
+                    row["id"],
+                    row["url"],
+                    "recurso.cuarentena",
+                    motivo or "caducidad",
+                    trace_id,
+                    event_origin="demo_audit",
                 )
                 counts["cuarentena"] += 1
             else:
@@ -272,13 +289,19 @@ async def run_demo_audit_for_session(tenant_id: str, conn) -> dict:
                    AND ur.estado IN ('activo', 'cuarentena')
                  RETURNING r.id, r.url
                 """,
-                recurso_id, tenant_id,
+                recurso_id,
+                tenant_id,
             )
             if row:
                 await _emit_outbox_for_tenant(
-                    conn, tenant_id, row["id"], row["url"],
-                    "recurso.expirado", motivo or "auto_archive",
-                    trace_id, event_origin="demo_audit",
+                    conn,
+                    tenant_id,
+                    row["id"],
+                    row["url"],
+                    "recurso.expirado",
+                    motivo or "auto_archive",
+                    trace_id,
+                    event_origin="demo_audit",
                 )
                 counts["expirado"] += 1
             else:
@@ -293,7 +316,9 @@ async def run_demo_audit_for_session(tenant_id: str, conn) -> dict:
 
         else:
             logger.warning(
-                "[%s] demo event kind desconocido: %r — saltado", trace_id, kind,
+                "[%s] demo event kind desconocido: %r — saltado",
+                trace_id,
+                kind,
             )
             counts["skipped"] += 1
 

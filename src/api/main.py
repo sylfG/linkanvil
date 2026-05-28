@@ -10,7 +10,16 @@ from typing import AsyncGenerator, Optional
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -49,7 +58,6 @@ from src.api.models import (
     RegisterRequest,
     SessionResponse,
     TelegramBotRequest,
-    TokenResponse,
     UserResponse,
 )
 
@@ -77,9 +85,12 @@ def _qdrant_chunk_point_id(recurso_id: str, tenant_id: str, chunk_idx: int) -> s
     """Mismo derivado que `src/data/embedder_worker.py::_qdrant_chunk_point_id`.
     Necesario para que los chunks inyectados desde el staging del demo
     convivan con los que pueda generar el embedder normal sin colisión."""
-    return str(uuid.uuid5(
-        _QDRANT_POINT_NS, f"{recurso_id}:{tenant_id}:chunk:{chunk_idx}",
-    ))
+    return str(
+        uuid.uuid5(
+            _QDRANT_POINT_NS,
+            f"{recurso_id}:{tenant_id}:chunk:{chunk_idx}",
+        )
+    )
 
 
 async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
@@ -114,7 +125,8 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+            "SELECT set_config('app.tenant_id', $1, true)",
+            tenant_id,
         )
         # Join con la cache por título (es el identificador estable
         # entre _STAGED_RECURSOS y la fila insertada). Si una entrada
@@ -156,7 +168,8 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
                 except Exception as exc:
                     logger.warning(
                         "demo staging RAG: no embeddings key disponible "
-                        "para fallback live: %s", exc,
+                        "para fallback live: %s",
+                        exc,
                     )
                     live_failed += 1
                     continue
@@ -177,7 +190,8 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
                 if er.status_code != 200:
                     logger.warning(
                         "demo staging RAG live: embedding %s falló %d",
-                        r["id"], er.status_code,
+                        r["id"],
+                        er.status_code,
                     )
                     live_failed += 1
                     continue
@@ -186,23 +200,26 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
             except Exception as exc:
                 logger.warning(
                     "demo staging RAG live: error embedding %s: %s",
-                    r["id"], exc,
+                    r["id"],
+                    exc,
                 )
                 live_failed += 1
                 continue
 
-        points.append({
-            "id": _qdrant_chunk_point_id(r["id"], tenant_id, 0),
-            "vector": vector,
-            "payload": {
-                "tenant_id": tenant_id,
-                "recurso_id": r["id"],
-                "url": r["url"],
-                "title": r["titulo"],
-                "chunk_idx": 0,
-                "chunk_text": chunk_text,
-            },
-        })
+        points.append(
+            {
+                "id": _qdrant_chunk_point_id(r["id"], tenant_id, 0),
+                "vector": vector,
+                "payload": {
+                    "tenant_id": tenant_id,
+                    "recurso_id": r["id"],
+                    "url": r["url"],
+                    "title": r["titulo"],
+                    "chunk_idx": 0,
+                    "chunk_text": chunk_text,
+                },
+            }
+        )
 
     if not points:
         return 0
@@ -215,19 +232,26 @@ async def _index_staged_for_rag(user_id: str, tenant_id: str) -> int:
         )
         if qr.status_code not in (200, 201):
             logger.warning(
-                "demo staging RAG: qdrant upsert falló %d", qr.status_code,
+                "demo staging RAG: qdrant upsert falló %d",
+                qr.status_code,
             )
             return 0
     except Exception as exc:
         logger.warning(
-            "demo staging RAG: qdrant upsert error: %s", exc,
+            "demo staging RAG: qdrant upsert error: %s",
+            exc,
         )
         return 0
 
     logger.info(
         "demo staging RAG: tenant=%s indexed=%d (cache=%d live=%d failed=%d) "
         "of %d staged",
-        tenant_id, len(points), cache_hits, live_hits, live_failed, len(rows),
+        tenant_id,
+        len(points),
+        cache_hits,
+        live_hits,
+        live_failed,
+        len(rows),
     )
     return len(points)
 
@@ -288,9 +312,7 @@ async def _qdrant_delete_tenant_points(tenant_id: str) -> None:
     if _http is None:
         return
     filter_body = {
-        "filter": {
-            "must": [{"key": "tenant_id", "match": {"value": tenant_id}}]
-        }
+        "filter": {"must": [{"key": "tenant_id", "match": {"value": tenant_id}}]}
     }
     for collection in ("cerebro_chunks", "cerebro_recursos"):
         try:
@@ -300,9 +322,7 @@ async def _qdrant_delete_tenant_points(tenant_id: str) -> None:
                 timeout=10.0,
             )
         except Exception as exc:
-            logger.warning(
-                "qdrant delete %s/%s failed: %s", collection, tenant_id, exc
-            )
+            logger.warning("qdrant delete %s/%s failed: %s", collection, tenant_id, exc)
 
 
 async def _process_due_demo_audits() -> None:
@@ -339,9 +359,12 @@ async def _process_due_demo_audits() -> None:
                     logger.info(
                         "demo audit fired: tenant=%s processed=%d "
                         "cuarentena=%d expirado=%d reminder=%d skipped=%d",
-                        result["tenant_id"], result["processed"],
-                        result["cuarentena"], result["expirado"],
-                        result["reminder"], result["skipped"],
+                        result["tenant_id"],
+                        result["processed"],
+                        result["cuarentena"],
+                        result["expirado"],
+                        result["reminder"],
+                        result["skipped"],
                     )
         except Exception:
             logger.exception("demo audit failed for tenant=%s", tenant_id)
@@ -391,6 +414,7 @@ async def _cleanup_demo_sessions_loop() -> None:
         except asyncio.CancelledError:
             raise
 
+
 _redis: Optional[aioredis.Redis] = None
 _http: Optional[httpx.AsyncClient] = None
 
@@ -399,7 +423,9 @@ _http: Optional[httpx.AsyncClient] = None
 async def lifespan(app: FastAPI):
     global _redis, _http
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-    _http = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=10.0))
+    _http = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=10.0)
+    )
 
     # Sanity checks de configuración crítica al arrancar — visibles en logs
     # para que el operador detecte deriva entre cerebro-api y cerebro-n8n
@@ -411,7 +437,10 @@ async def lifespan(app: FastAPI):
             "y el cron diario de n8n fallará en autenticación."
         )
     else:
-        logger.info("AUDIT_CRON_TOKEN configurado (longitud=%d)", len(os.getenv("AUDIT_CRON_TOKEN", "")))
+        logger.info(
+            "AUDIT_CRON_TOKEN configurado (longitud=%d)",
+            len(os.getenv("AUDIT_CRON_TOKEN", "")),
+        )
 
     # Slice 5: background task que limpia sub-tenants demo expirados.
     # Corre cada 60s — granularidad fina porque el TTL es de 15min y
@@ -449,6 +478,7 @@ app.add_middleware(
 # Auth dependency
 # ---------------------------------------------------------------------------
 
+
 async def get_current_user(
     authorization: str = Header(None),
     cerebro_session: str | None = Cookie(None),
@@ -466,7 +496,9 @@ async def get_current_user(
     elif authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
     if not token:
-        raise HTTPException(401, "Token requerido", headers={"X-Auth-Reason": "missing"})
+        raise HTTPException(
+            401, "Token requerido", headers={"X-Auth-Reason": "missing"}
+        )
     try:
         payload = verify_token(token)
     except TokenExpired:
@@ -475,7 +507,9 @@ async def get_current_user(
         raise HTTPException(401, "Token inválido", headers={"X-Auth-Reason": "invalid"})
     user = await db.get_user_by_id(payload["sub"])
     if not user:
-        raise HTTPException(401, "Usuario no encontrado", headers={"X-Auth-Reason": "no_user"})
+        raise HTTPException(
+            401, "Usuario no encontrado", headers={"X-Auth-Reason": "no_user"}
+        )
 
     # Slice 5: si el JWT lleva un sub-tenant de demo (formato demo_<8hex>)
     # validamos que la fila exista en demo_sessions y no esté expirada.
@@ -487,7 +521,10 @@ async def get_current_user(
         if not session:
             raise HTTPException(
                 401,
-                {"error": "demo_session_invalid", "message": "Tu sesión demo ya no existe."},
+                {
+                    "error": "demo_session_invalid",
+                    "message": "Tu sesión demo ya no existe.",
+                },
                 headers={"X-Auth-Reason": "demo_invalid"},
             )
         now = datetime.now(timezone.utc)
@@ -580,7 +617,8 @@ def _clear_auth_cookies(response: Response) -> None:
 
 
 async def _issue_refresh_token(
-    user: dict, session_tenant: Optional[str] = None,
+    user: dict,
+    session_tenant: Optional[str] = None,
 ) -> str:
     """Mint a new opaque refresh token, persist its hash in Redis, return raw.
 
@@ -592,12 +630,14 @@ async def _issue_refresh_token(
     raw = generate_refresh_token()
     if _redis is None:
         return raw
-    payload = json.dumps({
-        "user_id": str(user["id"]),
-        "tenant_id": user["tenant_id"],   # seed para demo, real para registered
-        "session_tenant": session_tenant,  # sub-tenant efímero o None
-        "email": user["email"],
-    })
+    payload = json.dumps(
+        {
+            "user_id": str(user["id"]),
+            "tenant_id": user["tenant_id"],  # seed para demo, real para registered
+            "session_tenant": session_tenant,  # sub-tenant efímero o None
+            "email": user["email"],
+        }
+    )
     await _redis.set(
         f"{REFRESH_REDIS_PREFIX}{hash_refresh_token(raw)}",
         payload,
@@ -626,7 +666,8 @@ async def verify_csrf(
     if not cerebro_session:
         return
     if not cerebro_csrf or not x_csrf_token or cerebro_csrf != x_csrf_token:
-        print(f"CSRF fail: cookie={cerebro_csrf}, header={x_csrf_token}"); raise HTTPException(403, "CSRF token mismatch")
+        print(f"CSRF fail: cookie={cerebro_csrf}, header={x_csrf_token}")
+        raise HTTPException(403, "CSRF token mismatch")
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +675,7 @@ async def verify_csrf(
 # Fails open if Redis is unavailable so a degraded cache never causes
 # a customer-visible outage.
 # ---------------------------------------------------------------------------
+
 
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for")
@@ -659,7 +701,7 @@ async def _rate_limit(key: str, limit: int, window_seconds: int) -> None:
 # contador y desactivar el form cuando se alcanzan.
 DEMO_QUOTAS = {
     "ingest": {"per_ip": 5, "global": 50},
-    "chat":   {"per_ip": 20, "global": 200},
+    "chat": {"per_ip": 20, "global": 200},
 }
 
 
@@ -739,7 +781,9 @@ async def rate_limit_login(request: Request) -> None:
 
 
 async def rate_limit_register(request: Request) -> None:
-    await _rate_limit(f"rl:register:{_client_ip(request)}", limit=3, window_seconds=3600)
+    await _rate_limit(
+        f"rl:register:{_client_ip(request)}", limit=3, window_seconds=3600
+    )
 
 
 async def requires_byok(user: dict = Depends(get_current_user)) -> dict:
@@ -788,6 +832,7 @@ async def rate_limit_audit(user: dict = Depends(get_current_user)) -> dict:
 # Auth
 # ---------------------------------------------------------------------------
 
+
 def _access_token_for(user: dict, tenant_id: Optional[str] = None) -> str:
     """Slice 5: ``tenant_id`` override permite emitir un JWT con un
     tenant distinto al del row de ``usuarios`` (necesario para sesiones
@@ -799,7 +844,9 @@ def _access_token_for(user: dict, tenant_id: Optional[str] = None) -> str:
 
 
 @app.post("/auth/register")
-async def register(req: RegisterRequest, response: Response, _=Depends(rate_limit_register)):
+async def register(
+    req: RegisterRequest, response: Response, _=Depends(rate_limit_register)
+):
     if await db.get_user_by_email(req.email):
         raise HTTPException(409, "Email ya registrado")
     hashed = get_password_hash(req.password)
@@ -870,7 +917,8 @@ async def rate_limit_demo_start(request: Request) -> None:
     # un bot que cree sesiones en masa quemaría el cupo global del seed.
     await _rate_limit(
         f"rl:demo_start:{_client_ip(request)}",
-        limit=10, window_seconds=60,
+        limit=10,
+        window_seconds=60,
     )
 
 
@@ -917,8 +965,7 @@ async def demo_start(
             {
                 "error": "demo_unavailable",
                 "message": (
-                    "El demo no está disponible en este momento. "
-                    "Inténtalo más tarde."
+                    "El demo no está disponible en este momento. Inténtalo más tarde."
                 ),
             },
         )
@@ -944,13 +991,16 @@ async def demo_start(
                     token = _access_token_for(user, tenant_id=existing_tenant)
                     csrf = _set_session_cookies(response, token)
                     refresh = await _issue_refresh_token(
-                        user, session_tenant=existing_tenant,
+                        user,
+                        session_tenant=existing_tenant,
                     )
                     _set_refresh_cookie(response, refresh)
                     remaining = int((expires_at - now).total_seconds())
                     logger.info(
                         "demo session resumed: tenant=%s ip=%s remaining=%ds",
-                        existing_tenant, ip, remaining,
+                        existing_tenant,
+                        ip,
+                        remaining,
                     )
                     return {
                         "access_token": token,
@@ -982,7 +1032,9 @@ async def demo_start(
     effective_tenant = session["tenant_id"]
     logger.info(
         "demo session created via demo-start: tenant=%s ip=%s expires=%s",
-        effective_tenant, ip, session["expires_at"].isoformat(),
+        effective_tenant,
+        ip,
+        session["expires_at"].isoformat(),
     )
 
     # Slice 6.4 — indexa los 3 recursos staged en Qdrant cerebro_chunks
@@ -991,7 +1043,9 @@ async def demo_start(
     # recursos específicos.
     try:
         indexed = await _index_staged_for_rag(str(user["id"]), effective_tenant)
-        logger.info("demo staged indexed for RAG: %d/3 (tenant=%s)", indexed, effective_tenant)
+        logger.info(
+            "demo staged indexed for RAG: %d/3 (tenant=%s)", indexed, effective_tenant
+        )
     except Exception:
         logger.exception("demo staging RAG: indexing failed (continuing)")
 
@@ -1028,14 +1082,20 @@ async def refresh_session(
     calls this transparently on 401(X-Auth-Reason=expired).
     """
     if not cerebro_refresh:
-        raise HTTPException(401, "Refresh token requerido", headers={"X-Auth-Reason": "no_refresh"})
+        raise HTTPException(
+            401, "Refresh token requerido", headers={"X-Auth-Reason": "no_refresh"}
+        )
     if _redis is None:
         raise HTTPException(503, "Refresh store no disponible")
 
     key = f"{REFRESH_REDIS_PREFIX}{hash_refresh_token(cerebro_refresh)}"
     raw_payload = await _redis.get(key)
     if not raw_payload:
-        raise HTTPException(401, "Refresh token inválido o expirado", headers={"X-Auth-Reason": "refresh_invalid"})
+        raise HTTPException(
+            401,
+            "Refresh token inválido o expirado",
+            headers={"X-Auth-Reason": "refresh_invalid"},
+        )
 
     # Rotate immediately to invalidate the presented refresh; if anything
     # downstream fails the user can re-login.
@@ -1044,11 +1104,15 @@ async def refresh_session(
     try:
         meta = json.loads(raw_payload)
     except (json.JSONDecodeError, TypeError):
-        raise HTTPException(401, "Refresh token corrupto", headers={"X-Auth-Reason": "refresh_invalid"})
+        raise HTTPException(
+            401, "Refresh token corrupto", headers={"X-Auth-Reason": "refresh_invalid"}
+        )
 
     user = await db.get_user_by_id(meta["user_id"])
     if not user:
-        raise HTTPException(401, "Usuario inexistente", headers={"X-Auth-Reason": "no_user"})
+        raise HTTPException(
+            401, "Usuario inexistente", headers={"X-Auth-Reason": "no_user"}
+        )
 
     # Slice 5: si el refresh estaba atado a una sesión demo, validamos
     # que sigue viva. Si expiró, 401 — el usuario debe re-loguear (lo
@@ -1124,7 +1188,9 @@ async def me(user=Depends(get_current_user)):
     if user.get("demo_session_expires_at"):
         kwargs["demo_session_expires_at"] = user["demo_session_expires_at"].isoformat()
     if user.get("demo_session_seconds_remaining") is not None:
-        kwargs["demo_session_seconds_remaining"] = user["demo_session_seconds_remaining"]
+        kwargs["demo_session_seconds_remaining"] = user[
+            "demo_session_seconds_remaining"
+        ]
     if raw_policy is not None:
         kwargs["audit_policy"] = raw_policy
     return UserResponse(**kwargs)
@@ -1133,6 +1199,7 @@ async def me(user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Profile / Telegram
 # ---------------------------------------------------------------------------
+
 
 @app.put("/profile/telegram")
 async def update_telegram(
@@ -1195,10 +1262,12 @@ async def update_audit_policy(
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE usuarios SET audit_policy = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
-            req.policy, str(user["id"]),
+            req.policy,
+            str(user["id"]),
         )
     try:
         from src.data.db import DatabaseManager
+
         DatabaseManager.invalidate_policy_cache(user["tenant_id"])
     except Exception:
         pass
@@ -1244,7 +1313,11 @@ async def update_llm_keys_endpoint(
         "embeddings": req.key_embeddings,
         "pro": req.key_pro,
     }
-    encrypted: dict[str, Optional[str]] = {"lite": None, "embeddings": None, "pro": None}
+    encrypted: dict[str, Optional[str]] = {
+        "lite": None,
+        "embeddings": None,
+        "pro": None,
+    }
     for kind, plaintext in plaintexts.items():
         if plaintext is None:
             continue
@@ -1255,7 +1328,9 @@ async def update_llm_keys_endpoint(
                 timeout=5.0,
             )
         except Exception as exc:
-            logger.warning("LiteLLM /v1/models unreachable validating %s: %s", kind, exc)
+            logger.warning(
+                "LiteLLM /v1/models unreachable validating %s: %s", kind, exc
+            )
             raise HTTPException(
                 400,
                 {"error": "litellm_unreachable", "kind": kind},
@@ -1341,6 +1416,7 @@ async def get_profile_quota(
 # Demo timeline (Slice 6) — frontend de la vista /demo
 # ---------------------------------------------------------------------------
 
+
 @app.get("/demo/timeline", response_model=DemoTimelineResponse)
 async def get_demo_timeline(user=Depends(get_current_user)):
     """Devuelve la línea temporal completa de la sesión demo del usuario.
@@ -1387,6 +1463,7 @@ async def get_demo_timeline(user=Depends(get_current_user)):
 # Resources (KB)
 # ---------------------------------------------------------------------------
 
+
 @app.get("/resources")
 async def get_resources(
     estado: str = "todos",
@@ -1400,6 +1477,7 @@ async def get_resources(
 # ---------------------------------------------------------------------------
 # Base de Conocimiento — recursos `activo` del tenant + seed (badge sidebar)
 # ---------------------------------------------------------------------------
+
 
 @app.get("/resources/kb")
 async def list_kb(
@@ -1420,6 +1498,7 @@ async def list_kb(
 # ---------------------------------------------------------------------------
 # Bandeja de cuarentena (F-05.2)
 # ---------------------------------------------------------------------------
+
 
 @app.get("/resources/quarantine")
 async def list_quarantine(
@@ -1450,6 +1529,7 @@ async def list_expired_endpoint(
 # ---------------------------------------------------------------------------
 # Notifications (F-05.3) — feed in-app de transiciones del ciclo de vida
 # ---------------------------------------------------------------------------
+
 
 @app.get("/notifications")
 async def list_notifications_endpoint(
@@ -1499,11 +1579,14 @@ async def audit_now(
     Sin token administrativo — la autenticación es la del usuario. El
     rate-limit (5/min por tenant) evita abuso desde la UI."""
     from src.data.audit_cron import run_audit_cron
+
     result = await run_audit_cron()
     logger.info(
         "MANUAL_AUDIT tenant=%s trace=%s cuarentenados=%d expirados=%d",
-        user["tenant_id"], result["trace_id"],
-        result["cuarentenados"], result["expirados"],
+        user["tenant_id"],
+        result["trace_id"],
+        result["cuarentenados"],
+        result["expirados"],
     )
     return {"status": "ok", **result}
 
@@ -1517,8 +1600,13 @@ async def rescue_resource(
     row = await db.rescue_recurso(user["tenant_id"], recurso_id)
     if not row:
         raise HTTPException(404, "Recurso no encontrado o no rescatable")
-    return {"status": "rescued", **{k: (v.isoformat() if hasattr(v, "isoformat") else str(v))
-                                     for k, v in row.items()}}
+    return {
+        "status": "rescued",
+        **{
+            k: (v.isoformat() if hasattr(v, "isoformat") else str(v))
+            for k, v in row.items()
+        },
+    }
 
 
 @app.post("/resources/{recurso_id}/quarantine")
@@ -1529,7 +1617,9 @@ async def quarantine_resource(
 ):
     row = await db.quarantine_recurso(user["tenant_id"], recurso_id)
     if not row:
-        raise HTTPException(404, "Recurso no encontrado o no está en estado cuarentenable")
+        raise HTTPException(
+            404, "Recurso no encontrado o no está en estado cuarentenable"
+        )
     return {
         "status": "quarantined",
         "id": str(row["id"]),
@@ -1640,6 +1730,7 @@ async def delete_resource(
 # Ingest (proxy to ingestion-api)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/ingest")
 async def ingest(
     req: IngestRequest,
@@ -1665,6 +1756,7 @@ async def ingest(
 # ---------------------------------------------------------------------------
 # SSE: reactive ingest stream
 # ---------------------------------------------------------------------------
+
 
 @app.get("/ingest/stream")
 async def ingest_stream(token: str):
@@ -1727,8 +1819,11 @@ async def resources_stream(token: str):
 # Chat (RAG + LiteLLM proxy with streaming)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/chat")
-async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(verify_csrf)):
+async def chat(
+    req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(verify_csrf)
+):
     context_block = ""
     hits: list = []
 
@@ -1744,9 +1839,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                 # las suyas. La key se asocia al user, no al tenant
                 # — necesario para que sub-tenants demo (sin row en
                 # usuarios) puedan resolverla.
-                tenant_emb_key = await _resolve_user_key(
-                    str(user["id"]), "embeddings"
-                )
+                tenant_emb_key = await _resolve_user_key(str(user["id"]), "embeddings")
                 headers = {
                     "Authorization": f"Bearer {tenant_emb_key}",
                     "Content-Type": "application/json",
@@ -1754,7 +1847,11 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                 er = await _http.post(
                     f"{LITELLM_URL}/v1/embeddings",
                     headers=headers,
-                    json={"model": "cerebro-embeddings", "input": last_user, "input_type": "query"},
+                    json={
+                        "model": "cerebro-embeddings",
+                        "input": last_user,
+                        "input_type": "query",
+                    },
                     timeout=15.0,
                 )
                 if er.status_code == 200:
@@ -1803,8 +1900,10 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                             )
                             active_set = set(active_ids)
                             hits = [
-                                h for h in raw_hits
-                                if str(h.get("payload", {}).get("recurso_id")) in active_set
+                                h
+                                for h in raw_hits
+                                if str(h.get("payload", {}).get("recurso_id"))
+                                in active_set
                             ]
                         if hits:
                             # Contexto = chunks ordenados por score; el texto ya
@@ -1818,7 +1917,7 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                                     continue
                                 frags.append(
                                     f"### {title}\n"
-                                    f"URL: {p.get('url','')}\n"
+                                    f"URL: {p.get('url', '')}\n"
                                     f"Fragmento (chunk {p.get('chunk_idx', 0)}):\n{chunk_txt}"
                                 )
                             if frags:
@@ -1859,17 +1958,22 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
 
     logger.info(
         "CHAT model=%s use_rag=%s hits=%d ctx_len=%d msgs=%d",
-        req.model, req.use_rag, len(hits), len(context_block), len(llm_msgs),
+        req.model,
+        req.use_rag,
+        len(hits),
+        len(context_block),
+        len(llm_msgs),
     )
 
     # Migración 0008 + Slice 5: resolvemos la virtual-key per-USUARIO
     # (no per-tenant) según el alias del modelo (cerebro-pro → pro,
     # resto → lite). Slice 5 cambió de tenant_id a user_id para que
     # sub-tenants demo (sin row en usuarios) sigan resolviendo.
-    tenant_chat_key = await _resolve_user_key(
-        str(user["id"]), _model_kind(req.model)
-    )
-    litellm_headers = {"Authorization": f"Bearer {tenant_chat_key}", "Content-Type": "application/json"}
+    tenant_chat_key = await _resolve_user_key(str(user["id"]), _model_kind(req.model))
+    litellm_headers = {
+        "Authorization": f"Bearer {tenant_chat_key}",
+        "Content-Type": "application/json",
+    }
 
     rag_sources = []
     if req.use_rag and hits:
@@ -1889,7 +1993,9 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                     "url": p.get("url", ""),
                     "score": score,
                 }
-        rag_sources = sorted(best_by_recurso.values(), key=lambda s: s["score"], reverse=True)
+        rag_sources = sorted(
+            best_by_recurso.values(), key=lambda s: s["score"], reverse=True
+        )
 
     async def _stream() -> AsyncGenerator[str, None]:
         if rag_sources:
@@ -1906,7 +2012,9 @@ async def chat(req: ChatRequest, user=Depends(rate_limit_chat), _csrf=Depends(ve
                         yield chunk
         except Exception as exc:
             logger.exception("CHAT stream failed: %s", exc)
-            err_payload = json.dumps({"type": "error", "message": "Error generando respuesta del modelo."})
+            err_payload = json.dumps(
+                {"type": "error", "message": "Error generando respuesta del modelo."}
+            )
             yield f"data: {err_payload}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -1921,7 +2029,9 @@ AUDIT_CRON_TOKEN = os.getenv("AUDIT_CRON_TOKEN", "")
 
 
 @app.post("/admin/audit-cron")
-async def trigger_audit_cron(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
+async def trigger_audit_cron(
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+):
     """Dispara la auditoría temporal en dos fases (caducidad → cuarentena →
     expirado). Pensado para un workflow n8n cron diario; se autentica por
     header `X-Admin-Token` contra la env `AUDIT_CRON_TOKEN`."""
@@ -1932,6 +2042,7 @@ async def trigger_audit_cron(x_admin_token: str | None = Header(None, alias="X-A
     # Import diferido: el cron toca DatabaseManager (asyncpg directo) en
     # vez del pool de la API, así que no compartimos conexiones.
     from src.data.audit_cron import run_audit_cron
+
     result = await run_audit_cron()
     return {"status": "ok", **result}
 
@@ -1967,20 +2078,34 @@ async def cleanup_demo_sessions(
 
 
 @app.post("/admin/cf-cookies")
-async def set_cf_cookies(req: CfCookiesRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
-    cookies = [{"name": "cf_clearance", "value": req.cf_clearance,
-                "domain": req.domain, "path": "/"}]
+async def set_cf_cookies(
+    req: CfCookiesRequest, user=Depends(get_current_user), _csrf=Depends(verify_csrf)
+):
+    cookies = [
+        {
+            "name": "cf_clearance",
+            "value": req.cf_clearance,
+            "domain": req.domain,
+            "path": "/",
+        }
+    ]
     if req.extra:
-        cookies.extend([
-            {"name": k, "value": v, "domain": req.domain, "path": "/"}
-            for k, v in req.extra.items()
-        ])
-    await _redis.setex(f"cf:cookies:{req.domain}", req.ttl_hours * 3600, json.dumps(cookies))
+        cookies.extend(
+            [
+                {"name": k, "value": v, "domain": req.domain, "path": "/"}
+                for k, v in req.extra.items()
+            ]
+        )
+    await _redis.setex(
+        f"cf:cookies:{req.domain}", req.ttl_hours * 3600, json.dumps(cookies)
+    )
     return {"status": "ok", "domain": req.domain, "expires_in_hours": req.ttl_hours}
 
 
 @app.delete("/admin/cf-cookies/{domain}")
-async def clear_cf_cookies(domain: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
+async def clear_cf_cookies(
+    domain: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)
+):
     await _redis.delete(f"cf:cookies:{domain}")
     return {"status": "ok"}
 
@@ -1988,6 +2113,7 @@ async def clear_cf_cookies(domain: str, user=Depends(get_current_user), _csrf=De
 # ---------------------------------------------------------------------------
 # Chat sessions & messages
 # ---------------------------------------------------------------------------
+
 
 def _session_out(row: dict) -> dict:
     return {
@@ -2020,7 +2146,9 @@ async def list_chats(
     offset: int = Query(0, ge=0),
     user=Depends(get_current_user),
 ):
-    sessions = await db.list_chat_sessions(user["tenant_id"], limit=limit, offset=offset)
+    sessions = await db.list_chat_sessions(
+        user["tenant_id"], limit=limit, offset=offset
+    )
     total = await db.count_chat_sessions(user["tenant_id"])
     return {
         "items": [_session_out(s) for s in sessions],
@@ -2039,7 +2167,9 @@ async def get_chat(session_id: str, user=Depends(get_current_user)):
 
 
 @app.delete("/chats/{session_id}")
-async def delete_chat(session_id: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)):
+async def delete_chat(
+    session_id: str, user=Depends(get_current_user), _csrf=Depends(verify_csrf)
+):
     deleted = await db.delete_chat_session(user["tenant_id"], session_id)
     if not deleted:
         raise HTTPException(404, "Sesión no encontrada")
@@ -2057,7 +2187,10 @@ async def get_messages(session_id: str, user=Depends(get_current_user)):
 
 @app.post("/chats/{session_id}/messages", response_model=list[MessageOut])
 async def append_messages(
-    session_id: str, body: list[MessageIn], user=Depends(get_current_user), _csrf=Depends(verify_csrf)
+    session_id: str,
+    body: list[MessageIn],
+    user=Depends(get_current_user),
+    _csrf=Depends(verify_csrf),
 ):
     session = await db.get_chat_session(user["tenant_id"], session_id)
     if not session:

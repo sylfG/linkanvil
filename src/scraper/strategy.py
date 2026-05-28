@@ -1,27 +1,39 @@
 import json
 import logging
 import os
+import os as _os
+import sys
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
-
-import sys, os as _os
-_here = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "ingestion"))
-sys.path.insert(0, _here)
-from _url_safety import validate_url, UnsafeURLError
 
 import httpx
 
 from src.scraper._retry import with_retries
+
+# Inyectamos src/ingestion/ en sys.path para reutilizar _url_safety sin
+# convertirlo en paquete instalable. La modificacion debe pasar antes
+# de la import line — ruff E402 se desactiva conscientemente aqui.
+_here = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "ingestion"))
+sys.path.insert(0, _here)
+from _url_safety import validate_url, UnsafeURLError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 DYNAMIC_SOURCES = {"telegram", "extension", "dynamic", "browser"}
 
 JS_HEAVY_DOMAINS = {
-    "medium.com", "towardsdatascience.com", "betterprogramming.pub",
-    "javascript.plainenglish.io", "levelup.gitconnected.com",
-    "substack.com", "notion.so", "twitter.com", "x.com",
-    "linkedin.com", "instagram.com", "facebook.com",
+    "medium.com",
+    "towardsdatascience.com",
+    "betterprogramming.pub",
+    "javascript.plainenglish.io",
+    "levelup.gitconnected.com",
+    "substack.com",
+    "notion.so",
+    "twitter.com",
+    "x.com",
+    "linkedin.com",
+    "instagram.com",
+    "facebook.com",
 }
 
 PROFILE_DIR = os.getenv("PLAYWRIGHT_PROFILE", "/data/playwright_profile")
@@ -71,12 +83,15 @@ class BasicHttpStrategy(ScraperStrategy):
         # follow_redirects=False: cada redirect debe re-validarse, no podemos
         # confiar en que el Location no apunte a un host interno.
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+
             async def _do():
                 current = url
                 for hop in range(5):  # max 5 redirects manuales
                     resp = await client.get(
                         current,
-                        headers={"User-Agent": "Mozilla/5.0 (compatible; LinkAnvil/1.0)"},
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; LinkAnvil/1.0)"
+                        },
                     )
                     if resp.status_code in (301, 302, 303, 307, 308):
                         next_url = resp.headers.get("location", "")
@@ -85,6 +100,7 @@ class BasicHttpStrategy(ScraperStrategy):
                             return resp.text
                         # Resolver relativos contra current
                         from urllib.parse import urljoin
+
                         next_url = urljoin(current, next_url)
                         try:
                             validate_url(next_url)
@@ -192,8 +208,11 @@ class ScraperContext:
         cuarentenar — Stealth ejecuta JS y suele recuperar el contenido."""
         try:
             from bs4 import BeautifulSoup
+
             soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+            for tag in soup(
+                ["script", "style", "nav", "footer", "header", "aside", "noscript"]
+            ):
                 tag.decompose()
             text = soup.get_text(separator=" ", strip=True)
             return len(text) < 300
@@ -209,34 +228,52 @@ class ScraperContext:
             logger.info(f"[{self.trace_id}] URL reescrita para fetch: {fetch_url}")
 
         if (source or "").lower() in DYNAMIC_SOURCES or _is_js_heavy(fetch_url):
-            logger.info(f"[{self.trace_id}] [StealthPlaywrightStrategy] Extrayendo: {fetch_url}")
+            logger.info(
+                f"[{self.trace_id}] [StealthPlaywrightStrategy] Extrayendo: {fetch_url}"
+            )
             html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
             if self._looks_blocked(html):
-                logger.warning(f"[{self.trace_id}] Stealth bloqueado, marcando para cuarentena: {url}")
+                logger.warning(
+                    f"[{self.trace_id}] Stealth bloqueado, marcando para cuarentena: {url}"
+                )
                 raise BlockedContentError(url)
             return html
         try:
-            logger.info(f"[{self.trace_id}] [BasicHttpStrategy] Extrayendo: {fetch_url}")
+            logger.info(
+                f"[{self.trace_id}] [BasicHttpStrategy] Extrayendo: {fetch_url}"
+            )
             html = await BasicHttpStrategy().scrape(fetch_url)
             if self._looks_blocked(html):
-                logger.info(f"[{self.trace_id}] Basic devolvió bloqueo, escalando a Stealth")
+                logger.info(
+                    f"[{self.trace_id}] Basic devolvió bloqueo, escalando a Stealth"
+                )
                 html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
                 if self._looks_blocked(html):
-                    logger.warning(f"[{self.trace_id}] Stealth tampoco superó el muro, cuarentena: {url}")
+                    logger.warning(
+                        f"[{self.trace_id}] Stealth tampoco superó el muro, cuarentena: {url}"
+                    )
                     raise BlockedContentError(url)
             elif self._content_too_short(html):
-                logger.info(f"[{self.trace_id}] Basic devolvió texto corto (posible SPA), escalando a Stealth")
+                logger.info(
+                    f"[{self.trace_id}] Basic devolvió texto corto (posible SPA), escalando a Stealth"
+                )
                 html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
                 if self._looks_blocked(html):
-                    logger.warning(f"[{self.trace_id}] Stealth bloqueado tras escalado por contenido corto, cuarentena: {url}")
+                    logger.warning(
+                        f"[{self.trace_id}] Stealth bloqueado tras escalado por contenido corto, cuarentena: {url}"
+                    )
                     raise BlockedContentError(url)
             return html
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (403, 429, 503):
-                logger.info(f"[{self.trace_id}] HTTP {e.response.status_code}, escalando a Stealth")
+                logger.info(
+                    f"[{self.trace_id}] HTTP {e.response.status_code}, escalando a Stealth"
+                )
                 html = await StealthPlaywrightStrategy(self.redis).scrape(fetch_url)
                 if self._looks_blocked(html):
-                    logger.warning(f"[{self.trace_id}] Stealth bloqueado tras {e.response.status_code}, cuarentena: {url}")
+                    logger.warning(
+                        f"[{self.trace_id}] Stealth bloqueado tras {e.response.status_code}, cuarentena: {url}"
+                    )
                     raise BlockedContentError(url)
                 return html
             raise

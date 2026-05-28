@@ -21,6 +21,7 @@ Salida: 44 chars base64 url-safe (≡ 32 bytes). Pegar tal cual en .env.
 Pérdida de la key = pérdida del acceso a TODAS las LLM keys cifradas
 (los usuarios tendrían que rotar las suyas). Backup recomendado.
 """
+
 from __future__ import annotations
 
 import os

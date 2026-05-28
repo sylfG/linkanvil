@@ -5,6 +5,7 @@ multicast, reserved), nombres internos del cluster Docker y .localhost.
 Util tanto en el endpoint /ingest como en el scraper antes de hacer fetch
 (p.ej. tras seguir un redirect).
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -87,9 +88,7 @@ def validate_url(url: str, *, resolve_dns: bool = True) -> None:
 
     scheme = (parts.scheme or "").lower()
     if scheme not in ALLOWED_SCHEMES:
-        raise UnsafeURLError(
-            f"Scheme '{scheme}' no permitido (solo http/https)"
-        )
+        raise UnsafeURLError(f"Scheme '{scheme}' no permitido (solo http/https)")
 
     host = (parts.hostname or "").lower().strip()
     if not host:
@@ -100,9 +99,7 @@ def validate_url(url: str, *, resolve_dns: bool = True) -> None:
 
     for suffix in INTERNAL_HOSTNAME_SUFFIXES:
         if host.endswith(suffix):
-            raise UnsafeURLError(
-                f"Sufijo de hostname interno bloqueado: {host}"
-            )
+            raise UnsafeURLError(f"Sufijo de hostname interno bloqueado: {host}")
 
     # IP literal en el host?
     try:
@@ -136,8 +133,14 @@ def validate_url(url: str, *, resolve_dns: bool = True) -> None:
 
 
 def _check_ip(ip: ipaddress._BaseAddress, *, original: str) -> None:
-    if ip.is_private or ip.is_loopback or ip.is_link_local or \
-            ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
         raise UnsafeURLError(
             f"IP privada/reservada bloqueada (host={original}, ip={ip})"
         )

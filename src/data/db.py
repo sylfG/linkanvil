@@ -3,7 +3,7 @@ import os
 import json
 import logging
 import hashlib
-from datetime import datetime, timedelta, date
+from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ def _parse_iso_date(value) -> date | None:
             return date.fromisoformat(value[:10])
         except ValueError:
             return None
+
 
 # Preset por defecto (Equilibrado) que sirve también como fail-safe del
 # cache si la consulta a usuarios.audit_policy falla. Coincide bit-a-bit
@@ -56,7 +57,7 @@ class DatabaseManager:
     def __init__(self, db_url: str = None):
         self.db_url = db_url or os.getenv(
             "DATABASE_URL",
-            "postgresql://cerebro:cerebro_db_pass_CHANGE_ME@localhost:5432/cerebro_brain"
+            "postgresql://cerebro:cerebro_db_pass_CHANGE_ME@localhost:5432/cerebro_brain",
         )
         self.pool = None
 
@@ -66,6 +67,7 @@ class DatabaseManager:
         o el JSON está malformado, devuelve DEFAULT_AUDIT_POLICY (equivale
         al preset Equilibrado)."""
         import time
+
         now = time.monotonic()
         cached = self._policy_cache.get(tenant_id)
         if cached and cached[1] > now:
@@ -127,14 +129,20 @@ class DatabaseManager:
         else:
             cls._policy_cache.pop(tenant_id, None)
 
-    async def update_session_context(self, tenant_id: str, session_id: str, new_context: str):
+    async def update_session_context(
+        self, tenant_id: str, session_id: str, new_context: str
+    ):
         if not self.pool:
             await self.connect()
 
         # Generate a deterministic UUID from session_id
-        import uuid, hashlib
-        m = hashlib.md5()
-        m.update(session_id.encode('utf-8'))
+        import uuid
+        import hashlib
+
+        # MD5 usado solo como hash determinista para derivar un UUID de session_id
+        # — no es uso criptografico, asi que silenciamos B324.
+        m = hashlib.md5(usedforsecurity=False)
+        m.update(session_id.encode("utf-8"))
         s_uuid = uuid.UUID(m.hexdigest())
 
         async with self.pool.acquire() as conn:
@@ -146,24 +154,33 @@ class DatabaseManager:
                     contexto_comprimido = EXCLUDED.contexto_comprimido,
                     ultimo_acceso = NOW()
                 """,
-                s_uuid, tenant_id, new_context
+                s_uuid,
+                tenant_id,
+                new_context,
             )
 
     async def get_session_context(self, tenant_id: str, session_id: str) -> str:
         if not self.pool:
             await self.connect()
 
-        import uuid, hashlib
-        m = hashlib.md5()
-        m.update(session_id.encode('utf-8'))
+        import uuid
+        import hashlib
+
+        # MD5 usado solo como hash determinista para derivar un UUID de session_id
+        # — no es uso criptografico, asi que silenciamos B324.
+        m = hashlib.md5(usedforsecurity=False)
+        m.update(session_id.encode("utf-8"))
         s_uuid = uuid.UUID(m.hexdigest())
 
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT contexto_comprimido FROM sesiones_chat WHERE id = $1 AND tenant_id = $2",
-                s_uuid, tenant_id
+                s_uuid,
+                tenant_id,
             )
-            return row['contexto_comprimido'] if row and row['contexto_comprimido'] else ""
+            return (
+                row["contexto_comprimido"] if row and row["contexto_comprimido"] else ""
+            )
 
     async def connect(self):
         logger.info(f"Conectando a PostgreSQL... {self.db_url}")
@@ -197,7 +214,8 @@ class DatabaseManager:
                     ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
                     RETURNING id
                     """,
-                    url, url_hash,
+                    url,
+                    url_hash,
                 )
                 recurso_id = row["id"]
                 await conn.execute(
@@ -206,7 +224,8 @@ class DatabaseManager:
                     VALUES ($1, $2, 'procesando')
                     ON CONFLICT DO NOTHING
                     """,
-                    tenant_id, recurso_id,
+                    tenant_id,
+                    recurso_id,
                 )
         return str(recurso_id)
 
@@ -235,7 +254,10 @@ class DatabaseManager:
             return dict(row) if row else None
 
     async def upsert_usuario_recurso_estado(
-        self, tenant_id: str, recurso_id: str, decision: dict,
+        self,
+        tenant_id: str,
+        recurso_id: str,
+        decision: dict,
     ) -> None:
         """Persiste la decisión de auditoría per-tenant en `usuario_recursos`.
 
@@ -264,10 +286,14 @@ class DatabaseManager:
                     fecha_caducidad = EXCLUDED.fecha_caducidad,
                     updated_at = NOW()
                 """,
-                tenant_id, recurso_id, decision["estado"],
-                decision["quarantined_at"], decision["quarantine_reason"],
+                tenant_id,
+                recurso_id,
+                decision["estado"],
+                decision["quarantined_at"],
+                decision["quarantine_reason"],
                 decision["quarantine_grace_until"],
-                decision["auto_archive_pending"], decision["fecha_caducidad"],
+                decision["auto_archive_pending"],
+                decision["fecha_caducidad"],
             )
 
     async def link_user_to_recurso(self, tenant_id: str, recurso_id: str) -> None:
@@ -281,10 +307,18 @@ class DatabaseManager:
                 VALUES ($1, $2::uuid)
                 ON CONFLICT DO NOTHING
                 """,
-                tenant_id, recurso_id,
+                tenant_id,
+                recurso_id,
             )
 
-    async def save_with_outbox(self, tenant_id: str, trace_id: str, extracted_data: dict, url: str, contenido: str | None = None):
+    async def save_with_outbox(
+        self,
+        tenant_id: str,
+        trace_id: str,
+        extracted_data: dict,
+        url: str,
+        contenido: str | None = None,
+    ):
         """
         Patrón Outbox transaccional (F-03.1): upsert global en `recursos`,
         link en `usuario_recursos` y evento en `outbox_eventos`, todo atómico.
@@ -294,7 +328,7 @@ class DatabaseManager:
         if not self.pool:
             await self.connect()
 
-        url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+        url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
 
         titulo = extracted_data.get("title", "")
         resumen = extracted_data.get("summary", "")
@@ -344,7 +378,9 @@ class DatabaseManager:
         quarantined_at = decision["quarantined_at"]
         auto_archive_pending = decision["auto_archive_pending"]
         fecha_caducidad = decision["fecha_caducidad"]
-        evento_tipo = "recurso.cuarentena" if estado == "cuarentena" else "recurso.procesado"
+        evento_tipo = (
+            "recurso.cuarentena" if estado == "cuarentena" else "recurso.procesado"
+        )
 
         recurso_id = None
 
@@ -383,13 +419,21 @@ class DatabaseManager:
                         updated_at = NOW()
                     RETURNING id
                     """,
-                    url, url_hash, titulo, resumen, contenido, categoria, tags,
+                    url,
+                    url_hash,
+                    titulo,
+                    resumen,
+                    contenido,
+                    categoria,
+                    tags,
                     volatilidad,
-                    temporal_class, valor_archivistico, fecha_evento,
+                    temporal_class,
+                    valor_archivistico,
+                    fecha_evento,
                     useful_life_days,
                 )
 
-                recurso_id = row['id']
+                recurso_id = row["id"]
 
                 # UPSERT en usuario_recursos con la decisión per-tenant.
                 # Si el tenant ya tenía la URL linkeada (re-ingest tras
@@ -413,9 +457,14 @@ class DatabaseManager:
                         fecha_caducidad = EXCLUDED.fecha_caducidad,
                         updated_at = NOW()
                     """,
-                    tenant_id, recurso_id, estado,
-                    quarantined_at, quarantine_reason, quarantine_grace_until,
-                    auto_archive_pending, fecha_caducidad,
+                    tenant_id,
+                    recurso_id,
+                    estado,
+                    quarantined_at,
+                    quarantine_reason,
+                    quarantine_grace_until,
+                    auto_archive_pending,
+                    fecha_caducidad,
                 )
 
                 outbox_payload = {
@@ -445,7 +494,10 @@ class DatabaseManager:
                         $1, 'recurso', $2, $3, $4::jsonb
                     )
                     """,
-                    tenant_id, recurso_id, evento_tipo, json.dumps(outbox_payload)
+                    tenant_id,
+                    recurso_id,
+                    evento_tipo,
+                    json.dumps(outbox_payload),
                 )
 
         logger.info(f"[{trace_id}] Guardado finalizado con ID {recurso_id}")
@@ -488,10 +540,14 @@ class DatabaseManager:
                     $1, 'recurso', $2::uuid, 'recurso.cuarentena', $3::jsonb
                 )
                 """,
-                tenant_id, recurso_id, json.dumps(payload),
+                tenant_id,
+                recurso_id,
+                json.dumps(payload),
             )
 
-    async def emit_reuse_event(self, tenant_id: str, trace_id: str, recurso_id: str, url: str) -> None:
+    async def emit_reuse_event(
+        self, tenant_id: str, trace_id: str, recurso_id: str, url: str
+    ) -> None:
         """Emite un evento outbox `recurso.reusado` para que el embedder copie
         el punto Qdrant existente al nuevo tenant en lugar de regenerar el embedding."""
         if not self.pool:
@@ -513,11 +569,16 @@ class DatabaseManager:
                     $1, 'recurso', $2::uuid, 'recurso.reusado', $3::jsonb
                 )
                 """,
-                tenant_id, recurso_id, json.dumps(payload),
+                tenant_id,
+                recurso_id,
+                json.dumps(payload),
             )
 
     async def update_recurso_estado(
-        self, tenant_id: str, recurso_id: str, estado: str,
+        self,
+        tenant_id: str,
+        recurso_id: str,
+        estado: str,
     ):
         """Migración 0012: el estado vive en `usuario_recursos` (per-tenant).
         Esta función actualiza la fila (tenant_id, recurso_id).
@@ -547,7 +608,8 @@ class DatabaseManager:
                          AND recurso_id = $2::uuid
                          AND estado = 'procesando'
                          AND auto_archive_pending = false""",
-                    tenant_id, recurso_id,
+                    tenant_id,
+                    recurso_id,
                 )
             elif estado == "expirado":
                 result = await conn.execute(
@@ -559,7 +621,8 @@ class DatabaseManager:
                          AND recurso_id = $2::uuid
                          AND estado = 'procesando'
                          AND auto_archive_pending = true""",
-                    tenant_id, recurso_id,
+                    tenant_id,
+                    recurso_id,
                 )
                 # Si no afectó filas, no es auto-archive; transición libre.
                 if result and result.endswith("0"):
@@ -567,14 +630,17 @@ class DatabaseManager:
                         """UPDATE usuario_recursos
                            SET estado = 'expirado', updated_at = NOW()
                            WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
-                        tenant_id, recurso_id,
+                        tenant_id,
+                        recurso_id,
                     )
             else:
                 await conn.execute(
                     """UPDATE usuario_recursos
                        SET estado = $1, updated_at = NOW()
                        WHERE tenant_id = $2 AND recurso_id = $3::uuid""",
-                    estado, tenant_id, recurso_id,
+                    estado,
+                    tenant_id,
+                    recurso_id,
                 )
 
     async def quarantine_recurso_blocked(self, tenant_id: str, recurso_id: str):
@@ -594,10 +660,13 @@ class DatabaseManager:
                     updated_at = NOW()
                 WHERE tenant_id = $1 AND recurso_id = $2::uuid
                 """,
-                tenant_id, recurso_id,
+                tenant_id,
+                recurso_id,
             )
 
-    async def save_semantic_collisions(self, tenant_id: str, recurso_origen: str, collisions: list[dict]):
+    async def save_semantic_collisions(
+        self, tenant_id: str, recurso_origen: str, collisions: list[dict]
+    ):
         if not self.pool:
             await self.connect()
 
@@ -615,9 +684,13 @@ class DatabaseManager:
                         ON CONFLICT (recurso_origen, recurso_destino) 
                         DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, recurso_origen, c["recurso_destino"], min(c["similitud"], 1.0), tipo_relacion
+                        tenant_id,
+                        recurso_origen,
+                        c["recurso_destino"],
+                        min(c["similitud"], 1.0),
+                        tipo_relacion,
                     )
-                    
+
                     # Relación bidireccional (inversa)
                     # Si es VUELVE_OBSOLETO, la inversa podríamos llamarla OBSOLETO_POR
                     tipo_inverso = tipo_relacion
@@ -625,7 +698,7 @@ class DatabaseManager:
                         tipo_inverso = "OBSOLECIDO_POR"
                     elif tipo_relacion == "EXTIENDE":
                         tipo_inverso = "EXTENDIDO_POR"
-                        
+
                     await conn.execute(
                         """
                         INSERT INTO grafo_relaciones (
@@ -636,7 +709,11 @@ class DatabaseManager:
                         ON CONFLICT (recurso_origen, recurso_destino) 
                         DO UPDATE SET similitud = EXCLUDED.similitud, tipo_relacion = EXCLUDED.tipo_relacion
                         """,
-                        tenant_id, c["recurso_destino"], recurso_origen, min(c["similitud"], 1.0), tipo_inverso
+                        tenant_id,
+                        c["recurso_destino"],
+                        recurso_origen,
+                        min(c["similitud"], 1.0),
+                        tipo_inverso,
                     )
 
                     # Si es obsolescencia, mandamos el destino (antiguo) a cuarentena
@@ -661,7 +738,8 @@ class DatabaseManager:
                               AND ur.estado = 'activo'
                             RETURNING ur.tenant_id, r.id, r.url
                             """,
-                            c["recurso_destino"], grace_days,
+                            c["recurso_destino"],
+                            grace_days,
                         )
                         for moved in moved_rows:
                             payload = {
@@ -681,5 +759,7 @@ class DatabaseManager:
                                     $1, 'recurso', $2, 'recurso.cuarentena', $3::jsonb
                                 )
                                 """,
-                                moved["tenant_id"], moved["id"], json.dumps(payload),
+                                moved["tenant_id"],
+                                moved["id"],
+                                json.dumps(payload),
                             )

@@ -3,3 +3,14 @@
 # y se importan desde `src/` como paquete (ej. `from src.data.db import ...`).
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+# Layout: `src/` tiene `__init__.py` en algunos subpaquetes (api, data,
+# notifier...) pero no en `src/` mismo. mypy invocado como `mypy src/`
+# veria cada modulo bajo dos nombres ("api.database" Y "src.api.database")
+# y rompe con "Source file found twice". explicit_package_bases + dejar
+# que mypy resuelva paths desde el CWD (sin mypy_path explicito) deja
+# UN solo nombre canonico: "src.api.database".
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true

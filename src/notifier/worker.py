@@ -11,6 +11,7 @@ manda un mensaje al bot por primera vez (ver `src/ingestion/main.py`). El
 worker lo persiste en `usuarios.telegram_chat_id` la primera vez que lo
 ve, para sobrevivir a un flush de Redis.
 """
+
 import asyncio
 import json
 import logging
@@ -29,18 +30,26 @@ from src.data.heartbeat import start_heartbeat
 from src.telemetry import configure_telemetry, trace_operation
 
 from src.observability.logging import configure_json_logging
+
 configure_json_logging("notifier-worker")
 logger = logging.getLogger(__name__)
 
 configure_telemetry("notifier-worker")
 
-RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
+RABBIT_URL = os.getenv(
+    "RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro"
+)
 EXCHANGE_NAME = os.getenv("RABBITMQ_EXCHANGE_PROCESAMIENTO", "cerebro.procesamiento")
 QUEUE_NAME = os.getenv("NOTIFIER_QUEUE", "q.notifications")
 REDIS_URL = os.getenv("REDIS_URL", "redis://:cerebro_redis_pass@redis:6379")
 
 # Sólo nos interesan estos eventos. El resto los ack-eamos sin tocar BD.
-RELEVANT_EVENTS = {"recurso.cuarentena", "recurso.expirado", "recurso.rescatado", "recurso.activado"}
+RELEVANT_EVENTS = {
+    "recurso.cuarentena",
+    "recurso.expirado",
+    "recurso.rescatado",
+    "recurso.activado",
+}
 
 REASON_LABELS = {
     "caducidad": "ha caducado",
@@ -54,13 +63,15 @@ REASON_LABELS = {
 }
 
 
-def _human_message(evento_tipo: str, motivo: Optional[str], titulo: Optional[str], url: str) -> str:
+def _human_message(
+    evento_tipo: str, motivo: Optional[str], titulo: Optional[str], url: str
+) -> str:
     """Compose a short Telegram message from the event."""
     label = titulo or url
     if evento_tipo == "recurso.cuarentena":
         razon = REASON_LABELS.get(motivo or "", "ha entrado en cuarentena")
         return (
-            f"⚠️ Tu recurso \"{label}\" {razon}.\n"
+            f'⚠️ Tu recurso "{label}" {razon}.\n'
             f"Revísalo en la bandeja de cuarentena para rescatarlo o expirarlo.\n"
             f"{url}"
         )
@@ -70,21 +81,17 @@ def _human_message(evento_tipo: str, motivo: Optional[str], titulo: Optional[str
         # del RAG, se archiva (recuperable con toggle Archivo ON).
         if motivo == "auto_archive":
             return (
-                f"📦 Tu recurso \"{label}\" se archivó automáticamente al detectar "
+                f'📦 Tu recurso "{label}" se archivó automáticamente al detectar '
                 f"valor archivístico alto. Recuperable en el chat con el toggle "
-                f"\"Archivo ON\".\n{url}"
+                f'"Archivo ON".\n{url}'
             )
         razon = REASON_LABELS.get(motivo or "", "ha expirado")
-        return (
-            f"🗑 Tu recurso \"{label}\" {razon} y se eliminó del RAG activo.\n"
-            f"{url}"
-        )
+        return f'🗑 Tu recurso "{label}" {razon} y se eliminó del RAG activo.\n{url}'
     if evento_tipo == "recurso.rescatado":
-        return f"♻️ Has rescatado \"{label}\" — vuelve a estar activo.\n{url}"
+        return f'♻️ Has rescatado "{label}" — vuelve a estar activo.\n{url}'
     if evento_tipo == "recurso.activado":
         return (
-            f"📚 Tu recurso \"{label}\" se ha añadido a tu Base de Conocimiento.\n"
-            f"{url}"
+            f'📚 Tu recurso "{label}" se ha añadido a tu Base de Conocimiento.\n{url}'
         )
     return f"{evento_tipo}: {label}"
 
@@ -129,7 +136,8 @@ class NotifierWorker:
             return None
         async with self.db.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT titulo FROM recursos WHERE id = $1::uuid", recurso_id,
+                "SELECT titulo FROM recursos WHERE id = $1::uuid",
+                recurso_id,
             )
             return row["titulo"] if row else None
 
@@ -151,7 +159,12 @@ class NotifierWorker:
                     $1, $2, $3::uuid, $4, $5, $6
                 )
                 """,
-                tenant_id, evento_tipo, recurso_id, titulo, url, motivo,
+                tenant_id,
+                evento_tipo,
+                recurso_id,
+                titulo,
+                url,
+                motivo,
             )
 
     async def _get_telegram_target(self, tenant_id: str) -> Optional[tuple[str, str]]:
@@ -170,7 +183,11 @@ class NotifierWorker:
                        FROM usuarios WHERE tenant_id = $1""",
                     tenant_id,
                 )
-                if not row or not row["telegram_bot_active"] or not row["telegram_bot_token"]:
+                if (
+                    not row
+                    or not row["telegram_bot_active"]
+                    or not row["telegram_bot_token"]
+                ):
                     return None
                 bot_token = row["telegram_bot_token"]
                 chat_id_from_db = row["telegram_chat_id"]
@@ -197,7 +214,8 @@ class NotifierWorker:
                 async with self.db.pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE usuarios SET telegram_chat_id = $1 WHERE tenant_id = $2",
-                        chat_id_from_cache, tenant_id,
+                        chat_id_from_cache,
+                        tenant_id,
                     )
             except Exception as e:
                 logger.warning(f"No pudimos persistir chat_id en BD: {e}")
@@ -209,7 +227,11 @@ class NotifierWorker:
         try:
             resp = await self.http.post(
                 url,
-                json={"chat_id": chat_id, "text": text, "disable_web_page_preview": False},
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": False,
+                },
             )
             if resp.status_code >= 400:
                 logger.warning(
@@ -227,7 +249,9 @@ class NotifierWorker:
                 logger.error(f"Payload inválido, descartando: {e}")
                 return
 
-            evento_tipo = payload.get("evento_tipo") or message.headers.get("evento_tipo")
+            evento_tipo = payload.get("evento_tipo") or message.headers.get(
+                "evento_tipo"
+            )
             if evento_tipo not in RELEVANT_EVENTS:
                 # Otros consumidores (embedder) procesan el resto; nosotros no.
                 return
@@ -244,7 +268,12 @@ class NotifierWorker:
 
             try:
                 await self._insert_notification(
-                    tenant_id, evento_tipo, recurso_id, titulo, url, motivo,
+                    tenant_id,
+                    evento_tipo,
+                    recurso_id,
+                    titulo,
+                    url,
+                    motivo,
                 )
             except Exception as e:
                 logger.error(f"INSERT notificacion falló: {e}")
@@ -257,14 +286,16 @@ class NotifierWorker:
                 if self.redis is not None:
                     await self.redis.publish(
                         f"resources:{tenant_id}",
-                        json.dumps({
-                            "evento_tipo": evento_tipo,
-                            "recurso_id": recurso_id,
-                            "url": url,
-                            "titulo": titulo,
-                            "motivo": motivo,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        }),
+                        json.dumps(
+                            {
+                                "evento_tipo": evento_tipo,
+                                "recurso_id": recurso_id,
+                                "url": url,
+                                "titulo": titulo,
+                                "motivo": motivo,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        ),
                     )
             except Exception as e:
                 logger.warning(f"redis.publish resources:{tenant_id} falló: {e}")

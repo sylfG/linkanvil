@@ -117,13 +117,17 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                 VALUES ($1, $2::uuid, NOW() + ($3::int * INTERVAL '1 minute'), $4)
                 RETURNING tenant_id, created_at, expires_at
                 """,
-                tenant_id, user_id, DEMO_SESSION_TTL_MINUTES, ip,
+                tenant_id,
+                user_id,
+                DEMO_SESSION_TTL_MINUTES,
+                ip,
             )
 
             # RLS bypass para las tablas con `tenant_isolation` FORCED:
             # `usuario_recursos` requiere current_setting('app.tenant_id').
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+                "SELECT set_config('app.tenant_id', $1, true)",
+                tenant_id,
             )
 
             # ── 2) 3 recursos efímeros ────────────────────────────────
@@ -149,7 +153,10 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                     )
                     RETURNING id
                     """,
-                    url, url_hash, spec["titulo"], spec["resumen"],
+                    url,
+                    url_hash,
+                    spec["titulo"],
+                    spec["resumen"],
                     spec["categoria"],
                 )
                 recurso_ids.append(r_row["id"])
@@ -161,7 +168,8 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                     INSERT INTO usuario_recursos (tenant_id, recurso_id, estado)
                     VALUES ($1, $2, 'activo')
                     """,
-                    tenant_id, r_row["id"],
+                    tenant_id,
+                    r_row["id"],
                 )
 
             # ── 3) 4 eventos programados ──────────────────────────────
@@ -206,9 +214,7 @@ async def create_demo_session(user_id: str, ip: Optional[str] = None) -> dict:
                     "kind": "reminder_expiry_5min",
                     "recurso_id": None,
                     "motivo": None,
-                    "description": (
-                        "Quedan 5 minutos para que la sesión demo expire."
-                    ),
+                    "description": ("Quedan 5 minutos para que la sesión demo expire."),
                 },
             ]
             for ev in events_spec:
@@ -329,19 +335,22 @@ async def delete_demo_session_cascade(tenant_id: str) -> dict:
             # ``current_setting('app.tenant_id')`` coincida con la fila
             # antes de poder borrar. Set LOCAL → solo para esta tx.
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", tenant_id,
+                "SELECT set_config('app.tenant_id', $1, true)",
+                tenant_id,
             )
 
             # sesiones_chat: tabla en español. mensajes_chat cascadea
             # vía FK ON DELETE CASCADE (no la borramos explícita).
             r = await conn.execute(
-                "DELETE FROM sesiones_chat WHERE tenant_id = $1", tenant_id,
+                "DELETE FROM sesiones_chat WHERE tenant_id = $1",
+                tenant_id,
             )
             out["sesiones_chat"] = _parse_delete_count(r)
 
             # notificaciones: sin RLS, delete directo.
             r = await conn.execute(
-                "DELETE FROM notificaciones WHERE tenant_id = $1", tenant_id,
+                "DELETE FROM notificaciones WHERE tenant_id = $1",
+                tenant_id,
             )
             out["notificaciones"] = _parse_delete_count(r)
 
@@ -354,7 +363,8 @@ async def delete_demo_session_cascade(tenant_id: str) -> dict:
             recurso_ids = [r["recurso_id"] for r in recurso_rows]
 
             r = await conn.execute(
-                "DELETE FROM usuario_recursos WHERE tenant_id = $1", tenant_id,
+                "DELETE FROM usuario_recursos WHERE tenant_id = $1",
+                tenant_id,
             )
             out["usuario_recursos"] = _parse_delete_count(r)
 
@@ -375,14 +385,16 @@ async def delete_demo_session_cascade(tenant_id: str) -> dict:
                                WHERE ur2.tenant_id = $2
                                  AND r2.url_hash = r.url_hash
                           )""",
-                    recurso_ids, DEMO_SEED_TENANT_ID,
+                    recurso_ids,
+                    DEMO_SEED_TENANT_ID,
                 )
                 out["recursos_huerfanos"] = _parse_delete_count(r)
             else:
                 out["recursos_huerfanos"] = 0
 
             r = await conn.execute(
-                "DELETE FROM demo_sessions WHERE tenant_id = $1", tenant_id,
+                "DELETE FROM demo_sessions WHERE tenant_id = $1",
+                tenant_id,
             )
             out["demo_sessions"] = _parse_delete_count(r)
 
@@ -422,6 +434,7 @@ async def close_pool() -> None:
 
 
 # ── usuarios ─────────────────────────────────────────────────────────────────
+
 
 async def get_user_by_email(email: str) -> Optional[dict]:
     p = await get_pool()
@@ -489,11 +502,15 @@ async def update_llm_keys(
                updated_at = NOW()
          WHERE id = $1::uuid
         """,
-        user_id, encrypted_lite, encrypted_embeddings, encrypted_pro,
+        user_id,
+        encrypted_lite,
+        encrypted_embeddings,
+        encrypted_pro,
     )
 
 
 # ── recursos (KB) ─────────────────────────────────────────────────────────────
+
 
 async def get_resources(
     tenant_id, estado: str = "todos", limit: int = 100
@@ -522,18 +539,22 @@ async def get_resources(
     if estado == "_all":
         rows = await p.fetch(
             base + " ORDER BY ur.created_at DESC LIMIT $2",
-            tenants, limit,
+            tenants,
+            limit,
         )
     elif estado and estado != "todos":
         rows = await p.fetch(
             base + " AND ur.estado = $2 ORDER BY ur.created_at DESC LIMIT $3",
-            tenants, estado, limit,
+            tenants,
+            estado,
+            limit,
         )
     else:
         rows = await p.fetch(
             base + " AND ur.estado NOT IN ('cuarentena','expirado')"
-                   " ORDER BY ur.created_at DESC LIMIT $2",
-            tenants, limit,
+            " ORDER BY ur.created_at DESC LIMIT $2",
+            tenants,
+            limit,
         )
     return [dict(r) for r in rows]
 
@@ -563,7 +584,9 @@ async def get_active_resource_ids(
           AND ur.estado = ANY($2::text[])
           AND r.id = ANY($3::uuid[])
         """,
-        tenants, allowed_states, ids,
+        tenants,
+        allowed_states,
+        ids,
     )
     return [r["id"] for r in rows]
 
@@ -584,7 +607,8 @@ async def get_resources_for_rag(tenant_id, ids: list[str]) -> list[dict]:
           AND ur.estado = 'activo'
           AND r.id = ANY($2::uuid[])
         """,
-        tenants, ids,
+        tenants,
+        ids,
     )
     return [dict(r) for r in rows]
 
@@ -613,7 +637,8 @@ async def list_quarantine(tenant_id, limit: int = 100) -> list[dict]:
            WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'cuarentena'
            ORDER BY ur.quarantine_grace_until ASC NULLS LAST
            LIMIT $2""",
-        tenants, limit,
+        tenants,
+        limit,
     )
     return [dict(r) for r in rows]
 
@@ -648,7 +673,8 @@ async def list_expired(tenant_id, limit: int = 100) -> list[dict]:
            WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'expirado'
            ORDER BY ur.fecha_caducidad DESC NULLS LAST
            LIMIT $2""",
-        tenants, limit,
+        tenants,
+        limit,
     )
     return [dict(r) for r in rows]
 
@@ -679,7 +705,8 @@ async def list_active(tenant_id, limit: int = 100) -> list[dict]:
            WHERE ur.tenant_id = ANY($1::text[]) AND ur.estado = 'activo'
            ORDER BY ur.created_at DESC
            LIMIT $2""",
-        tenants, limit,
+        tenants,
+        limit,
     )
     return [dict(r) for r in rows]
 
@@ -701,8 +728,11 @@ async def count_active(tenant_id) -> int:
 
 # ── notificaciones in-app (F-05.3) ────────────────────────────────────────────
 
+
 async def list_notifications(
-    tenant_id, limit: int = 50, only_unread: bool = False,
+    tenant_id,
+    limit: int = 50,
+    only_unread: bool = False,
 ) -> list[dict]:
     """Slice 5: tenant_id str|list[str]. Demo session une con seed_tenant."""
     tenants = _as_tenant_list(tenant_id)
@@ -714,7 +744,8 @@ async def list_notifications(
                FROM notificaciones
                WHERE tenant_id = ANY($1::text[]) AND leido = FALSE
                ORDER BY created_at DESC LIMIT $2""",
-            tenants, limit,
+            tenants,
+            limit,
         )
     else:
         rows = await p.fetch(
@@ -723,7 +754,8 @@ async def list_notifications(
                FROM notificaciones
                WHERE tenant_id = ANY($1::text[])
                ORDER BY created_at DESC LIMIT $2""",
-            tenants, limit,
+            tenants,
+            limit,
         )
     return [dict(r) for r in rows]
 
@@ -748,7 +780,8 @@ async def mark_notification_read(tenant_id: str, notification_id: str) -> bool:
            SET leido = TRUE, leido_en = NOW()
            WHERE id = $1::uuid AND tenant_id = $2 AND leido = FALSE
            RETURNING id""",
-        notification_id, tenant_id,
+        notification_id,
+        tenant_id,
     )
     return row is not None
 
@@ -771,12 +804,15 @@ async def mark_all_notifications_read(tenant_id: str) -> int:
 async def _tenant_owns_recurso(conn, tenant_id: str, recurso_id: str) -> bool:
     row = await conn.fetchrow(
         "SELECT 1 FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",
-        tenant_id, recurso_id,
+        tenant_id,
+        recurso_id,
     )
     return row is not None
 
 
-async def _emit_outbox(conn, tenant_id: str, recurso_id, evento_tipo: str, payload: dict) -> None:
+async def _emit_outbox(
+    conn, tenant_id: str, recurso_id, evento_tipo: str, payload: dict
+) -> None:
     # OJO: este pool tiene un codec jsonb (encoder=json.dumps) instalado
     # en `_init_conn`. Pasar el dict directamente: si lo serializamos aquí
     # con json.dumps() el codec lo vuelve a serializar y queda
@@ -786,7 +822,10 @@ async def _emit_outbox(conn, tenant_id: str, recurso_id, evento_tipo: str, paylo
         """INSERT INTO outbox_eventos (
                tenant_id, agregado_tipo, agregado_id, evento_tipo, payload
            ) VALUES ($1, 'recurso', $2, $3, $4)""",
-        tenant_id, recurso_id, evento_tipo, payload,
+        tenant_id,
+        recurso_id,
+        evento_tipo,
+        payload,
     )
 
 
@@ -829,12 +868,16 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
                      AND ur.recurso_id = $2::uuid
                      AND ur.estado IN ('cuarentena','expirado')
                    RETURNING r.id, r.url, ur.fecha_caducidad""",
-                tenant_id, recurso_id,
+                tenant_id,
+                recurso_id,
             )
             if not row:
                 return None
             await _emit_outbox(
-                conn, tenant_id, row["id"], "recurso.rescatado",
+                conn,
+                tenant_id,
+                row["id"],
+                "recurso.rescatado",
                 {
                     "recurso_id": str(row["id"]),
                     "url": row["url"],
@@ -846,7 +889,9 @@ async def rescue_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
 
 
 async def quarantine_recurso(
-    tenant_id: str, recurso_id: str, grace_days: int = GRACE_PERIOD_DAYS,
+    tenant_id: str,
+    recurso_id: str,
+    grace_days: int = GRACE_PERIOD_DAYS,
 ) -> Optional[dict]:
     """Mueve manualmente un recurso `activo` o `procesando` a cuarentena
     con motivo='manual'. Útil desde la KB cuando el usuario decide que un
@@ -873,12 +918,17 @@ async def quarantine_recurso(
                      AND ur.recurso_id = $2::uuid
                      AND ur.estado IN ('activo','procesando')
                    RETURNING r.id, r.url, ur.quarantine_grace_until""",
-                tenant_id, recurso_id, grace_days,
+                tenant_id,
+                recurso_id,
+                grace_days,
             )
             if not row:
                 return None
             await _emit_outbox(
-                conn, tenant_id, row["id"], "recurso.cuarentena",
+                conn,
+                tenant_id,
+                row["id"],
+                "recurso.cuarentena",
                 {
                     "recurso_id": str(row["id"]),
                     "url": row["url"],
@@ -909,12 +959,16 @@ async def expire_recurso(tenant_id: str, recurso_id: str) -> Optional[dict]:
                      AND ur.recurso_id = $2::uuid
                      AND ur.estado != 'expirado'
                    RETURNING r.id, r.url""",
-                tenant_id, recurso_id,
+                tenant_id,
+                recurso_id,
             )
             if not row:
                 return None
             await _emit_outbox(
-                conn, tenant_id, row["id"], "recurso.expirado",
+                conn,
+                tenant_id,
+                row["id"],
+                "recurso.expirado",
                 {
                     "recurso_id": str(row["id"]),
                     "url": row["url"],
@@ -945,7 +999,8 @@ async def delete_recurso_for_tenant(tenant_id: str, recurso_id: str) -> Optional
                 return None
             await conn.execute(
                 "DELETE FROM usuario_recursos WHERE tenant_id = $1 AND recurso_id = $2::uuid",
-                tenant_id, recurso_id,
+                tenant_id,
+                recurso_id,
             )
             remaining = await conn.fetchrow(
                 "SELECT COUNT(*) AS n FROM usuario_recursos WHERE recurso_id = $1::uuid",
@@ -954,10 +1009,14 @@ async def delete_recurso_for_tenant(tenant_id: str, recurso_id: str) -> Optional
             deleted_globally = int(remaining["n"]) == 0
             if deleted_globally:
                 await conn.execute(
-                    "DELETE FROM recursos WHERE id = $1::uuid", recurso_id,
+                    "DELETE FROM recursos WHERE id = $1::uuid",
+                    recurso_id,
                 )
             await _emit_outbox(
-                conn, tenant_id, result["id"], "recurso.eliminado",
+                conn,
+                tenant_id,
+                result["id"],
+                "recurso.eliminado",
                 {
                     "recurso_id": str(result["id"]),
                     "url": result["url"],
@@ -972,6 +1031,7 @@ async def delete_recurso_for_tenant(tenant_id: str, recurso_id: str) -> Optional
 
 
 # ── sesiones_chat ─────────────────────────────────────────────────────────────
+
 
 async def create_chat_session(tenant_id: str) -> dict:
     p = await get_pool()
@@ -991,7 +1051,9 @@ async def list_chat_sessions(
            WHERE tenant_id = $1
            ORDER BY ultimo_acceso DESC
            LIMIT $2 OFFSET $3""",
-        tenant_id, limit, offset,
+        tenant_id,
+        limit,
+        offset,
     )
     return [dict(r) for r in rows]
 
@@ -1009,7 +1071,8 @@ async def get_chat_session(tenant_id: str, session_id: str) -> Optional[dict]:
     p = await get_pool()
     row = await p.fetchrow(
         "SELECT * FROM sesiones_chat WHERE id = $1::uuid AND tenant_id = $2",
-        session_id, tenant_id,
+        session_id,
+        tenant_id,
     )
     return dict(row) if row else None
 
@@ -1018,12 +1081,14 @@ async def delete_chat_session(tenant_id: str, session_id: str) -> bool:
     p = await get_pool()
     result = await p.execute(
         "DELETE FROM sesiones_chat WHERE id = $1::uuid AND tenant_id = $2",
-        session_id, tenant_id,
+        session_id,
+        tenant_id,
     )
     return result == "DELETE 1"
 
 
 # ── mensajes_chat ─────────────────────────────────────────────────────────────
+
 
 async def get_chat_messages(tenant_id: str, session_id: str) -> list[dict]:
     p = await get_pool()
@@ -1031,7 +1096,8 @@ async def get_chat_messages(tenant_id: str, session_id: str) -> list[dict]:
         """SELECT * FROM mensajes_chat
            WHERE sesion_id = $1::uuid AND tenant_id = $2
            ORDER BY seq ASC""",
-        session_id, tenant_id,
+        session_id,
+        tenant_id,
     )
     return [dict(r) for r in rows]
 
@@ -1048,7 +1114,10 @@ async def append_chat_messages(
                     """INSERT INTO mensajes_chat (sesion_id, tenant_id, rol, contenido, fuentes)
                        VALUES ($1::uuid, $2, $3, $4, $5)
                        RETURNING *""",
-                    session_id, tenant_id, m["role"], m["content"],
+                    session_id,
+                    tenant_id,
+                    m["role"],
+                    m["content"],
                     m.get("sources", []),
                 )
                 rows.append(dict(row))
@@ -1059,12 +1128,15 @@ async def append_chat_messages(
                        SET ultimo_acceso = NOW(),
                            titulo = COALESCE(titulo, LEFT($1, 60))
                        WHERE id = $2::uuid AND tenant_id = $3""",
-                    first_user["content"], session_id, tenant_id,
+                    first_user["content"],
+                    session_id,
+                    tenant_id,
                 )
             else:
                 await conn.execute(
                     """UPDATE sesiones_chat SET ultimo_acceso = NOW()
                        WHERE id = $1::uuid AND tenant_id = $2""",
-                    session_id, tenant_id,
+                    session_id,
+                    tenant_id,
                 )
             return rows

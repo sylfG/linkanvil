@@ -17,6 +17,7 @@ Convenciones:
   embedder transiciona después a 'activo' o 'expirado' según el flag
   `auto_archive_pending`.
 """
+
 from __future__ import annotations
 
 import os

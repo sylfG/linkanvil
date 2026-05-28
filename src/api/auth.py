@@ -8,7 +8,9 @@ import bcrypt
 from jose import ExpiredSignatureError, JWTError, jwt
 
 
-def _read_secret(env_name: str, file_env_suffix: str = "_FILE", default: Optional[str] = None) -> Optional[str]:
+def _read_secret(
+    env_name: str, file_env_suffix: str = "_FILE", default: Optional[str] = None
+) -> Optional[str]:
     """Read a secret from <env>_FILE, then <env>, then default."""
     file_path = os.getenv(env_name + file_env_suffix)
     if file_path and os.path.exists(file_path):
@@ -61,7 +63,9 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

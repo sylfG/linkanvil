@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -25,7 +24,7 @@ except Exception:
     extruct = None  # type: ignore
     get_base_url = None  # type: ignore
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.scraper.strategy import ScraperContext, BlockedContentError
 from src.scraper._retry import with_retries
 from src.data.db import DatabaseManager
@@ -62,11 +61,12 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
        busca marcadores en `bruto` y prepone los párrafos relevantes a
        `body` antes de truncar."""
     # Bruto compactado para escanear marcadores (uso unico)
-    _bruto_raw = re.sub(r'<[^>]+>', ' ', html)
-    bruto = re.sub(r'\s+', ' ', _bruto_raw).strip()
+    _bruto_raw = re.sub(r"<[^>]+>", " ", html)
+    bruto = re.sub(r"\s+", " ", _bruto_raw).strip()
 
     try:
         import trafilatura
+
         extracted = trafilatura.extract(
             html,
             include_comments=False,
@@ -82,7 +82,8 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
             # bruto + meta_block (capta "Moved to Codeberg" en <meta>).
             body = meta_block + extracted if meta_block else extracted
             return title, _prepend_supersession_paragraphs(
-                body, max_chars,
+                body,
+                max_chars,
                 search_in=bruto,
                 preferred_search=meta_block if meta_block else None,
             )
@@ -91,20 +92,28 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
 
     try:
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html, "html.parser")
         title = soup.title.string.strip() if soup.title and soup.title.string else ""
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+        for tag in soup(
+            ["script", "style", "nav", "footer", "header", "aside", "noscript"]
+        ):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = re.sub(r' {2,}', ' ', text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r" {2,}", " ", text)
         return title, _prepend_supersession_paragraphs(
-            text, max_chars, search_in=bruto,
+            text,
+            max_chars,
+            search_in=bruto,
         )
     except Exception:
         return "", _prepend_supersession_paragraphs(
-            bruto, max_chars, search_in=bruto,
+            bruto,
+            max_chars,
+            search_in=bruto,
         )
+
 
 _SUPERSESSION_PATTERNS = [
     # Espanol (BOE/normativa)
@@ -138,9 +147,14 @@ _SUPERSESSION_PATTERNS = [
     r"no\s+longer\s+maintained",
 ]
 
-import re as _re_sup
+# Alias local de `re` para no colisionar con cualquier `re` previo del modulo.
+# Se importa aqui, despues de _SUPERSESSION_PATTERNS, para que la compilacion
+# y el patron vivan juntos. ruff E402 desactivado conscientemente.
+import re as _re_sup  # noqa: E402
+
 _SUPERSESSION_RE = _re_sup.compile(
-    "|".join(_SUPERSESSION_PATTERNS), _re_sup.IGNORECASE,
+    "|".join(_SUPERSESSION_PATTERNS),
+    _re_sup.IGNORECASE,
 )
 
 
@@ -183,14 +197,20 @@ def _extract_metadata_block(meta) -> str:
     if not fields:
         return ""
     return (
-        "[METADATA DEL AUTOR]" + chr(10)
+        "[METADATA DEL AUTOR]"
+        + chr(10)
         + chr(10).join(fields)
-        + chr(10) + "[FIN METADATA]" + chr(10) + chr(10)
+        + chr(10)
+        + "[FIN METADATA]"
+        + chr(10)
+        + chr(10)
     )
 
 
 def _prepend_supersession_paragraphs(
-    body: str, max_chars: int, search_in: str | None = None,
+    body: str,
+    max_chars: int,
+    search_in: str | None = None,
     preferred_search: str | None = None,
 ) -> str:
     """Si `preferred_search` (o `search_in` como fallback) contiene
@@ -205,6 +225,7 @@ def _prepend_supersession_paragraphs(
     la densidad de caracteres tipicos de JSON/CSS/JS supera ~25%
     (impide que blobs de SPAs como GitHub.com contaminen el bloque).
     """
+
     def _scan(text: str, allow_noisy: bool) -> list[str]:
         if not text:
             return []
@@ -226,7 +247,7 @@ def _prepend_supersession_paragraphs(
             para = _re_sup.sub(r"\s+", " ", para)
             # Filtro de ruido (solo cuando viene del bruto HTML)
             if not allow_noisy and para:
-                noise_chars = sum(para.count(c) for c in "{}\";:[],")
+                noise_chars = sum(para.count(c) for c in '{}";:[],')
                 if noise_chars / max(len(para), 1) > 0.18:
                     continue
                 # Marcadores tipicos de HTML escapado en JSON: \u003c, \\n
@@ -258,7 +279,6 @@ def _prepend_supersession_paragraphs(
         + "\n\n[FIN OBSOLESCENCIA]\n\n"
     )
     return (header + body)[:max_chars]
-
 
 
 def _extract_structured_data(html: str, url: str) -> dict:
@@ -325,7 +345,7 @@ def _extract_structured_data(html: str, url: str) -> dict:
             uniform=True,
         )
 
-        for og in (data.get("opengraph") or []):
+        for og in data.get("opengraph") or []:
             if not isinstance(og, dict):
                 continue
             props = og.get("properties")
@@ -350,13 +370,15 @@ def _extract_structured_data(html: str, url: str) -> dict:
                     if m:
                         out["event_date"] = m.group(1)
 
-        for ld in (data.get("json-ld") or []):
+        for ld in data.get("json-ld") or []:
             if not isinstance(ld, dict):
                 continue
             t = ld.get("@type")
             if t and not out["schema_type"]:
-                out["schema_type"] = t if isinstance(t, str) else (
-                    t[0] if isinstance(t, list) and t else None
+                out["schema_type"] = (
+                    t
+                    if isinstance(t, str)
+                    else (t[0] if isinstance(t, list) and t else None)
                 )
             dp = ld.get("datePublished") or ld.get("dateCreated")
             if dp and not out["event_date"]:
@@ -385,7 +407,7 @@ def _extract_structured_data(html: str, url: str) -> dict:
                 elif isinstance(kws, list):
                     out["keywords"].extend([str(k).strip() for k in kws if k])
 
-        for dc in (data.get("dublincore") or []):
+        for dc in data.get("dublincore") or []:
             if not isinstance(dc, dict):
                 continue
             elements = dc.get("elements") or []
@@ -407,7 +429,7 @@ def _extract_structured_data(html: str, url: str) -> dict:
                 elif name == "dc.subject":
                     out["keywords"].append(str(content))
 
-        for md in (data.get("microdata") or []):
+        for md in data.get("microdata") or []:
             if not isinstance(md, dict):
                 continue
             t = md.get("type") or md.get("@type")
@@ -461,7 +483,10 @@ def _format_pre_extracted_block(pre: dict | None) -> str:
 
 
 async def _extract_metadata_with_llm(
-    http: httpx.AsyncClient, clean_text: str, title: str, url: str,
+    http: httpx.AsyncClient,
+    clean_text: str,
+    title: str,
+    url: str,
     pre_extracted: dict | None = None,
 ) -> dict:
     """Call LiteLLM to extract structured metadata from page text.
@@ -474,11 +499,11 @@ async def _extract_metadata_with_llm(
     determinista para campos que el LLM devuelva null."""
     pre_block = _format_pre_extracted_block(pre_extracted)
     prompt = (
-        pre_block +
-        "Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE "
+        pre_block
+        + "Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE "
         "con un JSON válido (sin markdown) con estos campos:\n"
-        "- \"title\": título del contenido\n"
-        "- \"summary\": resumen de 2-3 frases en español. "
+        '- "title": título del contenido\n'
+        '- "summary": resumen de 2-3 frases en español. '
         "Si el contenido es documentación versionada (URL con "
         "/v\\d+/, /N.x/, /api/N/, etc.) o se refiere explícitamente "
         "a una versión concreta de un producto/framework/spec/norma, "
@@ -491,16 +516,16 @@ async def _extract_metadata_with_llm(
         "la página lista fechas de EOL/soporte/security-fixes, "
         "incluye la fecha clave aplicable a esta versión. Si no "
         "detectas versionado explícito, resume normalmente.\n"
-        "- \"category\": una palabra en inglés (technology, science, business, health, "
+        '- "category": una palabra en inglés (technology, science, business, health, '
         "politics, entertainment, education, other)\n"
-        "- \"keywords\": lista de 3-5 palabras clave\n"
-        "- \"volatility_score\": \"baja\" (docs/tutoriales), \"media\" (artículos), "
-        "\"alta\" (noticias), o \"dinamica\" (precios/stocks)\n"
-        "- \"estimated_useful_life_days\": entero entre 30 y 365\n"
-        "- \"expiration_date\": fecha ISO YYYY-MM-DD si el contenido menciona una "
+        '- "keywords": lista de 3-5 palabras clave\n'
+        '- "volatility_score": "baja" (docs/tutoriales), "media" (artículos), '
+        '"alta" (noticias), o "dinamica" (precios/stocks)\n'
+        '- "estimated_useful_life_days": entero entre 30 y 365\n'
+        '- "expiration_date": fecha ISO YYYY-MM-DD si el contenido menciona una '
         "fecha concreta de evento, deadline, fin de oferta o caducidad explícita; "
         "null si no aplica o no se puede determinar\n"
-        "- \"event_date\": fecha ISO YYYY-MM-DD del evento principal descrito en el "
+        '- "event_date": fecha ISO YYYY-MM-DD del evento principal descrito en el '
         "contenido (puede ser pasada o futura). Si la URL contiene un patrón "
         "YYYY/MM/DD en el path (típico de prensa: '/2024/03/18/'), úsalo como "
         "pista cuando el texto no diga la fecha de forma explícita. "
@@ -509,26 +534,26 @@ async def _extract_metadata_with_llm(
         "del identificador (p.ej. 'Real Decreto 686/2010' → 2010-01-01, "
         "'BOE-A-2010-9269' → 2010-01-01, 'RFC 821' deducido desde el header "
         "Date). null si no hay ninguna fecha identificable.\n"
-        "- \"temporal_class\": clasificación temporal del contenido:\n"
-        "    * \"evento\" — feria, concierto, deadline, oferta, lanzamiento con "
+        '- "temporal_class": clasificación temporal del contenido:\n'
+        '    * "evento" — feria, concierto, deadline, oferta, lanzamiento con '
         "fecha concreta;\n"
-        "    * \"referencia\" — análisis o crónica descriptiva (artículo de prensa "
+        '    * "referencia" — análisis o crónica descriptiva (artículo de prensa '
         "retrospectivo, informe técnico, paper, post-mortem);\n"
-        "    * \"evergreen\" — tutorial, documentación técnica estable, definición, "
+        '    * "evergreen" — tutorial, documentación técnica estable, definición, '
         "guía atemporal QUE SIGA SIENDO LA REFERENCIA ACTUAL. Si el documento "
         "ha sido reemplazado, derogado, modificado por una versión posterior, "
         "retractado, marcado como deprecated o existe un sucesor que lo "
-        "actualiza, NO uses evergreen — usa \"referencia\" en su lugar (es "
+        'actualiza, NO uses evergreen — usa "referencia" en su lugar (es '
         "documentación histórica, no atemporal vigente).\n"
-        "- \"valor_archivistico\": ¿merece guardarse como referencia histórica si "
+        '- "valor_archivistico": ¿merece guardarse como referencia histórica si '
         "su fecha es pasada?\n"
-        "    * \"alto\" — datos verificables, análisis estructural, autoridad de "
+        '    * "alto" — datos verificables, análisis estructural, autoridad de '
         "la fuente (papers, informes oficiales tipo AEMET/BOE/sentencias, "
         "post-mortems con cifras, retrospectivas con datos, normativa "
         "superada pero con valor histórico, RFCs obsoletos por sucesores);\n"
-        "    * \"medio\" — artículo de prensa estándar, crónica común con valor "
+        '    * "medio" — artículo de prensa estándar, crónica común con valor '
         "moderado;\n"
-        "    * \"nulo\" — anuncio caducado o evento trivial pasado sin valor de "
+        '    * "nulo" — anuncio caducado o evento trivial pasado sin valor de '
         "referencia.\n\n"
         f"URL: {url}\n"
         f"Título HTML: {title or '(sin título)'}\n\n"
@@ -536,8 +561,12 @@ async def _extract_metadata_with_llm(
         "Responde SOLO con el JSON."
     )
 
-    headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {LITELLM_KEY}",
+        "Content-Type": "application/json",
+    }
     try:
+
         async def _call():
             resp = await http.post(
                 f"{LITELLM_URL}/v1/chat/completions",
@@ -635,14 +664,17 @@ class ScraperWorker:
                     policy = await self.db._get_user_audit_policy(tenant_id)
                     decision = compute_audit_decision(
                         temporal_class=existing.get("temporal_class") or "evento",
-                        valor_archivistico=existing.get("valor_archivistico") or "medio",
+                        valor_archivistico=existing.get("valor_archivistico")
+                        or "medio",
                         fecha_evento=existing.get("fecha_evento"),
                         useful_life_days=existing.get("useful_life_days"),
                         policy=policy,
                     )
                     recurso_id = str(existing["id"])
                     await self.db.upsert_usuario_recurso_estado(
-                        tenant_id, recurso_id, decision,
+                        tenant_id,
+                        recurso_id,
+                        decision,
                     )
                     await self.db.emit_reuse_event(tenant_id, trace_id, recurso_id, url)
                     # Si la policy del tenant aplica cuarentena al reusar,
@@ -653,7 +685,10 @@ class ScraperWorker:
                     # de fallback (1 min).
                     if decision["estado"] == "cuarentena":
                         await self.db.emit_quarantine_event_for_reuse(
-                            tenant_id, trace_id, recurso_id, url,
+                            tenant_id,
+                            trace_id,
+                            recurso_id,
+                            url,
                             motivo=decision["quarantine_reason"] or "evento_pasado",
                             titulo=existing.get("titulo"),
                         )
@@ -672,11 +707,15 @@ class ScraperWorker:
                         tenant_id=tenant_id, url=url
                     )
                 except Exception as e:
-                    logger.warning(f"[{trace_id}] No se pudo pre-insertar placeholder: {e}")
+                    logger.warning(
+                        f"[{trace_id}] No se pudo pre-insertar placeholder: {e}"
+                    )
 
                 # 1. Scrape
                 logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Extrayendo: {url}")
-                scraper_ctx = ScraperContext(tenant_id=tenant_id, trace_id=trace_id, redis=self.redis)
+                scraper_ctx = ScraperContext(
+                    tenant_id=tenant_id, trace_id=trace_id, redis=self.redis
+                )
                 try:
                     raw_html = await scraper_ctx.execute(url=url, source=source)
                 except BlockedContentError:
@@ -686,10 +725,16 @@ class ScraperWorker:
                     # no es un fallo técnico recuperable).
                     if placeholder_id:
                         try:
-                            await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
+                            await self.db.quarantine_recurso_blocked(
+                                tenant_id, placeholder_id
+                            )
                         except Exception as qe:
-                            logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
-                    logger.info(f"[{trace_id}] Recurso bloqueado por anti-bot, en cuarentena: {url}")
+                            logger.error(
+                                f"[{trace_id}] Fallo marcando cuarentena: {qe}"
+                            )
+                    logger.info(
+                        f"[{trace_id}] Recurso bloqueado por anti-bot, en cuarentena: {url}"
+                    )
                     await message.ack()
                     return
 
@@ -709,9 +754,13 @@ class ScraperWorker:
                 if len(clean_text.strip()) < 300:
                     if placeholder_id:
                         try:
-                            await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
+                            await self.db.quarantine_recurso_blocked(
+                                tenant_id, placeholder_id
+                            )
                         except Exception as qe:
-                            logger.error(f"[{trace_id}] Fallo marcando cuarentena: {qe}")
+                            logger.error(
+                                f"[{trace_id}] Fallo marcando cuarentena: {qe}"
+                            )
                     logger.info(
                         f"[{trace_id}] Contenido demasiado corto ({len(clean_text)} chars), cuarentena: {url}"
                     )
@@ -720,12 +769,15 @@ class ScraperWorker:
 
                 # 3. LLM metadata extraction (con datos pre-extraídos como hints)
                 extracted_data = await _extract_metadata_with_llm(
-                    self.http, clean_text, html_title, url,
+                    self.http,
+                    clean_text,
+                    html_title,
+                    url,
                     pre_extracted=pre_extracted,
                 )
                 logger.info(
-                    f"[{trace_id}] Metadata extraída: title='{extracted_data.get('title','')[:60]}' "
-                    f"category={extracted_data.get('category','?')}"
+                    f"[{trace_id}] Metadata extraída: title='{extracted_data.get('title', '')[:60]}' "
+                    f"category={extracted_data.get('category', '?')}"
                 )
 
                 # 4. Save to DB (outbox pattern)
@@ -749,17 +801,25 @@ class ScraperWorker:
                 # visible para que el usuario decida (rescatar / eliminar).
                 if placeholder_id:
                     try:
-                        await self.db.quarantine_recurso_blocked(tenant_id, placeholder_id)
-                        logger.info(f"[{trace_id}] Placeholder movido a cuarentena tras fallo: {url}")
+                        await self.db.quarantine_recurso_blocked(
+                            tenant_id, placeholder_id
+                        )
+                        logger.info(
+                            f"[{trace_id}] Placeholder movido a cuarentena tras fallo: {url}"
+                        )
                     except Exception as qe:
-                        logger.error(f"[{trace_id}] Fallo marcando cuarentena post-error: {qe}")
+                        logger.error(
+                            f"[{trace_id}] Fallo marcando cuarentena post-error: {qe}"
+                        )
                 await message.reject(requeue=False)
 
     async def consume(self):
         if not self.channel:
             await self.connect()
         queue = await self.channel.get_queue(self.input_queue, ensure=False)
-        logger.info(f"Iniciando consumo del Worker Scraper en cola '{self.input_queue}'")
+        logger.info(
+            f"Iniciando consumo del Worker Scraper en cola '{self.input_queue}'"
+        )
         await queue.consume(self.process_message)
 
     async def close(self):
@@ -777,8 +837,11 @@ class ScraperWorker:
 
 async def run_worker():
     from src.observability.logging import configure_json_logging
+
     configure_json_logging("scraper-worker")
-    RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
+    RABBIT_URL = os.getenv(
+        "RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro"
+    )
     worker = ScraperWorker(rabbit_url=RABBIT_URL)
     await worker.consume()
     logger.info("Scraper Worker escuchando activamente...")

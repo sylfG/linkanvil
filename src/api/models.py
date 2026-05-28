@@ -94,6 +94,7 @@ class LLMKeysRequest(BaseModel):
     (no API keys de OpenAI/Anthropic). El validador rechaza strings
     vacíos y trims whitespace.
     """
+
     key_lite: Optional[str] = None
     key_embeddings: Optional[str] = None
     key_pro: Optional[str] = None
@@ -114,6 +115,7 @@ class LLMKeysRequest(BaseModel):
 class AuditPolicyRequest(BaseModel):
     """Payload de PUT /profile/audit-policy. Exige las 6 keys del JSONB con
     valores enum; rechaza extras para evitar drift silencioso del schema."""
+
     policy: dict[str, str]
 
     @field_validator("policy")
@@ -198,6 +200,7 @@ class MessageOut(BaseModel):
 # El frontend usa este payload para pintar el timeline SVG + la tabla
 # "Qué pasa y cuándo".
 
+
 class DemoTimelineSession(BaseModel):
     tenant_id: str
     created_at: datetime
@@ -208,7 +211,7 @@ class DemoTimelineEvent(BaseModel):
     id: UUID
     fires_at: datetime
     fired_at: Optional[datetime] = None
-    kind: str           # transition_cuarentena | transition_expirado | reminder_expiry_5min
+    kind: str  # transition_cuarentena | transition_expirado | reminder_expiry_5min
     recurso_id: Optional[UUID] = None
     motivo: Optional[str] = None
     description: Optional[str] = None

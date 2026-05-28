@@ -3,8 +3,8 @@ import logging
 import uuid
 import re
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Request, Response
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from src.ingestion.schemas import IngestionRequest, IngestionResponse
 from src.ingestion.deduplicator import RedisDeduplicator
@@ -23,7 +23,9 @@ deduplicator: Optional[RedisDeduplicator] = None
 rabbit_publisher: Optional[RabbitMQPublisher] = None
 RATE_LIMIT_PER_MINUTE = int(os.getenv("INGESTION_RATE_LIMIT_PER_MIN", "10"))
 
-RABBIT_URL = os.getenv("RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro")
+RABBIT_URL = os.getenv(
+    "RABBITMQ_URL", "amqp://cerebro:cerebro_pass@localhost:5672/cerebro"
+)
 RABBIT_QUEUE = os.getenv("RABBITMQ_QUEUE", "url.nueva")
 RABBIT_DLQ = os.getenv("RABBITMQ_DLQ", "dlq.url.fallidas")
 
@@ -41,19 +43,30 @@ def extract_urls(text: str) -> list[str]:
     return [u.rstrip(_URL_TRAILING_PUNCT) for u in _URL_RE.findall(text)]
 
 
-async def handle_dlq_from_redis(item: str, tenant_id: str, trace_id: str, exc: Exception):
+async def handle_dlq_from_redis(
+    item: str, tenant_id: str, trace_id: str, exc: Exception
+):
     """Best-effort DLQ publish cuando Redis falla; nunca propaga excepciones."""
-    logger.error(f"[{trace_id}] REDIS FALLO - Enviando item '{item}' a la DLQ {RABBIT_DLQ}: {exc}")
+    logger.error(
+        f"[{trace_id}] REDIS FALLO - Enviando item '{item}' a la DLQ {RABBIT_DLQ}: {exc}"
+    )
     if rabbit_publisher is None:
         return
     try:
         await rabbit_publisher.publish_ingestion_message(
             queue_name=RABBIT_DLQ,
-            payload={"error": "redis_failure", "item": item, "tenant_id": tenant_id, "detail": str(exc)},
+            payload={
+                "error": "redis_failure",
+                "item": item,
+                "tenant_id": tenant_id,
+                "detail": str(exc),
+            },
             trace_id=trace_id,
         )
     except Exception as dlq_e:
-        logger.critical(f"[{trace_id}] Fallo enviando a DLQ tras caída de Redis: {dlq_e}")
+        logger.critical(
+            f"[{trace_id}] Fallo enviando a DLQ tras caída de Redis: {dlq_e}"
+        )
 
 
 @asynccontextmanager
@@ -64,10 +77,15 @@ async def lifespan(app: FastAPI):
 
     try:
         redis_client = aioredis.Redis(
-            host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            decode_responses=True,
         )
         await redis_client.ping()
-        deduplicator = RedisDeduplicator(redis_client=redis_client, dlq_callback=handle_dlq_from_redis)
+        deduplicator = RedisDeduplicator(
+            redis_client=redis_client, dlq_callback=handle_dlq_from_redis
+        )
     except Exception as e:
         logger.error(f"Fallo al conectar a Redis en el inicio: {e}")
 
@@ -107,6 +125,7 @@ app.add_middleware(
 async def health_check():
     return {"status": "healthy"}
 
+
 @app.post("/ingest", response_model=IngestionResponse, status_code=202)
 @trace_operation("ingest_url")
 async def ingest_url(request: IngestionRequest):
@@ -117,7 +136,10 @@ async def ingest_url(request: IngestionRequest):
     3. Si es nuevo y no estrangulado, emite un mensaje a la cola RabbitMQ asíncrona.
     """
     if deduplicator is None or rabbit_publisher is None:
-        raise HTTPException(status_code=503, detail="Servicios base (Redis o RabbitMQ) no disponibles. Fallback en curso.")
+        raise HTTPException(
+            status_code=503,
+            detail="Servicios base (Redis o RabbitMQ) no disponibles. Fallback en curso.",
+        )
 
     try:
         # F-06.4 Noisy Neighbor Defense — INCR atómico evita race TOCTOU
@@ -127,19 +149,29 @@ async def ingest_url(request: IngestionRequest):
             if count == 1:
                 await redis_client.expire(rate_key, 60)
             if count > RATE_LIMIT_PER_MINUTE:
-                logger.warning(f"[{request.trace_id}] Throttling activado para tenant {request.tenant_id}")
+                logger.warning(
+                    f"[{request.trace_id}] Throttling activado para tenant {request.tenant_id}"
+                )
                 try:
                     await rabbit_publisher.publish_ingestion_message(
                         queue_name=RABBIT_DLQ,
-                        payload={"error": "Too Many Requests", "request": request.model_dump(), "source": "throttling"},
+                        payload={
+                            "error": "Too Many Requests",
+                            "request": request.model_dump(),
+                            "source": "throttling",
+                        },
                         trace_id=request.trace_id,
                     )
                 except Exception:
                     pass
-                raise HTTPException(status_code=429, detail="Too Many Requests. Cuota excedida.")
+                raise HTTPException(
+                    status_code=429, detail="Too Many Requests. Cuota excedida."
+                )
 
         # Happy Path / Aislamiento (F-01.1)
-        is_new = await deduplicator.is_new_item(request.url, request.tenant_id, request.trace_id)
+        is_new = await deduplicator.is_new_item(
+            request.url, request.tenant_id, request.trace_id
+        )
 
         # Publicamos siempre. El bloom filter es un hint best-effort y puede
         # divergir del estado real de Postgres (p. ej. tras un reset de DB);
@@ -161,7 +193,7 @@ async def ingest_url(request: IngestionRequest):
             is_duplicate=not is_new,
             is_valid=True,
         )
-            
+
     except HTTPException as httpe:
         # Re-raise HTTP exceptions (like 429 Too Many Requests) without wrapping them in 500
         raise httpe
@@ -172,12 +204,15 @@ async def ingest_url(request: IngestionRequest):
             await rabbit_publisher.publish_ingestion_message(
                 queue_name=RABBIT_DLQ,
                 payload={"error": str(e), "request": request.model_dump()},
-                trace_id=request.trace_id
+                trace_id=request.trace_id,
             )
         except Exception as dlq_e:
             logger.critical(f"Fallo enviando a DLQ en falla cascada: {dlq_e}")
-            
-        raise HTTPException(status_code=500, detail="Error interno procesando evento de ingesta.")
+
+        raise HTTPException(
+            status_code=500, detail="Error interno procesando evento de ingesta."
+        )
+
 
 @app.post("/webhook/telegram/{token_hash}")
 async def telegram_webhook_user(token_hash: str, request: Request):
@@ -192,7 +227,9 @@ async def telegram_webhook_user(token_hash: str, request: Request):
     Redis se purga.
     """
     try:
-        tenant_id = await redis_client.get(f"telegram:{token_hash}") if redis_client else None
+        tenant_id = (
+            await redis_client.get(f"telegram:{token_hash}") if redis_client else None
+        )
         if not tenant_id:
             # Defensa-en-profundidad: token desconocido → 404 sin revelar info.
             # Evita enumeration attacks comparando tiempos de respuesta o mensajes.
@@ -220,7 +257,9 @@ async def telegram_webhook_user(token_hash: str, request: Request):
             return {"status": "ignored", "reason": "no url found"}
 
         trace_id = str(uuid.uuid4())
-        ingest_req = IngestionRequest(url=urls[0], tenant_id=tenant_id, source="telegram", trace_id=trace_id)
+        ingest_req = IngestionRequest(
+            url=urls[0], tenant_id=tenant_id, source="telegram", trace_id=trace_id
+        )
         result = await ingest_url(ingest_req)
         return {"status": "processed", "result": result}
 
@@ -239,6 +278,7 @@ async def telegram_webhook_user(token_hash: str, request: Request):
 # tu bot vía `PUT /profile/telegram` en cerebro-api para registrar el
 # token_hash en Redis.
 
+
 @app.post("/webhook/external")
 @trace_operation("external_webhook")
 async def external_webhook(request: Request, tenant_id: str = "default_ext"):
@@ -250,7 +290,7 @@ async def external_webhook(request: Request, tenant_id: str = "default_ext"):
     try:
         data = await request.json()
         logger.info("Recibido payload de webhook externo")
-        
+
         # Buscar campo "url", "text", "content" o serializar a JSON
         text_content = ""
         if isinstance(data, dict):
@@ -258,32 +298,34 @@ async def external_webhook(request: Request, tenant_id: str = "default_ext"):
             if url_direct:
                 text_content = url_direct
             else:
-                text_content = " ".join([str(v) for v in data.values() if isinstance(v, (str, list))])
+                text_content = " ".join(
+                    [str(v) for v in data.values() if isinstance(v, (str, list))]
+                )
         else:
             text_content = str(data)
-            
+
         urls = extract_urls(text_content)
         if not urls:
             return {"status": "ignored", "reason": "no url found in generic payload"}
-            
+
         trace_id = str(uuid.uuid4())
         results = []
-        
+
         # Ingestamos las URLs encontradas
-        for url in urls[:5]: # Mítico rate limit por payload
+        for url in urls[:5]:  # Mítico rate limit por payload
             ingest_req = IngestionRequest(
                 url=url,
                 tenant_id=tenant_id,
                 source="external_webhook",
-                trace_id=trace_id
+                trace_id=trace_id,
             )
             r = await ingest_url(ingest_req)
-            if hasattr(r, 'model_dump'):
+            if hasattr(r, "model_dump"):
                 r = r.model_dump()
             results.append(r)
-            
+
         return {"status": "processed", "results": results}
-        
+
     except httpx.HTTPStatusError as fallback_err:
         logger.error(f"Falla de pasarela: {fallback_err}")
         return {"status": "error", "detail": str(fallback_err)}
@@ -295,10 +337,8 @@ async def external_webhook(request: Request, tenant_id: str = "default_ext"):
                 await rabbit_publisher.publish_ingestion_message(
                     queue_name=RABBIT_DLQ,
                     payload={"error": str(e), "source": "external_webhook"},
-                    trace_id="webhook-error"
+                    trace_id="webhook-error",
                 )
-        except Exception as dlq_e:
+        except Exception:
             pass
         return {"status": "error", "detail": str(e)}
-
-

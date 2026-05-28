@@ -5,13 +5,15 @@ import psycopg2
 import psycopg2.extras
 import streamlit as st
 
-LITELLM_URL   = os.getenv("LITELLM_URL", "http://litellm:4000")
-LITELLM_KEY   = os.getenv("LITELLM_MASTER_KEY", "sk-cerebro-master-key")
-QDRANT_URL    = os.getenv("QDRANT_URL", "http://qdrant:6333")
+LITELLM_URL = os.getenv("LITELLM_URL", "http://litellm:4000")
+LITELLM_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-cerebro-master-key")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 INGESTION_URL = os.getenv("INGESTION_URL", "http://ingestion-api:8000")
-COLLECTION    = "cerebro_recursos"
+COLLECTION = "cerebro_recursos"
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cerebro:cerebro_db_pass@postgres:5432/cerebro_brain")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://cerebro:cerebro_db_pass@postgres:5432/cerebro_brain"
+)
 
 st.set_page_config(page_title="LinkAnvil Chat", page_icon="🧠", layout="wide")
 st.title("🧠 LinkAnvil — Segundo Cerebro")
@@ -21,8 +23,12 @@ st.title("🧠 LinkAnvil — Segundo Cerebro")
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Configuración")
-    model = st.selectbox("Modelo", ["cerebro-lite", "cerebro-pro"], index=0,
-                         help="lite → rápido y económico | pro → razonamiento complejo")
+    model = st.selectbox(
+        "Modelo",
+        ["cerebro-lite", "cerebro-pro"],
+        index=0,
+        help="lite → rápido y económico | pro → razonamiento complejo",
+    )
     use_rag = st.toggle("Usar RAG (buscar en tu base)", value=True)
     tenant_id = st.text_input("Tenant ID", value="default")
     top_k = st.slider("Resultados RAG", 1, 10, 5)
@@ -45,8 +51,14 @@ if "messages" not in st.session_state:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def ingest_url(url: str, tenant_id: str, source: str = "ui") -> dict:
-    payload = {"url": url, "tenant_id": tenant_id, "source": source, "trace_id": str(uuid.uuid4())}
+    payload = {
+        "url": url,
+        "tenant_id": tenant_id,
+        "source": source,
+        "trace_id": str(uuid.uuid4()),
+    }
     r = httpx.post(f"{INGESTION_URL}/ingest", json=payload, timeout=10.0)
     r.raise_for_status()
     return r.json()
@@ -60,7 +72,11 @@ def qdrant_search(query_vector: list[float], tenant_id: str, top_k: int) -> list
             "limit": top_k,
             "with_payload": True,
         }
-        r = httpx.post(f"{QDRANT_URL}/collections/{COLLECTION}/points/search", json=payload, timeout=5.0)
+        r = httpx.post(
+            f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+            json=payload,
+            timeout=5.0,
+        )
         if r.status_code == 200:
             return r.json().get("result", [])
     except Exception:
@@ -70,9 +86,16 @@ def qdrant_search(query_vector: list[float], tenant_id: str, top_k: int) -> list
 
 def embed_text(text: str) -> list[float] | None:
     try:
-        headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
-        r = httpx.post(f"{LITELLM_URL}/v1/embeddings", headers=headers,
-                       json={"model": "cerebro-embeddings", "input": text}, timeout=10.0)
+        headers = {
+            "Authorization": f"Bearer {LITELLM_KEY}",
+            "Content-Type": "application/json",
+        }
+        r = httpx.post(
+            f"{LITELLM_URL}/v1/embeddings",
+            headers=headers,
+            json={"model": "cerebro-embeddings", "input": text},
+            timeout=10.0,
+        )
         if r.status_code == 200:
             return r.json()["data"][0]["embedding"]
     except Exception:
@@ -81,10 +104,17 @@ def embed_text(text: str) -> list[float] | None:
 
 
 def chat_completion(messages: list[dict], model: str = "cerebro-lite") -> str:
-    headers = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {LITELLM_KEY}",
+        "Content-Type": "application/json",
+    }
     try:
-        r = httpx.post(f"{LITELLM_URL}/v1/chat/completions", headers=headers,
-                       json={"model": model, "messages": messages, "stream": False}, timeout=60.0)
+        r = httpx.post(
+            f"{LITELLM_URL}/v1/chat/completions",
+            headers=headers,
+            json={"model": model, "messages": messages, "stream": False},
+            timeout=60.0,
+        )
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
         return f"⚠️ Error del modelo ({r.status_code}): {r.text[:300]}"
@@ -93,10 +123,13 @@ def chat_completion(messages: list[dict], model: str = "cerebro-lite") -> str:
     except Exception as e:
         return f"⚠️ Error: {e}"
 
+
 # ---------------------------------------------------------------------------
 # Pestañas
 # ---------------------------------------------------------------------------
-tab_chat, tab_ingest, tab_kb = st.tabs(["💬 Chat", "🔗 Ingestar URLs", "📚 Base de Conocimiento"])
+tab_chat, tab_ingest, tab_kb = st.tabs(
+    ["💬 Chat", "🔗 Ingestar URLs", "📚 Base de Conocimiento"]
+)
 
 # ── Pestaña Chat ────────────────────────────────────────────────────────────
 with tab_chat:
@@ -114,7 +147,9 @@ with tab_chat:
                 context_block = ""
 
                 if use_rag:
-                    with st.status("🔍 Buscando en la base de conocimiento...", expanded=False) as status:
+                    with st.status(
+                        "🔍 Buscando en la base de conocimiento...", expanded=False
+                    ) as status:
                         vector = embed_text(prompt)
                         if vector:
                             hits = qdrant_search(vector, tenant_id, top_k)
@@ -123,15 +158,25 @@ with tab_chat:
                                 for h in hits:
                                     p = h.get("payload", {})
                                     fragments.append(
-                                        f"- **{p.get('title','Sin título')}** — {p.get('url','')} "
-                                        f"[similitud: {h.get('score',0):.2f}]"
+                                        f"- **{p.get('title', 'Sin título')}** — {p.get('url', '')} "
+                                        f"[similitud: {h.get('score', 0):.2f}]"
                                     )
-                                context_block = "### Contexto de tu base:\n" + "\n".join(fragments)
-                                status.update(label=f"✅ {len(hits)} documentos encontrados", state="complete")
+                                context_block = (
+                                    "### Contexto de tu base:\n" + "\n".join(fragments)
+                                )
+                                status.update(
+                                    label=f"✅ {len(hits)} documentos encontrados",
+                                    state="complete",
+                                )
                             else:
-                                status.update(label="ℹ️ Sin resultados relevantes en la base", state="complete")
+                                status.update(
+                                    label="ℹ️ Sin resultados relevantes en la base",
+                                    state="complete",
+                                )
                         else:
-                            status.update(label="⚠️ No se pudo generar embedding", state="error")
+                            status.update(
+                                label="⚠️ No se pudo generar embedding", state="error"
+                            )
 
                 system_prompt = (
                     "Eres un asistente experto que responde usando el contexto de la base de conocimiento del usuario. "
@@ -152,7 +197,9 @@ with tab_chat:
 # ── Pestaña Ingestar URLs ───────────────────────────────────────────────────
 with tab_ingest:
     st.subheader("🔗 Añadir URLs a tu base de conocimiento")
-    st.caption("Las URLs se procesan en segundo plano: scraping → LLM → vectorización → base.")
+    st.caption(
+        "Las URLs se procesan en segundo plano: scraping → LLM → vectorización → base."
+    )
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -162,8 +209,9 @@ with tab_ingest:
             height=150,
         )
     with col2:
-        source_label = st.text_input("Fuente", value="ui",
-                                     help="Etiqueta de origen (ui, manual, rss…)")
+        source_label = st.text_input(
+            "Fuente", value="ui", help="Etiqueta de origen (ui, manual, rss…)"
+        )
         st.write("")
         st.write("")
         submit = st.button("📥 Ingestar", use_container_width=True, type="primary")
@@ -185,7 +233,13 @@ with tab_ingest:
                 else:
                     results.append(("ℹ️", url, status_val))
             except httpx.HTTPStatusError as e:
-                results.append(("❌", url, f"Error {e.response.status_code}: {e.response.text[:100]}"))
+                results.append(
+                    (
+                        "❌",
+                        url,
+                        f"Error {e.response.status_code}: {e.response.text[:100]}",
+                    )
+                )
             except Exception as e:
                 results.append(("❌", url, str(e)))
 
@@ -194,8 +248,12 @@ with tab_ingest:
 
         ok = sum(1 for r in results if r[0] == "✅")
         if ok:
-            st.success(f"{ok} URL(s) encoladas. El pipeline las procesará en segundo plano.")
-            st.info("Podrás preguntarle al chat sobre ellas en cuanto termine el scraping y la vectorización (~30s por URL).")
+            st.success(
+                f"{ok} URL(s) encoladas. El pipeline las procesará en segundo plano."
+            )
+            st.info(
+                "Podrás preguntarle al chat sobre ellas en cuanto termine el scraping y la vectorización (~30s por URL)."
+            )
     elif submit:
         st.warning("Introduce al menos una URL.")
 
@@ -208,7 +266,9 @@ with tab_kb:
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT tenant_id FROM usuario_recursos ORDER BY tenant_id")
+            cur.execute(
+                "SELECT DISTINCT tenant_id FROM usuario_recursos ORDER BY tenant_id"
+            )
             tenants = [r[0] for r in cur.fetchall()]
             cur.close()
             conn.close()
@@ -243,15 +303,23 @@ with tab_kb:
             return []
 
     tenants_disponibles = load_tenants()
-    default_idx = tenants_disponibles.index(tenant_id) if tenant_id in tenants_disponibles else 0
+    default_idx = (
+        tenants_disponibles.index(tenant_id) if tenant_id in tenants_disponibles else 0
+    )
 
     col_f1, col_f2, col_f3, col_f4 = st.columns([2, 1, 1, 1])
     with col_f1:
-        search_term = st.text_input("🔍 Buscar en títulos / URLs", placeholder="palabra clave...")
+        search_term = st.text_input(
+            "🔍 Buscar en títulos / URLs", placeholder="palabra clave..."
+        )
     with col_f2:
-        kb_tenant = st.selectbox("Tenant", tenants_disponibles, index=default_idx, key="kb_tenant")
+        kb_tenant = st.selectbox(
+            "Tenant", tenants_disponibles, index=default_idx, key="kb_tenant"
+        )
     with col_f3:
-        estado_filtro = st.selectbox("Estado", ["todos", "activo", "procesando", "completado", "expirado"])
+        estado_filtro = st.selectbox(
+            "Estado", ["todos", "activo", "procesando", "completado", "expirado"]
+        )
     with col_f4:
         st.write("")
         st.write("")
@@ -262,9 +330,13 @@ with tab_kb:
 
     if search_term:
         t = search_term.lower()
-        recursos = [r for r in recursos if t in (r.get("titulo") or "").lower()
-                    or t in (r.get("url") or "").lower()
-                    or t in (r.get("resumen") or "").lower()]
+        recursos = [
+            r
+            for r in recursos
+            if t in (r.get("titulo") or "").lower()
+            or t in (r.get("url") or "").lower()
+            or t in (r.get("resumen") or "").lower()
+        ]
 
     if not recursos:
         st.info("No hay recursos en la base para este tenant y filtro.")
@@ -280,11 +352,17 @@ with tab_kb:
             titulo = rec.get("titulo") or rec.get("url") or "Sin título"
             estado = rec.get("estado", "?")
             categoria = rec.get("categoria", "")
-            emoji = {"completado": "✅", "procesando": "⏳", "expirado": "🗑️"}.get(estado, "❓")
+            emoji = {"completado": "✅", "procesando": "⏳", "expirado": "🗑️"}.get(
+                estado, "❓"
+            )
 
             col_a, col_b = st.columns([5, 1])
             with col_a:
-                if st.button(f"{emoji} {titulo[:80]}", key=str(rec["id"]), use_container_width=True):
+                if st.button(
+                    f"{emoji} {titulo[:80]}",
+                    key=str(rec["id"]),
+                    use_container_width=True,
+                ):
                     st.session_state.kb_selected = rec
             with col_b:
                 st.caption(f"`{categoria}`")
@@ -307,13 +385,18 @@ with tab_kb:
 
             if r.get("tags"):
                 import json as _json
+
                 try:
-                    tags = _json.loads(r["tags"]) if isinstance(r["tags"], str) else r["tags"]
+                    tags = (
+                        _json.loads(r["tags"])
+                        if isinstance(r["tags"], str)
+                        else r["tags"]
+                    )
                     if tags:
                         st.markdown("**Tags:** " + " ".join(f"`{t}`" for t in tags))
                 except Exception:
                     pass
 
             cols = st.columns(2)
-            cols[0].caption(f"Creado: {r.get('created_at','—')}")
-            cols[1].caption(f"Caduca: {r.get('fecha_caducidad','—')}")
+            cols[0].caption(f"Creado: {r.get('created_at', '—')}")
+            cols[1].caption(f"Caduca: {r.get('fecha_caducidad', '—')}")

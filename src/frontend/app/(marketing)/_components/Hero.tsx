@@ -9,13 +9,11 @@ import { startDemoSession } from "@/lib/demo";
 import HeroPattern from "@/components/illustrations/HeroPattern";
 import ChatPreviewFrame from "@/components/illustrations/ChatPreviewFrame";
 
-// Embed del vídeo de presentación en YouTube. Usamos youtube-nocookie
-// (privacy-enhanced) para no fijar cookies de tracking hasta que el
-// usuario pulse play. autoplay=1 al cargar el modal porque el usuario
-// ya hizo click explícito en el botón "Ver demo".
-const DEMO_VIDEO_ID = "MVeKcTZOXS8";
-const DEMO_VIDEO_EMBED = `https://www.youtube-nocookie.com/embed/${DEMO_VIDEO_ID}?autoplay=1&rel=0&modestbranding=1`;
-const DEMO_VIDEO_WATCH = `https://youtu.be/${DEMO_VIDEO_ID}`;
+// El vídeo de demostración del producto. Cuando exista el asset
+// definitivo, sustituir esta URL por /demo.mp4 (o un embed). El
+// vídeo de presentación general vive en su propia sección inline
+// del landing (VideoIntro), no en este modal.
+const DEMO_VIDEO_SRC = "/demo.mp4";
 
 export default function Hero() {
   const router = useRouter();
@@ -142,9 +140,9 @@ export default function Hero() {
         </motion.div>
       </div>
 
-      {/* Modal de vídeo: iframe de YouTube cargado bajo demanda (sólo
-          cuando el usuario pulsa Play). Cerrable con ESC, click en
-          el backdrop o en la X. */}
+      {/* Modal de vídeo. Si /demo.mp4 no existe todavía, el <video>
+          mostrará el "poster" + mensaje "vídeo próximamente". Cerrable
+          con ESC, click en el backdrop o en la X. */}
       <AnimatePresence>
         {videoOpen && <VideoModal onClose={() => setVideoOpen(false)} />}
       </AnimatePresence>
@@ -190,32 +188,27 @@ function VideoModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="relative bg-black aspect-video w-full">
-          <iframe
-            src={DEMO_VIDEO_EMBED}
-            title="LinkAnvil — vídeo de presentación"
-            className="absolute inset-0 w-full h-full"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            referrerPolicy="strict-origin-when-cross-origin"
-            allowFullScreen
-          />
-          <noscript>
-            <div className="absolute inset-0 flex items-center justify-center px-6 text-center bg-black/80">
+          <video
+            src={DEMO_VIDEO_SRC}
+            controls
+            playsInline
+            preload="metadata"
+            className="absolute inset-0 w-full h-full object-contain"
+          >
+            {/* Si el navegador no puede reproducirlo o el archivo no
+                existe todavía, se muestra el fallback de abajo. */}
+          </video>
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center px-6">
+            <noscript>
               <p className="text-sm text-muted">
-                Necesitas JavaScript para ver el vídeo embebido.{" "}
-                <a
-                  href={DEMO_VIDEO_WATCH}
-                  className="text-accent-light hover:underline"
-                >
-                  Ábrelo en YouTube
-                </a>
-                .
+                Necesitas JavaScript activado para ver el vídeo.
               </p>
-            </div>
-          </noscript>
+            </noscript>
+          </div>
         </div>
         <div className="px-5 py-3 border-t border-border bg-bg/40 text-xs text-muted flex items-center justify-between gap-4">
           <span>
-            ¿Sin sonido? Activa los altavoces.
+            ¿Sin sonido? Activa los altavoces. Duración aproximada: 90s.
           </span>
           <Link
             href="/login"

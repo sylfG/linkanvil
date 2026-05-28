@@ -67,10 +67,69 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
         return "", re.sub(r'\s+', ' ', clean).strip()[:max_chars]
 
 
+_SUPERSESSION_PATTERNS = [
+    # Espanol (BOE/normativa)
+    r"SE\s+DEROGA",
+    r"SE\s+MODIFICA",
+    r"Refer(?:e|é)ncias\s+posteriores",
+    r"redacción\s+dada\s+por",
+    r"modificad[oa]\s+por",
+    r"derogad[oa]\s+por",
+    # Ingles (RFCs, papers, APIs)
+    r"Obsoleted\s+by\s+RFC",
+    r"Updated\s+by\s+RFC",
+    r"This\s+document\s+(?:has\s+been|is)\s+(?:retract|supersed)",
+    r"RETRACTED",
+    r"Retraction\s+(?:Note|Notice)",
+    r"This\s+API\s+is\s+deprecat",
+    r"Use\s+\S+\s+instead",
+    r"superseded\s+by",
+    r"replaced\s+by",
+    r"newer\s+version\s+available",
+]
+
+import re as _re_sup
+_SUPERSESSION_RE = _re_sup.compile(
+    "|".join(_SUPERSESSION_PATTERNS), _re_sup.IGNORECASE,
+)
+
+
+def _extract_supersession_signals(full_text: str) -> str:
+    """Devuelve un bloque breve con las lineas que indican que el documento
+    ha sido modificado, derogado, retractado o reemplazado. Vacio si ninguna.
+
+    Se invoca antes de truncar el texto para el LLM: si encontramos
+    marcadores, los pegamos al inicio del prompt asi el LLM los ve aunque
+    esten al final del documento (caso tipico de BOE: la seccion
+    "Analisis" con las referencias posteriores aparece tras 15-20k chars).
+    """
+    if not full_text:
+        return ""
+    matches = []
+    seen = set()
+    for m in _SUPERSESSION_RE.finditer(full_text):
+        start = max(0, m.start() - 30)
+        end = min(len(full_text), m.end() + 160)
+        snippet = full_text[start:end].strip()
+        # Compactar espacios y saltos de linea
+        snippet = _re_sup.sub(r"\s+", " ", snippet)
+        key = snippet[:80].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(snippet)
+        if len(matches) >= 6:
+            break
+    if not matches:
+        return ""
+    return "MARCADORES DE OBSOLESCENCIA DETECTADOS EN EL DOCUMENTO:\n- " + "\n- ".join(matches) + "\n\n"
+
+
 async def _extract_metadata_with_llm(
     http: httpx.AsyncClient, clean_text: str, title: str, url: str
 ) -> dict:
     """Call LiteLLM to extract structured metadata from page text."""
+    supersession_block = _extract_supersession_signals(clean_text)
     prompt = (
         "Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE "
         "con un JSON válido (sin markdown) con estos campos:\n"
@@ -96,18 +155,24 @@ async def _extract_metadata_with_llm(
         "    * \"referencia\" — análisis o crónica descriptiva (artículo de prensa "
         "retrospectivo, informe técnico, paper, post-mortem);\n"
         "    * \"evergreen\" — tutorial, documentación técnica estable, definición, "
-        "guía atemporal.\n"
+        "guía atemporal QUE SIGA SIENDO LA REFERENCIA ACTUAL. Si el documento "
+        "ha sido reemplazado, derogado, modificado por una versión posterior, "
+        "retractado, marcado como deprecated o existe un sucesor que lo "
+        "actualiza, NO uses evergreen — usa \"referencia\" en su lugar (es "
+        "documentación histórica, no atemporal vigente).\n"
         "- \"valor_archivistico\": ¿merece guardarse como referencia histórica si "
         "su fecha es pasada?\n"
         "    * \"alto\" — datos verificables, análisis estructural, autoridad de "
-        "la fuente (papers, informes oficiales tipo AEMET, post-mortems con "
-        "cifras, retrospectivas con datos);\n"
+        "la fuente (papers, informes oficiales tipo AEMET/BOE/sentencias, "
+        "post-mortems con cifras, retrospectivas con datos, normativa "
+        "superada pero con valor histórico, RFCs obsoletos por sucesores);\n"
         "    * \"medio\" — artículo de prensa estándar, crónica común con valor "
         "moderado;\n"
         "    * \"nulo\" — anuncio caducado o evento trivial pasado sin valor de "
         "referencia.\n\n"
         f"URL: {url}\n"
         f"Título HTML: {title or '(sin título)'}\n\n"
+        f"{supersession_block}"
         f"Texto:\n{clean_text[:6000]}\n\n"
         "Responde SOLO con el JSON."
     )

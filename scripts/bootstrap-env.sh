@@ -24,11 +24,13 @@ echo -e "${CYAN}ℹ Backup creado: .env.bak${RESET}"
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 needs_value() {
-    # Devuelve 0 (true) si la variable está vacía o termina en _CHANGE_ME
+    # Devuelve 0 (true) si la variable está vacía o el valor sigue siendo
+    # un placeholder de .env.example (acaba en CHANGE_ME, con guion o
+    # underscore como separador para tolerar ambos estilos).
     local var="$1"
     local current
     current=$(grep "^${var}=" .env | head -1 | cut -d= -f2-)
-    [[ -z "$current" || "$current" == *_CHANGE_ME ]] && return 0
+    [[ -z "$current" || "$current" == *CHANGE_ME ]] && return 0
     return 1
 }
 
@@ -73,6 +75,14 @@ declare -A AUTO_VARS=(
     [LLM_KEYS_ENCRYPTION_KEY]="fernet"
 )
 
+# Fichero de "transcript" de secretos generados en esta corrida. Lo
+# consume up.sh al final para mostrar la ruta al operador. chmod 600 →
+# solo root (el operador del script). Está en .gitignore.
+SECRETS_OUT="${SECRETS_OUT:-$SCRIPT_DIR/.secrets-generated.txt}"
+# Reset por corrida: cada bootstrap empieza con un transcript vacío.
+: > "$SECRETS_OUT"
+chmod 600 "$SECRETS_OUT" 2>/dev/null || true
+
 echo -e "${BOLD}━━ Rellenando secretos auto-generables ━━${RESET}"
 generated=0
 for var in "${!AUTO_VARS[@]}"; do
@@ -86,6 +96,7 @@ for var in "${!AUTO_VARS[@]}"; do
             *)        echo "Tipo desconocido: ${spec[0]}"; continue ;;
         esac
         set_value "$var" "$val"
+        echo "${var}=${val}" >> "$SECRETS_OUT"
         echo -e "  ${GREEN}✔${RESET} $var generado"
         generated=$((generated + 1))
     fi
@@ -299,5 +310,13 @@ if [[ "$seed_current" == "false" || -z "$seed_current" ]] && [[ "$NON_INTERACTIV
     esac
 fi
 
+# Hardening de permisos: .env y .env.bak contienen secretos en claro.
+# 600 = solo el dueño (root operador) puede leerlos.
+chmod 600 .env .env.bak 2>/dev/null || true
+[[ -f "$SECRETS_OUT" ]] && chmod 600 "$SECRETS_OUT" 2>/dev/null || true
+
 echo ""
-echo -e "${GREEN}${BOLD}✔ .env listo${RESET} (backup en .env.bak)"
+echo -e "${GREEN}${BOLD}✔ .env listo${RESET} (backup en .env.bak, permisos 600)"
+if [[ -s "$SECRETS_OUT" ]]; then
+    echo -e "${CYAN}ℹ Secretos generados en esta corrida: $SECRETS_OUT${RESET}"
+fi

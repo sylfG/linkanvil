@@ -10,6 +10,7 @@
 #   bash up.sh --no-wait                          # no espera healthchecks
 #   bash up.sh --reconfigure-llm                  # reabre el prompt de proveedores LLM
 #   bash up.sh --reconfigure-public               # reabre el prompt de modo público (re-pide authkey)
+#   bash up.sh --print-secrets                    # imprime por pantalla los secretos generados (riesgo scrollback)
 #
 # Modo no interactivo (CI/Ansible/Terraform):
 #   bash up.sh --non-interactive \
@@ -39,6 +40,7 @@ RECONFIGURE_PUBLIC=false
 DO_BUILD=true
 DO_WAIT=true
 RECONFIGURE_LLM=false
+PRINT_SECRETS=false
 NON_INTERACTIVE=false
 CLI_PROVIDERS=""
 CLI_EMBEDDING_DIM=""
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --no-build)         DO_BUILD=false; shift ;;
         --no-wait)          DO_WAIT=false; shift ;;
         --reconfigure-llm)  RECONFIGURE_LLM=true; shift ;;
+        --print-secrets)    PRINT_SECRETS=true; shift ;;
         --non-interactive)  NON_INTERACTIVE=true; shift ;;
         --provider)         [[ -z "${2:-}" ]] && fail "--provider requiere un valor"
                             CLI_PROVIDERS="$2"; shift 2 ;;
@@ -400,3 +403,35 @@ echo -e "  ${CYAN}make ps-oneshot${RESET}      # estado init containers"
 echo -e "  ${CYAN}make health${RESET}          # health rápido"
 echo -e "  ${CYAN}bash scripts/wait-healthy.sh --once${RESET}"
 echo ""
+
+# ── 9. Resumen de secretos auto-generados ───────────────────────────────────
+# bootstrap-env.sh ha dejado en .secrets-generated.txt SOLO los secretos
+# que generó en esta corrida (las claves ya presentes en .env no se tocan).
+# Por defecto NO los imprimimos en pantalla: el scrollback del terminal y
+# los logs SSH son superficie de fuga. Se muestra ruta + comando, con
+# `--print-secrets` el operador acepta el riesgo explícitamente.
+SECRETS_FILE=".secrets-generated.txt"
+if [[ -s "$SECRETS_FILE" ]]; then
+    echo -e "${BOLD}━━━━━━━━━━━━━ SECRETOS AUTO-GENERADOS ━━━━━━━━━━━━━${RESET}"
+    n_secrets=$(wc -l < "$SECRETS_FILE" | tr -d ' ')
+    echo -e "  Se generaron ${BOLD}${n_secrets}${RESET} secretos en esta corrida."
+    echo -e "  Archivo: ${CYAN}$(pwd)/${SECRETS_FILE}${RESET}  (chmod 600, en .gitignore)"
+    echo ""
+    if $PRINT_SECRETS; then
+        warn "Imprimiendo secretos en pantalla (--print-secrets). El scrollback los retendrá."
+        echo ""
+        # Los rotulamos en amarillo para que sean visualmente "tóxicos".
+        while IFS='=' read -r k v; do
+            echo -e "  ${YELLOW}${k}${RESET}=${v}"
+        done < "$SECRETS_FILE"
+        echo ""
+        echo -e "  ${YELLOW}↑ Guárdalos en un gestor (1Password/Bitwarden/Vault) y limpia el scrollback:${RESET}"
+        echo -e "  ${CYAN}history -c && clear${RESET}"
+    else
+        echo -e "  Para verlos una vez: ${CYAN}sudo cat ${SECRETS_FILE}${RESET}"
+        echo -e "  Para imprimirlos en pantalla en futuros arranques: ${CYAN}bash up.sh --print-secrets${RESET}"
+        echo -e "  ${YELLOW}Recomendación:${RESET} copia los que necesites a un gestor de secretos y borra el archivo:"
+        echo -e "  ${CYAN}shred -u ${SECRETS_FILE}${RESET}   (o ${CYAN}rm -f ${SECRETS_FILE}${RESET})"
+    fi
+    echo ""
+fi

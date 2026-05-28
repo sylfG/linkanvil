@@ -1,6 +1,9 @@
 # Entorno y secretos
 .env
+.env.bak
+.env.local
 *.env.local
+.secrets-generated.txt
 
 # Docker volumes generados
 infra/grafana/dashboards/.gitkeep

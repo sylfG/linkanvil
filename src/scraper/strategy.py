@@ -4,6 +4,11 @@ import os
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 
+import sys, os as _os
+_here = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "ingestion"))
+sys.path.insert(0, _here)
+from _url_safety import validate_url, UnsafeURLError
+
 import httpx
 
 from src.scraper._retry import with_retries
@@ -56,13 +61,42 @@ class ScraperStrategy(ABC):
 
 class BasicHttpStrategy(ScraperStrategy):
     async def scrape(self, url: str) -> str:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # Defense-in-depth: re-validar (el scraper consume de la cola,
+        # pero un atacante podria haber inyectado la URL en outbox).
+        try:
+            validate_url(url)
+        except UnsafeURLError as e:
+            raise BlockedContentError(f"URL rechazada (SSRF guard): {e}") from e
+
+        # follow_redirects=False: cada redirect debe re-validarse, no podemos
+        # confiar en que el Location no apunte a un host interno.
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
             async def _do():
-                resp = await client.get(
-                    url, headers={"User-Agent": "Mozilla/5.0 (compatible; LinkAnvil/1.0)"}
-                )
-                resp.raise_for_status()
-                return resp.text
+                current = url
+                for hop in range(5):  # max 5 redirects manuales
+                    resp = await client.get(
+                        current,
+                        headers={"User-Agent": "Mozilla/5.0 (compatible; LinkAnvil/1.0)"},
+                    )
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        next_url = resp.headers.get("location", "")
+                        if not next_url:
+                            resp.raise_for_status()
+                            return resp.text
+                        # Resolver relativos contra current
+                        from urllib.parse import urljoin
+                        next_url = urljoin(current, next_url)
+                        try:
+                            validate_url(next_url)
+                        except UnsafeURLError as e:
+                            raise BlockedContentError(
+                                f"Redirect a destino interno bloqueado: {e}"
+                            ) from e
+                        current = next_url
+                        continue
+                    resp.raise_for_status()
+                    return resp.text
+                raise BlockedContentError("Demasiados redirects (>5)")
 
             return await with_retries(_do)
 

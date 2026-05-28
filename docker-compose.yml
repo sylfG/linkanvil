@@ -226,7 +226,7 @@ services:
           memory: 768M
           cpus: "1.0"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
       REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
@@ -275,7 +275,7 @@ services:
           memory: 384M
           cpus: "0.5"
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     environment:
       # Server-side proxy target (never exposed to browser)
       CEREBRO_API_URL: "http://cerebro-api:8001"
@@ -324,8 +324,8 @@ services:
       - "--tracing.otlp.http.endpoint=http://otel-collector:4318/v1/traces"
       - "--log.level=INFO"
     ports:
-      - "80:80"
-      - "8080:8080"   # Traefik Dashboard
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:8080:8080"   # Traefik Dashboard
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks:
@@ -365,8 +365,8 @@ services:
       RABBITMQ_ERLANG_COOKIE: cerebro_erlang_cookie_secret
       RABBITMQ_MANAGEMENT_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
     ports:
-      - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI
+      - "127.0.0.1:5672:5672"    # AMQP
+      - "127.0.0.1:15672:15672"  # Management UI
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
       - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
@@ -404,7 +404,7 @@ services:
     environment:
       REDIS_ARGS: "--requirepass ${REDIS_PASSWORD:-cerebro_redis_pass} --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000 --appendonly yes"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     networks:
@@ -449,7 +449,7 @@ services:
       - "-c"
       - "maintenance_work_mem=128MB"
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
@@ -481,8 +481,8 @@ services:
       QDRANT__SERVICE__GRPC_PORT: 6334
       QDRANT__LOG_LEVEL: INFO
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "127.0.0.1:6333:6333"   # REST API
+      - "127.0.0.1:6334:6334"   # gRPC
     volumes:
       - qdrant-data:/qdrant/storage
       - ./infra/qdrant/config.yaml:/qdrant/config/production.yaml:ro
@@ -551,7 +551,7 @@ services:
       XAI_API_KEY: ${XAI_API_KEY:-sk-xai-placeholder}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-sk-nv-placeholder}
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - ./infra/litellm/config.yaml:/app/config.yaml:ro
     depends_on:
@@ -673,7 +673,7 @@ services:
       # al hacer POST a cerebro-api /admin/audit-cron.
       AUDIT_CRON_TOKEN: ${AUDIT_CRON_TOKEN:-}
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:
@@ -738,9 +738,9 @@ services:
       SPAN_STORAGE_TYPE: memory        # Ephemeral: evita problemas de permisos en vol
       MEMORY_MAX_TRACES: 10000
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "14317:4317"    # OTLP gRPC (host diferente para no colisionar con otel)
-      - "14318:4318"    # OTLP HTTP
+      - "127.0.0.1:16686:16686"   # Jaeger UI
+      - "127.0.0.1:14317:4317"    # OTLP gRPC (host diferente para no colisionar con otel)
+      - "127.0.0.1:14318:4318"    # OTLP HTTP
     networks:
       - cerebro-net
     labels:
@@ -771,10 +771,10 @@ services:
     volumes:
       - ./infra/otel/config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"    # OTLP gRPC (recibe de servicios internos)
-      - "4318:4318"    # OTLP HTTP
-      - "8888:8888"    # Prometheus metrics del collector
-      - "8889:8889"    # Prometheus exporter
+      - "127.0.0.1:4317:4317"    # OTLP gRPC (recibe de servicios internos)
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
+      - "127.0.0.1:8888:8888"    # Prometheus metrics del collector
+      - "127.0.0.1:8889:8889"    # Prometheus exporter
     depends_on:
       - jaeger
     networks:
@@ -804,7 +804,7 @@ services:
       - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infra/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
@@ -841,7 +841,7 @@ services:
       GF_SERVER_ROOT_URL: http://grafana.localhost
       GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro

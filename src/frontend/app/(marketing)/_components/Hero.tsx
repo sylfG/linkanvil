@@ -234,22 +234,22 @@ function VideoModal({ onClose }: { onClose: () => void }) {
         className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm"
         onClick={onClose}
       />
-      {/* Modal sizing — clave para que el 16:9 quepa entero:
+      {/* Modal sizing — el ancho se calcula para que el 16:9 quepa
+          exactamente en la altura disponible, sin letterbox lateral.
           · max-h-[92vh]: deja 8vh de aire arriba/abajo
-          · w-[min(96vw,1280px)]: ancho cap a 1280px en desktop, 96vw en
-            pantallas pequenas; 1280 da margen suficiente para que el
-            video no quede ridiculamente pequeno en monitores 4K
-          · flex flex-col + header/footer flex-shrink-0 + video wrapper
-            flex-1 min-h-0: el video crece y SE ENCOGE para llenar el
-            espacio libre verticalmente, manteniendo 16:9 via aspect-video
-            sobre un wrapper centrado dentro del flex-1
+          · width = min(96vw, 1280px, calc((92vh - 100px) * 16 / 9))
+            → el tercer term es "el ancho que hace que un 16:9 +
+            header (52px) + footer (44px) ocupe exactamente 92vh".
+            En laptops 1366x768 ese cap suele ganar, dando un modal
+            ajustado al video. En monitores muy altos, 1280 cap.
       */}
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 20 }}
         transition={{ duration: 0.2 }}
-        className="fixed inset-4 md:inset-x-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[min(96vw,1280px)] md:max-h-[92vh] z-[61] bg-card border border-border rounded-2xl overflow-hidden flex flex-col"
+        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-h-[92vh] z-[61] bg-card border border-border rounded-2xl overflow-hidden flex flex-col"
+        style={{ width: "min(96vw, 1280px, calc((92vh - 100px) * 16 / 9))" }}
       >
         <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-2 text-sm text-slate-200">
@@ -265,16 +265,15 @@ function VideoModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Zona del video: flex-1 ocupa la altura libre del modal,
-            min-h-0 permite shrink dentro del flex column. Wrapper
-            interno con aspect-ratio: 16/9 + width 100% + max-h 100%
-            → si la altura derivada (W*9/16) excede el container, el
-            navegador clamps la altura y aspect-ratio shrinks el width
-            proporcionalmente. Resultado: el vídeo entero siempre
-            visible, centrado con letterboxing horizontal cuando el
-            modal es muy alto. */}
+        {/* Zona del video: flex-1 ocupa la altura libre del modal.
+            Wrapper interno con h-full (altura = padre) + max-w-full
+            (clamp horizontal) + aspect-ratio 16/9 (deriva el width).
+            Asi nunca peleamos contra el flex stretch: la altura es la
+            dimension fija, el ancho se calcula y se reduce si excede
+            el modal. Resultado: caja 16:9 perfecta, centrada con
+            letterboxing horizontal en monitores anchos. */}
         <div className="flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
-          <div className="relative aspect-video w-full max-h-full">
+          <div className="relative aspect-video h-full max-w-full">
             <iframe
               src={DEMO_VIDEO_EMBED}
               title="LinkAnvil — demostración"

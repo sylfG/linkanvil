@@ -106,7 +106,22 @@ y `cerebro-embeddings` que mapean a los providers configurados en su
 
 **Texto literal del prompt:**
 
+> El prompt empieza con un bloque opcional `[PISTAS ESTRUCTURADAS DEL HTML]`
+> (poblado por `htmldate` + `extruct` — ver §4.3 de
+> [5 · Herramientas IA](./5-herramientas-ia#43-pre-extraccion-determinista-antes-del-llm)).
+> Después viene la lista de campos a producir. El bloque inicial solo
+> aparece cuando hay datos deterministas que ofrecer.
+
 ```text
+[PISTAS ESTRUCTURADAS DEL HTML — fuentes deterministas; úsalas como punto de partida pero contrástalas con el texto y la URL, no las prefieras ciegamente si entran en conflicto]
+- event_date (htmldate/OG/JSON-LD): {pre_extracted.event_date}
+- og:type: {pre_extracted.og_type}
+- schema.org @type: {pre_extracted.schema_type}
+- og:description: {pre_extracted.og_description}
+- authors: {pre_extracted.authors}
+- keywords (autor): {pre_extracted.keywords}
+[FIN DATOS ESTRUCTURADOS]
+
 Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE con un JSON válido (sin markdown) con estos campos:
 - "title": título del contenido
 - "summary": resumen de 2-3 frases en español
@@ -115,13 +130,13 @@ Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE c
 - "volatility_score": "baja" (docs/tutoriales), "media" (artículos), "alta" (noticias), o "dinamica" (precios/stocks)
 - "estimated_useful_life_days": entero entre 30 y 365
 - "expiration_date": fecha ISO YYYY-MM-DD si el contenido menciona una fecha concreta de evento, deadline, fin de oferta o caducidad explícita; null si no aplica o no se puede determinar
-- "event_date": fecha ISO YYYY-MM-DD del evento principal descrito en el contenido (puede ser pasada o futura). Si la URL contiene un patrón YYYY/MM/DD en el path (típico de prensa: '/2024/03/18/'), úsalo como pista cuando el texto no diga la fecha de forma explícita. null si no hay ninguna fecha identificable.
+- "event_date": fecha ISO YYYY-MM-DD del evento principal descrito en el contenido (puede ser pasada o futura). Si la URL contiene un patrón YYYY/MM/DD en el path (típico de prensa: '/2024/03/18/'), úsalo como pista cuando el texto no diga la fecha de forma explícita. Para documentos normativos (BOE, decretos, sentencias, RFCs), usa la 'Fecha de disposición', 'Fecha de publicación' o el año explícito del identificador (p.ej. 'Real Decreto 686/2010' → 2010-01-01, 'BOE-A-2010-9269' → 2010-01-01, 'RFC 821' deducido desde el header Date). null si no hay ninguna fecha identificable.
 - "temporal_class": clasificación temporal del contenido:
     * "evento" — feria, concierto, deadline, oferta, lanzamiento con fecha concreta;
     * "referencia" — análisis o crónica descriptiva (artículo de prensa retrospectivo, informe técnico, paper, post-mortem);
-    * "evergreen" — tutorial, documentación técnica estable, definición, guía atemporal.
+    * "evergreen" — tutorial, documentación técnica estable, definición, guía atemporal QUE SIGA SIENDO LA REFERENCIA ACTUAL. Si el documento ha sido reemplazado, derogado, modificado por una versión posterior, retractado, marcado como deprecated o existe un sucesor que lo actualiza, NO uses evergreen — usa "referencia" en su lugar (es documentación histórica, no atemporal vigente).
 - "valor_archivistico": ¿merece guardarse como referencia histórica si su fecha es pasada?
-    * "alto" — datos verificables, análisis estructural, autoridad de la fuente (papers, informes oficiales tipo AEMET, post-mortems con cifras, retrospectivas con datos);
+    * "alto" — datos verificables, análisis estructural, autoridad de la fuente (papers, informes oficiales tipo AEMET/BOE/sentencias, post-mortems con cifras, retrospectivas con datos, normativa superada pero con valor histórico, RFCs obsoletos por sucesores);
     * "medio" — artículo de prensa estándar, crónica común con valor moderado;
     * "nulo" — anuncio caducado o evento trivial pasado sin valor de referencia.
 
@@ -133,6 +148,12 @@ Texto:
 
 Responde SOLO con el JSON.
 ```
+
+> El `clean_text` que llega al prompt puede empezar con los bloques
+> sintéticos `[OBSOLESCENCIA DETECTADA — extractos del documento]` y
+> `[METADATA DEL AUTOR]` (ver
+> [3 · Componentes · cerebro-scraper](./3-componentes#-cerebro-scraper--el-lector-de-paginas)).
+> El LLM los lee como cualquier otro párrafo del texto.
 
 **Schema del output**:
 
@@ -183,7 +204,23 @@ la llamada falla, **fail-open** con valores por defecto seguros:
   de un poco de variabilidad estilística.
 - Trunca el texto a 6000 chars — páginas largas pierden contexto en
   esta fase. El chunking para RAG ocurre después, en el embedder,
-  sobre el `contenido` completo guardado en BD.
+  sobre el `contenido` completo guardado en BD. El bloque
+  `[OBSOLESCENCIA DETECTADA]` se prepone **antes** del truncado, así
+  que los marcadores de derogación llegan al LLM aunque el cuerpo
+  exceda 6000 chars.
+- **Merge defensivo post-LLM**: si la respuesta del LLM contiene
+  `event_date=null` o `keywords=[]`, el scraper rellena ese campo con
+  el valor determinista de `pre_extracted` antes de persistir en
+  Postgres. Si el LLM falla por completo (3 retries agotados), el
+  fallback hard-coded (`title=url`, `summary=primeros 400 chars`,
+  etc.) también se enriquece con `event_date` y `keywords`
+  pre-extraídos. Resultado: `event_date` y `keywords` rara vez quedan
+  vacíos si el HTML tiene metadatos estructurados.
+- **Heurística de coherencia URL-año**: si `htmldate` devuelve un año
+  contradictorio con el que aparece en la URL (`BOE-A-YYYY-…`,
+  `/YYYY/MM/`), se sobreescribe a `{año_url}-01-01` antes de pasarlo
+  al LLM. Evita que el LLM herede una fecha errónea del CMS y
+  preserva la pista del prompt para normativa (`BOE-A-2010-…` → 2010).
 
 ---
 

@@ -163,8 +163,11 @@ sequenceDiagram
             SC->>PG: UPDATE recursos SET estado='cuarentena', quarantine_reason='manual'
             Note over SC: ACK al mensaje (no DLQ)
         else Contenido válido
-            SC->>LLM: analiza texto → JSON estructurado
-            LLM-->>SC: {titulo, resumen, tags, volatilidad}
+            SC->>SC: extracción determinista pre-LLM (htmldate + extruct)
+            SC->>SC: prepend [METADATA DEL AUTOR] + [OBSOLESCENCIA DETECTADA] al clean_text
+            SC->>LLM: analiza texto + pistas estructuradas → JSON estructurado
+            LLM-->>SC: {titulo, resumen, tags, volatilidad, event_date, temporal_class, valor_archivistico}
+            Note over SC: Merge defensivo: si LLM devuelve null en event_date o keywords, se rellena con el dato determinista
             SC->>PG: UPSERT recursos + INSERT usuario_recursos + outbox 'recurso.procesado'
             Note over PG: Transacción atómica — Outbox Pattern
             MQ->>EM: consume 'recurso.procesado'

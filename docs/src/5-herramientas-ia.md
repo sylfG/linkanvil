@@ -196,7 +196,7 @@ modelos está servida por **NVIDIA NIM Preview** (free tier) en
 
 | Alias | Provider real configurado | Uso en LinkAnvil |
 |---|---|---|
-| `cerebro-lite` | NVIDIA NIM · `meta/llama-3.1-8b-instruct` + fallback `mistralai/mixtral-8x7b-instruct-v0.1` | Extracción de metadata estructurada, clasificador de relaciones, chat sin RAG complejo, pre-push security scan |
+| `cerebro-lite` | NVIDIA NIM · `meta/llama-3.1-8b-instruct` + fallback `mistralai/mixtral-8x7b-instruct-v0.1` | Extracción de metadata estructurada (con hints deterministas pre-extraídos, ver §4.3), clasificador de relaciones, chat sin RAG complejo, pre-push security scan |
 | `cerebro-pro` | NVIDIA NIM · `meta/llama-3.3-70b-instruct` + fallback `nvidia/llama-3.3-nemotron-super-49b-v1.5` | Chat con RAG denso, respuestas largas, razonamiento complejo. El usuario lo elige con `model=pro` |
 | `cerebro-embeddings` | NVIDIA NIM · `nvidia/nv-embedqa-e5-v5` | Vectores **1024-dim** para Qdrant: ingesta de recursos + embedding del query de chat para retrieval |
 
@@ -223,6 +223,38 @@ Voyage el día que se decida pagar, sin tocar los workers.
 > embedder, chat RAG, chat no-RAG, clasificador semántico) vive
 > documentado en [7 · Prompts del sistema](./7-prompts) con texto
 > literal, schema JSON y manejo de errores.
+
+### 4.3 Pre-extracción determinista antes del LLM
+
+El scraper **no** lanza el texto al LLM a pelo. Antes de invocar a
+`cerebro-lite` con el prompt de metadatos, el pipeline ejecuta dos
+extracciones deterministas que no usan IA:
+
+| Librería | Qué extrae | De dónde |
+|---|---|---|
+| `htmldate` | Fecha de publicación (YYYY-MM-DD) | `<meta>`, OpenGraph, JSON-LD, paths `/YYYY/MM/DD/`, signals robustos |
+| `extruct` | JSON-LD (`@type`, `datePublished`, `author`, `keywords`), OpenGraph (`og:type`, `og:description`, `article:published_time`), Schema.org microdata, Dublin Core | Etiquetas estructuradas del HTML |
+
+El resultado se inyecta en el prompt como un bloque `[PISTAS
+ESTRUCTURADAS DEL HTML]` que el LLM trata como **hint** (no orden) y se
+usa también como **fallback defensivo**: si el LLM devuelve `null` en
+`event_date` o `keywords[]`, el campo se rellena con el valor
+determinista. Si el LLM falla por completo (3 retries agotados), el
+fallback hard-coded también se enriquece con estos datos.
+
+**Heurística de coherencia**: si la URL delata el año del documento
+(p. ej. `BOE-A-2010-9269`, `/2024/03/18/`) y `htmldate` devuelve un año
+distinto, se sobreescribe a `{año_url}-01-01`. Evita que `htmldate`
+confunda el `last-mod` del CMS con la fecha real del documento.
+
+**Ahorro típico**: ~40-50% menos tokens al LLM (~1700 → ~900 por
+llamada) y `event_date` determinista para sitios con JSON-LD bien
+poblado (Schema.org Article, NewsArticle, etc.).
+
+> Documentación completa del flujo en [7 · Ciclo de vida — Fase 1
+> Ingesta](./7-lifecycle#2-fase-1--ingesta) y el detalle del prompt
+> consumidor (con la sección de normativa BOE/RFC/decretos) en
+> [7 · Prompts del sistema](./7-prompts).
 
 ---
 

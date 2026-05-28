@@ -148,7 +148,14 @@ El sistema usa "trabajadores" silenciosos: son independientes, pueden tomarse su
 
 - **Lectura Inteligente:** toma los enlaces que acaban de entrar al sistema (cola `q.url.ingesta`). Si la página es sencilla, extrae el texto directamente. Si es una página moderna y compleja, abre un "navegador invisible" Playwright (modo Stealth) en el fondo para poder leerla.
 - **Evasión de Bloqueos:** aplica trucos para saltarse las barreras anti-bot, incluyendo reescritura por dominio (`medium.com` → `readmedium.com`).
-- **Análisis Inicial:** tras extraer el texto limpio, se lo envía a LiteLLM para extraer etiquetas y un resumen, y guarda todo en Postgres con un evento Outbox.
+- **Pre-extracción determinista (sin LLM):** antes de gastar tokens, dos librerías deterministas leen el HTML estructurado:
+  - **`htmldate`** extrae la fecha de publicación (meta-tags, OpenGraph, JSON-LD, paths `/YYYY/MM/DD/`).
+  - **`extruct`** extrae JSON-LD (`@type`, `author`, `keywords`), OpenGraph, Schema.org microdata y Dublin Core.
+  Los datos se inyectan como hints al LLM y, si el LLM falla o devuelve `null`, se usan como fallback defensivo. Ahorra ~40-50% de tokens y elimina ambigüedad en la fecha cuando el sitio sigue Schema.org. Ver detalle en [§4.3 de 5-herramientas-ia](./5-herramientas-ia#43-pre-extraccion-determinista-antes-del-llm).
+- **Bloques estructurados anexados al texto limpio:** el texto que llega al LLM (≤ 32 000 caracteres) puede empezar con dos bloques sintéticos que mejoran la clasificación sin inflar el cuerpo:
+  - `[METADATA DEL AUTOR]` — descripción + fecha + autor + categorías + tags extraídos por `trafilatura.extract_metadata` desde `<meta>`/OG/Schema.org. Crítico cuando el `title` HTML es genérico (BOE, GitHub abandoned, etc.).
+  - `[OBSOLESCENCIA DETECTADA]` — párrafos del HTML crudo que contienen marcadores legales (`SE DEROGA`, `SE MODIFICA`), de RFCs (`Obsoletes by`, `Superseded by`) o de lifecycle de proyectos (`Moved to`, `Project archived`, `deprecated in favor of`). Trafilatura suele descartar esas secciones por considerarlas sidebar; este bloque las rescata. Filtro anti-ruido descarta párrafos con densidad excesiva de `{}/[]/":,` (blobs JSON de SPAs).
+- **Análisis Inicial:** el LLM (`cerebro-lite`) recibe el texto + las pistas estructuradas + los dos bloques anexos y extrae `title`, `summary`, `category`, `keywords`, `volatility_score`, `event_date`, `temporal_class` y `valor_archivistico`. Todo se persiste en Postgres con un evento Outbox en la misma transacción.
 
 **Sistema de Cuarentena Automática:**
 
@@ -177,7 +184,9 @@ El proceso de traducir palabras a matemáticas es lento y costoso. Al separarlo 
 
 **¿Qué hace?**
 
-Implementa el **Patrón Outbox**. Este worker revisa constantemente la tabla `outbox_eventos` en Postgres (resuelta vía `search_path` al schema `cerebro`) buscando tareas recién terminadas por el scraper que necesitan ser enviadas al embedder o a otros consumidores. Cuando encuentra una, la publica de forma segura en RabbitMQ (por ejemplo a la cola `q.embeddings`).
+Implementa el **Patrón Outbox**. Este worker revisa la tabla `outbox_eventos` en Postgres (resuelta vía `search_path` al schema `cerebro`) **cada 500 ms** buscando tareas recién terminadas por el scraper o el cron que necesitan ser enviadas al embedder, al notifier u otros consumidores. Cuando encuentra una, la publica de forma segura en RabbitMQ (por ejemplo al exchange fanout `cerebro.procesamiento`).
+
+> El intervalo bajó de 2 s a 500 ms para reducir la latencia end-to-end (ingesta → bell de notificación) de ~2,5 s a ~1 s. Combinado con el fallback de polling del bell que pasó de 5 min a 1 min, la experiencia "en tiempo real" se siente instantánea sin LISTEN/NOTIFY (queda como mejora futura).
 
 **¿Por qué se tomó esta decisión?**
 

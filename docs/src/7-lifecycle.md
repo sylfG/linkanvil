@@ -114,12 +114,42 @@ inmediatamente — toda la ingesta es asíncrona.
 **Pipeline**:
 
 1. **Scraper** (cola `q.url.ingesta`):
-   - Descarga la URL con una estrategia HTTP básica.
-   - Limpia el HTML y extrae texto (≤ 6000 caracteres).
+   - Descarga la URL con una estrategia HTTP básica; si la página
+     bloquea o requiere JS, cae al modo Stealth Playwright.
+   - **Pre-extracción determinista (sin LLM)**: dos librerías leen el
+     HTML estructurado antes de gastar tokens:
+     - `htmldate.find_date(html)` — fecha de publicación (meta-tags,
+       OG, JSON-LD, paths `/YYYY/MM/DD/`).
+     - `extruct.extract(html)` — JSON-LD (`@type`, `datePublished`,
+       `author`, `keywords`), OpenGraph (`og:type`, `og:description`,
+       `article:published_time`), Schema.org microdata y Dublin Core.
+     - Heurística de coherencia: si la URL delata el año del documento
+       (`BOE-A-2010-…`, `/2024/03/`) y `htmldate` da otro año, se
+       sobreescribe a `{año_url}-01-01`.
+   - Limpia el HTML y extrae texto (≤ 32 000 caracteres). El texto
+     limpio puede empezar con dos bloques sintéticos:
+     - `[METADATA DEL AUTOR]` (descripción, fecha, autor, categorías,
+       tags) cuando el HTML los tiene en `<meta>` o OG.
+     - `[OBSOLESCENCIA DETECTADA — extractos del documento]` con
+       párrafos del HTML crudo que contienen marcadores de derogación
+       (legales, RFCs, lifecycle de proyectos como "Moved to",
+       "Project archived"). Filtro anti-ruido evita contaminación con
+       blobs JSON de SPAs.
    - Llama a LiteLLM con el prompt de extracción de metadatos (ver
-     [`7-prompts.md`](./7-prompts.md) §2.1) para obtener `title`,
-     `summary`, `category`, `keywords`, `volatility_score`,
-     `estimated_useful_life_days` y `expiration_date`.
+     [`7-prompts.md`](./7-prompts.md) §2.1) **inyectando el bloque
+     `[PISTAS ESTRUCTURADAS DEL HTML]`** con los datos deterministas
+     como hints (no órdenes). Obtiene `title`, `summary`, `category`,
+     `keywords`, `volatility_score`, `estimated_useful_life_days`,
+     `expiration_date`, `event_date`, `temporal_class` y
+     `valor_archivistico`. Para normativa (BOE/decretos/sentencias/RFCs)
+     el prompt instruye explícitamente a extraer la fecha de
+     disposición o el año del identificador (p. ej.
+     `BOE-A-2010-9269` → 2010-01-01).
+   - **Merge defensivo**: si el LLM devuelve `null` en `event_date` o
+     un array vacío en `keywords`, el campo se rellena con el valor
+     determinista. Si el LLM falla por completo (3 retries), el
+     fallback hard-coded también se enriquece con los datos
+     pre-extraídos.
    - **Reuso cross-tenant**: si la URL ya existe globalmente como
      `activo` y su caducidad está suficientemente lejos, se omite el
      scrape y el LLM, y se emite un evento `recurso.reusado` para que

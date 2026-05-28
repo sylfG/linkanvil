@@ -356,6 +356,40 @@ Las limitaciones del demo viven en el **backend**, no en el frontend:
   fila se borra junto con el sub-tenant, así que es un cambio efímero.
   No daña ningún seed.
 
+> **Detalle de resolución de la policy en sub-tenants**: el endpoint
+> `PUT /profile/audit-policy` escribe sobre la fila de `usuarios`
+> identificada por `user_id` (= `demo@linkanvil.io`, compartido). Pero
+> el scraper, al ingerir una URL del demo, busca por `tenant_id =
+> demo_xxxxx` — que **no tiene fila propia** en `usuarios`. Por eso
+> `DatabaseManager._get_user_audit_policy` aplica un fallback: si el
+> lookup directo por `tenant_id` no encuentra fila Y el tenant empieza
+> por `demo_`, resuelve via `JOIN demo_sessions ON user_id` y devuelve
+> la policy del owner. Sin este fallback, todas las sesiones demo
+> ingerirían siempre con `DEFAULT_AUDIT_POLICY` (Equilibrado) aunque el
+> visitante hubiese seleccionado Estricto o Permisivo.
+>
+> **Consecuencia compartida**: todas las sesiones demo activas
+> comparten la misma policy (la última escrita por cualquier visitante
+> del demo). Es intencional dado que el demo es compartido y efímero —
+> para isolation real, registrarse y usar cuenta propia.
+
+### Script de reset por IP
+
+Para borrar la huella completa de un visitante sin esperar al TTL:
+
+```bash
+./scripts/reset-demo-by-ip.sh 192.168.1.3            # ejecuta el borrado
+./scripts/reset-demo-by-ip.sh 192.168.1.3 --dry-run  # solo muestra
+```
+
+Limpia (BD): `demo_sessions` por IP + cascada a `demo_session_events`,
+`usuario_recursos`, `notificaciones` y `outbox_eventos` de esos
+tenants, más recursos huérfanos. Limpia (Redis): gate diario por IP
+(`demo_session_started:{ip}:{YYYY-MM-DD}`), rate-limits `rl:demo:*`
+del día y bloom filters `bf:tenant:{tenant}:ingestion`. No toca
+usuarios ni recursos de cuentas registradas ni los contadores globales
+(afectarían a otros visitantes). Útil durante QA del demo.
+
 El frontend NO oculta ni desactiva nada visualmente — todo se intenta,
 y si el backend rechaza, los componentes manejan los 403 y 429 con
 mensajes legibles.

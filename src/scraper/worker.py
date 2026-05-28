@@ -63,8 +63,14 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
         meta = trafilatura.extract_metadata(html)
         title = (meta.title if meta else "") or ""
         if extracted and len(extracted) >= 200:
+            meta_block = _extract_metadata_block(meta)
+            # Prepender meta al cuerpo extraido y buscar marcadores en
+            # bruto + meta_block (capta "Moved to Codeberg" en <meta>).
+            body = meta_block + extracted if meta_block else extracted
             return title, _prepend_supersession_paragraphs(
-                extracted, max_chars, search_in=bruto,
+                body, max_chars,
+                search_in=bruto,
+                preferred_search=meta_block if meta_block else None,
             )
     except Exception as e:
         logger.warning(f"trafilatura falló: {e}")
@@ -105,6 +111,17 @@ _SUPERSESSION_PATTERNS = [
     r"superseded\s+by",
     r"replaced\s+by",
     r"newer\s+version\s+available",
+    # Repos/proyectos abandonados o movidos
+    r"Moved\s+to\s+\S+",
+    r"Migrated\s+to\s+\S+",
+    r"(?:This\s+)?[Pp]roject\s+(?:has\s+been\s+|is\s+)?moved",
+    r"(?:repository|project)\s+(?:has\s+been\s+|is\s+)?archived",
+    r"has\s+been\s+archived",
+    # Lifecycle de software/productos
+    r"deprecated\s+in\s+favor\s+of",
+    r"legacy\s+version",
+    r"end[-\s]of[-\s]life",
+    r"no\s+longer\s+maintained",
 ]
 
 import re as _re_sup
@@ -113,54 +130,111 @@ _SUPERSESSION_RE = _re_sup.compile(
 )
 
 
+def _extract_metadata_block(meta) -> str:
+    """Construye un bloque [METADATA] con los campos que trafilatura ya
+    extrae del HTML estructurado (`<meta>`, OpenGraph, Schema.org). Si
+    todos los campos estan vacios o son boilerplate, devuelve "".
+
+    Por que: muchos sitios (BOE, papers, news, GitHub) ponen un resumen
+    curado en `<meta name="description">` o `og:description` que es
+    MUCHO mejor que los primeros 6000 chars del cuerpo crudo. Para
+    paginas con title generico (BOE: "Agencia Estatal BOE") el meta
+    description es la unica forma de saber de que va el documento sin
+    leerse 30k chars.
+
+    Beneficio doble:
+    - LLM clasifica mejor (title + summary + temporal_class + valor)
+    - Los chunks RAG llevan el bloque -> retrieval semantico mas fuerte
+    """
+    if meta is None:
+        return ""
+    fields = []
+    desc = (getattr(meta, "description", None) or "").strip()
+    if desc and len(desc) >= 20:  # filtrar descriptions vacias o "Login | Sitio"
+        fields.append(f"Descripción: {desc[:500]}")
+    date = getattr(meta, "date", None)
+    if date:
+        fields.append(f"Fecha publicación: {date}")
+    author = (getattr(meta, "author", None) or "").strip()
+    if author and author != "None":
+        fields.append(f"Autor: {author[:120]}")
+    cats = getattr(meta, "categories", None) or []
+    cats_clean = [c for c in cats if c and not c.startswith("repository:")]
+    if cats_clean:
+        fields.append(f"Categorías: {', '.join(cats_clean[:5])}")
+    tags = getattr(meta, "tags", None) or []
+    if tags:
+        tags_str = tags[0] if len(tags) == 1 else ", ".join(str(t) for t in tags[:8])
+        fields.append(f"Tags: {tags_str[:240]}")
+    if not fields:
+        return ""
+    return (
+        "[METADATA DEL AUTOR]" + chr(10)
+        + chr(10).join(fields)
+        + chr(10) + "[FIN METADATA]" + chr(10) + chr(10)
+    )
+
+
 def _prepend_supersession_paragraphs(
     body: str, max_chars: int, search_in: str | None = None,
+    preferred_search: str | None = None,
 ) -> str:
-    """Si `search_in` (o `body` si no se pasa) contiene marcadores de
-    obsolescencia (SE MODIFICA, Obsoleted by, Retracted, deprecated...),
-    extrae los párrafos donde aparecen Y LOS PREPONE A `body` antes de
-    truncar a `max_chars`.
+    """Si `preferred_search` (o `search_in` como fallback) contiene
+    marcadores de obsolescencia, extrae los parrafos y los prepone a
+    `body` antes de truncar a `max_chars`.
 
-    El parámetro `search_in` es clave para el caso BOE: trafilatura
-    descarta la sección "Análisis" considerándola sidebar, pero esa
-    sección es donde viven SE MODIFICA / SE DEROGA. Pasamos el HTML
-    bruto limpiado por regex como `search_in` y el body limpio de
-    trafilatura como `body` — así rescatamos marcadores que el
-    extractor estructurado descartó.
+    Orden de busqueda:
+      1. `preferred_search` (meta_block — corto y limpio del autor)
+      2. `search_in` (bruto HTML — completo pero potencialmente ruidoso)
 
-    Sin marcadores devuelve `body[:max_chars]` (comportamiento inalterado)."""
-    haystack = search_in if search_in else body
-    if not haystack:
-        return body[:max_chars]
-    matches = list(_SUPERSESSION_RE.finditer(haystack))
-    if not matches:
-        return body[:max_chars]
+    Filtro anti-ruido: parrafos extraidos del bruto se descartan si
+    la densidad de caracteres tipicos de JSON/CSS/JS supera ~25%
+    (impide que blobs de SPAs como GitHub.com contaminen el bloque).
+    """
+    def _scan(text: str, allow_noisy: bool) -> list[str]:
+        if not text:
+            return []
+        matches = list(_SUPERSESSION_RE.finditer(text))
+        if not matches:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for m in matches:
+            para_start = text.rfind("\n\n", 0, m.start())
+            if para_start == -1:
+                para_start = max(0, m.start() - 400)
+            else:
+                para_start += 2
+            para_end = text.find("\n\n", m.end())
+            if para_end == -1:
+                para_end = min(len(text), m.end() + 400)
+            para = text[para_start:para_end].strip()
+            para = _re_sup.sub(r"\s+", " ", para)
+            # Filtro de ruido (solo cuando viene del bruto HTML)
+            if not allow_noisy and para:
+                noise_chars = sum(para.count(c) for c in "{}\";:[],")
+                if noise_chars / max(len(para), 1) > 0.18:
+                    continue
+                # Marcadores tipicos de HTML escapado en JSON: \u003c, \\n
+                if "\\u00" in para or para.count("\\\\") > 3:
+                    continue
+            if len(para) > 1000:
+                para = para[:1000] + "…"
+            key = para[:120].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(para)
+            if len(out) >= 5:
+                break
+        return out
 
-    paragraphs: list[str] = []
-    seen: set[str] = set()
-    for m in matches:
-        para_start = haystack.rfind("\n\n", 0, m.start())
-        if para_start == -1:
-            # Sin saltos de linea (caso bruto compactado): tomamos ventana
-            para_start = max(0, m.start() - 400)
-        else:
-            para_start += 2
-        para_end = haystack.find("\n\n", m.end())
-        if para_end == -1:
-            para_end = min(len(haystack), m.end() + 400)
-        para = haystack[para_start:para_end].strip()
-        # Compactar espacios largos (HTML stripped puede tener exceso)
-        para = _re_sup.sub(r"\s+", " ", para)
-        if len(para) > 1000:
-            para = para[:1000] + "…"
-        key = para[:120].lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        paragraphs.append(para)
-        if len(paragraphs) >= 5:
-            break
-
+    # 1) Preferred: meta_block (siempre limpio, sin filtro)
+    paragraphs = _scan(preferred_search, allow_noisy=True) if preferred_search else []
+    # 2) Fallback: bruto HTML (con filtro de ruido)
+    if not paragraphs:
+        haystack = search_in if search_in else body
+        paragraphs = _scan(haystack, allow_noisy=False)
     if not paragraphs:
         return body[:max_chars]
 

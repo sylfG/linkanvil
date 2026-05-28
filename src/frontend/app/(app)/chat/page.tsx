@@ -421,7 +421,7 @@ export default function ChatPage() {
           title={
             useRag
               ? useArchive
-                ? "Archivo activado: el RAG también consulta recursos en estado 'expirado' (archivo histórico). Útil cuando necesitas datos de eventos pasados, post-mortems o referencias antiguas."
+                ? "Archivo activado: el RAG también consulta recursos archivados (eventos pasados, post-mortems, referencias antiguas)."
                 : "Archivo desactivado: el RAG ignora el archivo histórico y solo cita recursos activos. Encendido lo incluye sin tener que rescatarlos."
               : "Archivo requiere RAG activado. Enciende RAG primero."
           }
@@ -493,11 +493,9 @@ export default function ChatPage() {
                 <Archive className="w-3.5 h-3.5 text-amber-300 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-slate-200 leading-relaxed">
                   <strong className="text-amber-300">Archivo ON</strong>:
-                  el RAG también incluye recursos en estado{" "}
-                  <code className="text-[10px] bg-bg/60 px-1 rounded">
-                    expirado
-                  </code>{" "}
-                  (archivo histórico — post-mortems, eventos pasados, etc.).
+                  el RAG también incluye recursos{" "}
+                  <strong className="text-amber-300">archivados</strong>{" "}
+                  (post-mortems, eventos pasados, referencias antiguas).
                   Requiere RAG activado.
                 </p>
               </div>

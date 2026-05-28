@@ -182,7 +182,7 @@ export default function QuarantinePage() {
             />
           </h1>
           <p className="text-sm text-muted mt-1">
-            {items.length} recurso(s) pendiente(s) de revisión antes de la expiración definitiva.
+            {items.length} recurso(s) pendiente(s) de revisión antes del archivado definitivo.
           </p>
         </div>
         <button
@@ -290,7 +290,7 @@ export default function QuarantinePage() {
                     className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-900/20 text-amber-300 border border-amber-700/30 hover:bg-amber-900/40 transition-colors disabled:opacity-40"
                   >
                     <Hourglass className="w-3 h-3" />
-                    Expirar
+                    Archivar
                   </button>
                   <button
                     disabled={busy}
@@ -343,12 +343,12 @@ export default function QuarantinePage() {
                     <h3 className="font-semibold text-sm">
                       {confirm.action === "delete"
                         ? "¿Eliminar definitivamente?"
-                        : "¿Confirmar expiración?"}
+                        : "¿Confirmar archivado?"}
                     </h3>
                     <p className="text-xs text-muted mt-1">
                       {confirm.action === "delete"
                         ? "Borra el recurso de tu base de conocimiento. Si nadie más lo tiene, se elimina globalmente y de Qdrant. No se puede deshacer."
-                        : "Lo marca como 'expirado' inmediatamente, sin esperar al fin del período de gracia."}
+                        : "Lo archiva inmediatamente, sin esperar al fin del período de gracia."}
                     </p>
                   </div>
                   <button

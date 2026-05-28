@@ -57,7 +57,7 @@ export default function ExpiredPage() {
       );
       setItems(data.items);
     } catch (e: any) {
-      setError(e.message ?? "Error cargando recursos expirados");
+      setError(e.message ?? "Error cargando recursos archivados");
     } finally {
       setLoading(false);
     }

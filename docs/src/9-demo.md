@@ -414,7 +414,7 @@ tiempo**:
 | `cuarentena` por `evento_pasado` | Cuando el cron nocturno detecta que un evento ya pasó (puede ser semanas tras la ingesta) | 1 preseed (ExpoJove 2024) |
 | `cuarentena` por `caducidad` | Días/meses tras `fecha_caducidad` (con período de gracia configurable) | No preseed — para verlo añade una URL con fecha próxima y espera el cron |
 | `expirado` (auto_archive) | Cuando un recurso de valor alto pasa de `procesando` directamente a archivo histórico | 2 preseed (AEMET 2020, WWDC 2023) |
-| `expirado` (manual) | Cuando el usuario rescata o archiva desde `/quarantine` o `/expired` | Puedes provocarlo tú: ve a `/quarantine`, click en "Expirar" sobre ExpoJove |
+| `expirado` (manual) | Cuando el usuario rescata o archiva desde `/quarantine` o `/expired` | Puedes provocarlo tú: ve a `/quarantine`, click en "Archivar" sobre ExpoJove |
 | Notificaciones del lifecycle | Llegan vía outbox → fanout cuando ocurre cada transición | Cada visitante tiene su bandeja vacía (el seed no genera notificaciones para sub-tenants) |
 
 ### En lenguaje de producto

@@ -44,7 +44,7 @@ const NAV: NavItem[] = [
   { href: "/ingest", icon: Link2, label: "Ingestar URLs" },
   { href: "/kb", icon: BookOpen, label: "Base de Conocimiento" },
   { href: "/quarantine", icon: AlertTriangle, label: "Cuarentena", badge: "quarantine" },
-  { href: "/expired", icon: CalendarX, label: "Expirados", badge: "expired" },
+  { href: "/expired", icon: CalendarX, label: "Archivados", badge: "expired" },
 ];
 
 const DEMO_NAV_ENTRY: NavItem = {

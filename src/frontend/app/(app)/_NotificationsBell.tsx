@@ -34,7 +34,7 @@ function eventMeta(ev: string) {
   if (ev === "recurso.cuarentena")
     return { Icon: AlertTriangle, cls: "text-amber-300", label: "Cuarentena", href: "/quarantine" };
   if (ev === "recurso.expirado")
-    return { Icon: CalendarX, cls: "text-red-300", label: "Expirado", href: "/expired" };
+    return { Icon: CalendarX, cls: "text-red-300", label: "Archivado", href: "/expired" };
   if (ev === "recurso.rescatado")
     return { Icon: RotateCcw, cls: "text-green-300", label: "Rescatado", href: "/kb" };
   return { Icon: Bell, cls: "text-slate-300", label: ev, href: "/kb" };

@@ -236,7 +236,7 @@ export default function KBPage() {
                 <span>
                   Auditoría completada:{" "}
                   <b>{auditResult.cuarentenados}</b> recurso(s) movido(s) a cuarentena,{" "}
-                  <b>{auditResult.expirados}</b> expirado(s).
+                  <b>{auditResult.expirados}</b> archivado(s).
                   {auditResult.cuarentenados === 0 && auditResult.expirados === 0 && (
                     <span className="text-muted"> — Todo al día.</span>
                   )}
@@ -444,7 +444,7 @@ export default function KBPage() {
                     className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-red-900/20 text-red-300 border border-red-700/30 hover:bg-red-900/40 transition-colors disabled:opacity-40"
                   >
                     <CalendarX className="w-3.5 h-3.5" />
-                    Marcar como expirado
+                    Archivar manualmente
                   </button>
                 )}
                 {(selected.estado === "cuarentena" || selected.estado === "expirado") && (
@@ -513,14 +513,14 @@ export default function KBPage() {
                   {confirm === "delete"
                     ? "¿Eliminar definitivamente?"
                     : confirm === "expire"
-                      ? "¿Marcar como expirado?"
+                      ? "¿Marcar como archivado?"
                       : "¿Mandar a cuarentena?"}
                 </h3>
                 <p className="text-xs text-muted mb-4">
                   {confirm === "delete"
                     ? "Borra el recurso de tu base de conocimiento. Si nadie más lo tiene, se elimina globalmente y se purga de Qdrant. No se puede deshacer."
                     : confirm === "expire"
-                      ? "Lo retira inmediatamente del RAG. Aún podrás rescatarlo desde la vista de Expirados."
+                      ? "Lo retira inmediatamente del RAG. Aún podrás rescatarlo desde la vista de Archivados."
                       : "Período de gracia configurable; durante ese tiempo seguirá visible en la vista de Cuarentena y podrás rescatarlo o expirarlo."}
                 </p>
                 <div className="flex gap-2 justify-end">

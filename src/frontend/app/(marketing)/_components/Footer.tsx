@@ -1,5 +1,40 @@
 import Link from "next/link";
-import { Brain, Github } from "lucide-react";
+import { Brain, Github, Lock, Server, Heart } from "lucide-react";
+
+// Enlaces externos a la documentacion publicada en GitHub Pages.
+// Solo apuntamos a paginas con valor para el visitante de la landing
+// (que aun no es usuario). Los anchors internos a las secciones de la
+// propia landing (#como-funciona, #faq, etc.) viven en el Nav y NO se
+// duplican aqui.
+const DOCS_BASE = "https://sylfg.github.io/linkanvil";
+const REPO = "https://github.com/sylfG/linkanvil";
+
+const DOCS_LINKS = [
+  { label: "Resumen del proyecto", href: `${DOCS_BASE}/0-resumen` },
+  { label: "Arquitectura", href: `${DOCS_BASE}/4-arquitectura` },
+  { label: "Ciclo de vida", href: `${DOCS_BASE}/7-lifecycle` },
+  { label: "Guía de seguridad", href: `${DOCS_BASE}/11-Seguridad` },
+  {
+    label: "Extracción de requisitos",
+    href: `${DOCS_BASE}/Extractor_de_Requisitos/`,
+  },
+];
+
+const REPO_LINKS = [
+  { label: "Código fuente", href: REPO, icon: Github },
+  { label: "Reportar un bug", href: `${REPO}/issues/new` },
+  { label: "Releases", href: `${REPO}/releases` },
+];
+
+// Atributos descriptivos del producto. Antes eran <span> en una columna
+// "Legal" sin enlaces — la inflaba sin aportar. Ahora viven como pills
+// al lado del copyright donde de verdad cumplen su funcion: dar contexto
+// rapido del producto sin pretender ser navegables.
+const PRODUCT_TRAITS = [
+  { label: "Self-hosted", icon: Server },
+  { label: "Open source", icon: Heart },
+  { label: "Tu infra, tus datos", icon: Lock },
+];
 
 export default function Footer() {
   const year = new Date().getFullYear();
@@ -24,20 +59,13 @@ export default function Footer() {
             </p>
           </div>
 
-          {/* Producto */}
+          {/* Producto: solo lo que NO esta en el navbar.
+              "Iniciar sesion" ya esta en el nav -> no duplicado aqui. */}
           <div>
             <h3 className="text-xs font-semibold text-slate-100 uppercase tracking-wider mb-3">
               Producto
             </h3>
             <ul className="space-y-2 text-sm">
-              <li>
-                <Link
-                  href="/login"
-                  className="text-muted hover:text-slate-200 transition-colors"
-                >
-                  Iniciar sesión
-                </Link>
-              </li>
               <li>
                 <Link
                   href="/register"
@@ -48,73 +76,86 @@ export default function Footer() {
               </li>
               <li>
                 <Link
-                  href="/login"
+                  href="/#hero"
                   className="text-muted hover:text-slate-200 transition-colors"
                 >
-                  Iniciar sesión
+                  Probar el demo
                 </Link>
               </li>
             </ul>
           </div>
 
-          {/* Recursos */}
+          {/* Documentacion: enlaces a VitePress publicado en GitHub
+              Pages. Las secciones internas de la landing (#como-funciona,
+              #faq) viven en el Nav, no se duplican. */}
           <div>
             <h3 className="text-xs font-semibold text-slate-100 uppercase tracking-wider mb-3">
-              Recursos
+              Documentación
             </h3>
             <ul className="space-y-2 text-sm">
-              <li>
-                <a
-                  href="https://github.com/sylfG/linkanvil"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-muted hover:text-slate-200 transition-colors inline-flex items-center gap-1.5"
-                >
-                  <Github className="w-3.5 h-3.5" />
-                  Código fuente
-                </a>
-              </li>
-              <li>
-                <a
-                  href="#como-funciona"
-                  className="text-muted hover:text-slate-200 transition-colors"
-                >
-                  Cómo funciona
-                </a>
-              </li>
-              <li>
-                <a
-                  href="#faq"
-                  className="text-muted hover:text-slate-200 transition-colors"
-                >
-                  Preguntas frecuentes
-                </a>
-              </li>
+              {DOCS_LINKS.map((l) => (
+                <li key={l.href}>
+                  <a
+                    href={l.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted hover:text-slate-200 transition-colors"
+                  >
+                    {l.label}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
 
-          {/* Legal */}
+          {/* Repositorio: GitHub y atajos de community.
+              Sustituye a la antigua columna "Recursos" cuyos anchors
+              ya viven en el Nav. */}
           <div>
             <h3 className="text-xs font-semibold text-slate-100 uppercase tracking-wider mb-3">
-              Legal
+              Repositorio
             </h3>
             <ul className="space-y-2 text-sm">
-              <li>
-                <span className="text-muted">Self-hosted</span>
-              </li>
-              <li>
-                <span className="text-muted">Datos en tu infra</span>
-              </li>
-              <li>
-                <span className="text-muted">Open source</span>
-              </li>
+              {REPO_LINKS.map((l) => {
+                const Icon = l.icon;
+                return (
+                  <li key={l.href}>
+                    <a
+                      href={l.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-muted hover:text-slate-200 transition-colors inline-flex items-center gap-1.5"
+                    >
+                      {Icon && <Icon className="w-3.5 h-3.5" />}
+                      {l.label}
+                    </a>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </div>
 
-        <div className="pt-8 border-t border-border/30 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-muted">
-          <p>© {year} LinkAnvil. Made for minds that save too much.</p>
-          <p className="font-mono">v0.1</p>
+        {/* Pills descriptivos + copyright */}
+        <div className="pt-8 border-t border-border/30 flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2">
+            {PRODUCT_TRAITS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <span
+                  key={t.label}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-card border border-border text-[11px] text-muted"
+                >
+                  <Icon className="w-3 h-3 text-accent-light" />
+                  {t.label}
+                </span>
+              );
+            })}
+          </div>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted">
+            <p>© {year} LinkAnvil. Made for minds that save too much.</p>
+            <p className="font-mono">v0.1</p>
+          </div>
         </div>
       </div>
     </footer>

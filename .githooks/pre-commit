@@ -1,8 +1,28 @@
 #!/usr/bin/env bash
-# pre-commit: ruff lint + format check sobre archivos Python staged.
+# pre-commit: ggshield secret-scan + ruff lint + format sobre archivos Python.
 # Sin IA — rápido, feedback inmediato.
 set -euo pipefail
 
+# pipx instala en ~/.local/bin; lo aseguramos para guis de git.
+export PATH="/root/.local/bin:$HOME/.local/bin:$PATH"
+
+# ── 1) ggshield secret-scan del diff staged ─────────────────────────────────
+# Bloquea el commit si encuentra cualquier secret (API key, token, generic
+# password con palabras como "secret"/"password"). Requiere haber corrido
+# `ggshield auth login` o tener GITGUARDIAN_API_KEY exportada.
+# Fail-open si ggshield no esta instalado (warning, no bloqueo).
+if command -v ggshield &>/dev/null; then
+    echo "🛡  ggshield: escaneando diff staged..."
+    if ! ggshield secret scan pre-commit; then
+        echo "❌ ggshield detecto un secreto. Corrige o usa: git commit --no-verify"
+        exit 1
+    fi
+else
+    echo "⚠️  ggshield no encontrado — saltando secret-scan."
+    echo "    Instalar: pipx install ggshield && ggshield auth login"
+fi
+
+# ── 2) ruff lint + format (solo Python) ─────────────────────────────────────
 # Collect staged .py files into an array (handles spaces in paths)
 mapfile -t STAGED < <(
     git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true

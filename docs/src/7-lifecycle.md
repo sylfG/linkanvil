@@ -88,9 +88,9 @@
 | `procesando` | Recién insertado, el embedder aún no ha terminado | No |
 | `activo` | Listo para usar en la base de conocimiento principal | **Sí** (por defecto) |
 | `cuarentena` | En período de gracia, recuperable | No |
-| `expirado` | Archivo histórico | Solo con el toggle "Archivo ON" del chat (`include_archive=true`) |
+| `expirado` *(UI: **Archivado**)* | Archivo histórico | Solo con el toggle "Archivo ON" del chat (`include_archive=true`) |
 
-`expirado` significa **archivo histórico** y no descarte. Se llega por dos rutas:
+`expirado` significa **archivo histórico** y no descarte (la UI lo etiqueta como **Archivado**; el valor interno de la columna sigue siendo `'expirado'` por compatibilidad con migraciones, eventos y endpoints existentes). Se llega por dos rutas:
 
 - **Auto-archive** del scraper para contenido pasado con valor archivístico
   alto (la política de auditoría del tenant lo decide). Pasa por

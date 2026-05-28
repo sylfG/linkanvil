@@ -43,17 +43,17 @@ LinkAnvil es una **plataforma analítica para el procesamiento asíncrono de URL
 
 ## 🛠️ Stack tecnológico
 
-El backend de LinkAnvil está desacoplado en ~22 servicios contenedorizados orquestados con Docker Compose.
+El backend de LinkAnvil está desacoplado en ~26 servicios contenedorizados orquestados con Docker Compose.
 
 | Capa | Tecnología |
 |---|---|
-| API Gateway | Traefik |
-| API + workers | Python 3.12 (FastAPI, asyncio) |
-| Frontend | Next.js 15 + React 19 + TypeScript |
-| Message Broker | RabbitMQ 3 |
-| BD relacional | PostgreSQL 17 (con RLS) |
-| BD vectorial | Qdrant |
-| Caché / colas SSE | Redis 7 |
+| API Gateway | Traefik v3 |
+| API + workers | Python 3.11 (FastAPI, asyncio) |
+| Frontend | Next.js 15 + React 19 + TypeScript 5 |
+| Message Broker | RabbitMQ 3.13 |
+| BD relacional | PostgreSQL 16 (con RLS) |
+| BD vectorial | Qdrant 1.17 |
+| Caché / colas SSE | Redis Stack (incluye RedisBloom) |
 | Gateway LLM | LiteLLM (BYOK + fallback chain) |
 | Workflows | n8n |
 | Observabilidad | OpenTelemetry · Jaeger · Prometheus · Grafana |
@@ -124,6 +124,7 @@ linkanvil/
 │   ├── dlq/                dead-letter queue handlers
 │   ├── observability/      OpenTelemetry instrumentation
 │   ├── data/               schemas Pydantic + repositorios PG/Qdrant
+│   ├── ui/                 utilidades compartidas de UI (server-side)
 │   └── frontend/           Next.js 15 (app router, RSC, Tailwind)
 ├── infra/                Configuración de los servicios externos
 │   ├── postgres/           migraciones SQL versionadas (0001…)
@@ -132,7 +133,7 @@ linkanvil/
 │   ├── rabbitmq/           definitions.json (exchanges, queues, DLQ)
 │   ├── grafana/            dashboards y datasources
 │   ├── prometheus/         scrape config
-│   ├── otel/ jaeger/       collector y backends de trazas
+│   ├── otel/                collector OpenTelemetry (Jaeger usa la imagen sin config)
 │   ├── n8n/                workflows exportados
 │   └── tailscale/          serve-web.json (Funnel sidecar)
 ├── ops/                  Operaciones (seed, backups, scripts cron)

@@ -525,17 +525,16 @@ async def upsert_resource(
         qgrace = today + timedelta(days=30)
 
     url = spec["url"]
+    # Migración 0012: `recursos` ahora solo contiene campos globales.
+    # estado / fecha_caducidad / quarantine_* / auto_archive_pending viven
+    # en `usuario_recursos` per-tenant.
     row = await conn.fetchrow(
         """
         INSERT INTO recursos (
             url, url_hash, titulo, resumen, contenido, categoria, tags,
-            volatilidad, fecha_caducidad, estado,
-            quarantined_at, quarantine_reason, quarantine_grace_until,
-            temporal_class, valor_archivistico, fecha_evento,
-            auto_archive_pending
+            volatilidad, temporal_class, valor_archivistico, fecha_evento
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17
+            $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11
         )
         ON CONFLICT (url_hash) DO UPDATE
             SET titulo = EXCLUDED.titulo,
@@ -543,15 +542,9 @@ async def upsert_resource(
                 categoria = EXCLUDED.categoria,
                 tags = EXCLUDED.tags,
                 volatilidad = EXCLUDED.volatilidad,
-                fecha_caducidad = EXCLUDED.fecha_caducidad,
-                estado = EXCLUDED.estado,
-                quarantined_at = EXCLUDED.quarantined_at,
-                quarantine_reason = EXCLUDED.quarantine_reason,
-                quarantine_grace_until = EXCLUDED.quarantine_grace_until,
                 temporal_class = EXCLUDED.temporal_class,
                 valor_archivistico = EXCLUDED.valor_archivistico,
                 fecha_evento = EXCLUDED.fecha_evento,
-                auto_archive_pending = EXCLUDED.auto_archive_pending,
                 updated_at = NOW()
         RETURNING id
         """,
@@ -563,26 +556,38 @@ async def upsert_resource(
         spec["categoria"],
         json.dumps(spec["tags"]),
         spec["volatilidad"],
-        fecha_caducidad,
-        estado,
-        quarantined_at,
-        qreason,
-        qgrace,
         spec["temporal_class"],
         spec["valor_archivistico"],
         fecha_evento,
-        spec["auto_archive_pending"],
     )
     recurso_id = row["id"]
 
+    # Linkeo per-tenant con los campos de estado/policy.
     await conn.execute(
         """
-        INSERT INTO usuario_recursos (tenant_id, recurso_id)
-        VALUES ($1, $2)
-        ON CONFLICT DO NOTHING
+        INSERT INTO usuario_recursos (
+            tenant_id, recurso_id, estado, fecha_caducidad,
+            quarantined_at, quarantine_reason, quarantine_grace_until,
+            auto_archive_pending
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (tenant_id, recurso_id) DO UPDATE
+            SET estado = EXCLUDED.estado,
+                fecha_caducidad = EXCLUDED.fecha_caducidad,
+                quarantined_at = EXCLUDED.quarantined_at,
+                quarantine_reason = EXCLUDED.quarantine_reason,
+                quarantine_grace_until = EXCLUDED.quarantine_grace_until,
+                auto_archive_pending = EXCLUDED.auto_archive_pending,
+                updated_at = NOW()
         """,
         tenant_id,
         recurso_id,
+        estado,
+        fecha_caducidad,
+        quarantined_at,
+        qreason,
+        qgrace,
+        spec["auto_archive_pending"],
     )
     return recurso_id
 

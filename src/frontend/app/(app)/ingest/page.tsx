@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Link2, Plus, CheckCircle2, Loader2, AlertCircle, Trash2 } from "lucide-react";
+import { Link2, Plus, CheckCircle2, Loader2, AlertCircle, Trash2, Sparkles } from "lucide-react";
+import { DemoHint } from "@/components/DemoHint";
 import { apiCall, sseUrl } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
 import { useSSE, type IngestEvent } from "@/lib/sse";
@@ -21,6 +22,16 @@ interface Procesando {
 // placeholder en el backend, dejando un fantasma en la lista para siempre.
 const OPTIMISTIC_TTL_MS = 8_000;
 
+// Estado de cuota diaria devuelto por GET /profile/quota (Slice 4).
+// Sólo se pinta el contador si is_demo=true; los usuarios registrados
+// no tienen cuota diaria (rate-limit por minuto sí, pero eso lo evita
+// el dedup natural — no merece UI dedicada).
+interface QuotaState {
+  is_demo: boolean;
+  ingest: { used: number; limit: number | null };
+  chat: { used: number; limit: number | null };
+}
+
 export default function IngestPage() {
   const { token } = useAuthStore();
   const [urlsInput, setUrlsInput] = useState("");
@@ -28,6 +39,36 @@ export default function IngestPage() {
   const [loading, setLoading] = useState(false);
   const [procesando, setProcesando] = useState<Procesando[]>([]);
   const [error, setError] = useState("");
+  const [quota, setQuota] = useState<QuotaState | null>(null);
+
+  // Refresca el estado de cuota desde el server (single source of truth).
+  // Llamamos: al montar, tras cada submit (éxito o error), y cuando el
+  // server devuelve 429 con scope=ip/global (para sincronizar contador).
+  const refreshQuota = useCallback(async () => {
+    if (!token) return;
+    try {
+      const q = await apiCall<QuotaState>("/profile/quota", {}, token);
+      setQuota(q);
+    } catch {
+      /* silencioso — el counter es informativo, no bloqueante */
+    }
+  }, [token]);
+
+  useEffect(() => { refreshQuota(); }, [refreshQuota]);
+
+  // Helpers: ¿cuántos URLs puede enviar el usuario ahora mismo?
+  const ingestRemaining =
+    quota?.is_demo && quota.ingest.limit !== null
+      ? Math.max(0, quota.ingest.limit - quota.ingest.used)
+      : null;
+  const isDemoBlocked = ingestRemaining !== null && ingestRemaining === 0;
+  // Línea-a-línea: filtramos vacías para el contador en vivo del form.
+  const pendingCount = urlsInput
+    .split("\n")
+    .map((u) => u.trim())
+    .filter(Boolean).length;
+  const wouldExceed =
+    ingestRemaining !== null && pendingCount > ingestRemaining;
 
   // Carga los recursos en estado=procesando del backend para que sigan
   // visibles tras un refresh mientras la ingesta no haya completado.
@@ -130,6 +171,8 @@ export default function IngestPage() {
     // Tras un pequeño retraso, refrescamos para reemplazar las entradas
     // optimistas por las reales con id de Postgres (placeholder insertado).
     setTimeout(() => loadProcesando(), 800);
+    // Sincroniza el contador con el server — relevante para demo.
+    refreshQuota();
   }
 
   return (
@@ -138,11 +181,50 @@ export default function IngestPage() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Link2 className="w-5 h-5 text-accent-light" />
           Ingestar URLs
+          <DemoHint
+            hint="Las URLs que añadas se borran cuando expire tu sesión demo (15 min). Cuota diaria: 5 ingests por IP, con un cap global compartido entre todos los visitantes."
+          />
         </h1>
         <p className="text-sm text-muted mt-1">
           Añade URLs a tu base de conocimiento. Aparecerán aquí cuando terminen de procesarse.
         </p>
       </div>
+
+      {/* Cuota del demo — visible solo si is_demo=true (Slice 4) */}
+      {quota?.is_demo && quota.ingest.limit !== null && (
+        <div
+          className={`mb-4 p-3 rounded-xl border flex items-start gap-2.5 ${
+            isDemoBlocked
+              ? "bg-red-900/15 border-red-700/40"
+              : "bg-accent/8 border-accent/25"
+          }`}
+        >
+          <Sparkles
+            className={`w-4 h-4 flex-shrink-0 mt-0.5 ${
+              isDemoBlocked ? "text-red-300" : "text-accent-light"
+            }`}
+          />
+          <div className="text-xs leading-relaxed">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="font-semibold text-slate-100">Demo público</span>
+              <span
+                className={`font-mono text-[11px] px-1.5 py-0.5 rounded ${
+                  isDemoBlocked
+                    ? "bg-red-900/30 text-red-200"
+                    : "bg-card text-slate-300"
+                }`}
+              >
+                {quota.ingest.used} / {quota.ingest.limit} ingests hoy
+              </span>
+            </div>
+            <p className="text-muted">
+              {isDemoBlocked
+                ? "Has alcanzado el límite diario. Vuelve mañana o regístrate para uso ilimitado con tus propias claves."
+                : `Te quedan ${ingestRemaining} URLs hoy. La cuota se resetea a medianoche UTC. Regístrate para uso ilimitado.`}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Form */}
       <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-5 mb-6">
@@ -152,20 +234,41 @@ export default function IngestPage() {
             <input
               value={source}
               onChange={(e) => setSource(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent-light transition-colors"
+              disabled={isDemoBlocked}
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent-light transition-colors disabled:opacity-50"
               placeholder="web"
             />
           </div>
         </div>
 
-        <label className="block text-xs text-muted mb-1.5">URLs (una por línea)</label>
+        <label className="block text-xs text-muted mb-1.5">
+          URLs (una por línea)
+          {ingestRemaining !== null && (
+            <span className="ml-1 text-muted/70">
+              · máx {ingestRemaining} por envío
+            </span>
+          )}
+        </label>
         <textarea
           value={urlsInput}
           onChange={(e) => setUrlsInput(e.target.value)}
           rows={4}
-          placeholder={"https://ejemplo.com/articulo\nhttps://otro.com/doc"}
-          className="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-muted outline-none focus:border-accent-light transition-colors font-mono resize-y"
+          disabled={isDemoBlocked}
+          placeholder={
+            isDemoBlocked
+              ? "Cuota diaria del demo agotada — vuelve mañana o regístrate."
+              : "https://ejemplo.com/articulo\nhttps://otro.com/doc"
+          }
+          className="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-muted outline-none focus:border-accent-light transition-colors font-mono resize-y disabled:opacity-50 disabled:cursor-not-allowed"
         />
+
+        {wouldExceed && (
+          <p className="text-amber-300 text-xs mt-2 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5" />
+            Has escrito {pendingCount} URLs pero solo te quedan {ingestRemaining}.
+            Recorta la lista antes de enviar.
+          </p>
+        )}
 
         {error && (
           <p className="text-red-400 text-sm mt-2 flex items-center gap-1">
@@ -176,7 +279,7 @@ export default function IngestPage() {
 
         <button
           type="submit"
-          disabled={loading || !urlsInput.trim()}
+          disabled={loading || !urlsInput.trim() || isDemoBlocked || wouldExceed}
           className="mt-4 flex items-center gap-2 bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
         >
           {loading ? (

@@ -1,0 +1,176 @@
+workflows:
+  feature:
+    description: "Feature completa con planificación, TDD y revisión"
+    steps:
+      - agent: docs-lookup
+        description: "Explorar codebase y documentacion relevante"
+        continue_on_failure: true
+      - agent: planner
+        description: "Crear plan de implementación"
+      - agent: tdd-guide
+        description: "Escribir tests primero, luego implementar"
+      - agent: code-reviewer
+        description: "Revisar calidad del código"
+      - agent: security-reviewer
+        description: "Verificar vulnerabilidades"
+        parallel_with: code-reviewer
+      - audit: true
+        description: "Ejecutar verificaciones automáticas"
+      - agent: memory-consolidator
+        description: "Guardar decisiones en memoria"
+        always: true
+
+  hotfix:
+    description: "Fix rápido con revisión mínima"
+    steps:
+      - agent: tdd-guide
+        description: "Escribir test para el fix, luego implementar"
+      - agent: code-reviewer
+        description: "Revisar el fix"
+      - audit: true
+      - agent: memory-consolidator
+        description: "Guardar decisiones"
+        always: true
+
+  refactor:
+    description: "Mejora de código sin cambio de comportamiento"
+    steps:
+      - agent: planner
+        description: "Planificar el refactoring"
+      - agent: refactor-cleaner
+        description: "Simplificar y limpiar codigo"
+      - agent: performance-optimizer
+        description: "Detectar bottlenecks y optimizar rendimiento"
+        parallel_with: refactor-cleaner
+      - agent: code-reviewer
+        description: "Revisar cambios"
+      - audit: true
+      - agent: memory-consolidator
+        description: "Guardar decisiones"
+        always: true
+
+  security-audit:
+    description: "Auditoria de seguridad exhaustiva"
+    steps:
+      - agent: security-reviewer
+        description: "Scan completo de vulnerabilidades"
+      - agent: silent-failure-hunter
+        description: "Detectar errores silenciados"
+      - agent: code-reviewer
+        description: "Revision de correcciones"
+      - agent: memory-consolidator
+        description: "Registrar hallazgos y decisiones"
+        always: true
+
+  documentation:
+    description: "Actualizacion de documentacion del proyecto"
+    steps:
+      - agent: docs-lookup
+        description: "Explorar estado actual de la documentacion"
+        continue_on_failure: true
+      - agent: doc-updater
+        description: "Escribir y actualizar documentacion"
+      - agent: code-reviewer
+        description: "Revisar precision de la documentacion"
+      - agent: memory-consolidator
+        description: "Registrar cambios de documentacion"
+        always: true
+
+  review:
+    description: "Revisión profunda de código existente"
+    steps:
+      - agent: code-reviewer
+        description: "Revisión de calidad"
+      - agent: security-reviewer
+        description: "Revisión de seguridad"
+        parallel_with: code-reviewer
+      - agent: silent-failure-hunter
+        description: "Buscar errores silenciados"
+      - agent: memory-consolidator
+        description: "Guardar hallazgos"
+        always: true
+
+  architecture-audit:
+    description: "Auditoría de cumplimiento arquitectónico — on-demand, requiere PROJECT_PATH. Ver skill architecture-audit para uso multi-proyecto."
+    steps:
+      - agent: architecture-auditor
+        description: "Auditar proyecto contra .claude/rules/project/architecture.md"
+      - agent: memory-consolidator
+        description: "Registrar hallazgos de arquitectura"
+        always: true
+
+  maintenance:
+    description: "Salud del harness: optimización de agentes, calidad de comentarios, docs"
+    steps:
+      - agent: harness-optimizer
+        description: "Revisar hooks, routing, permisos — sugerir optimizaciones del harness"
+      - agent: comment-analyzer
+        description: "Detectar comentarios obsoletos, engañosos o redundantes en el código"
+        parallel_with: harness-optimizer
+      - agent: doc-updater
+        description: "Actualizar docs tras cambios detectados por harness u otros agentes"
+      - agent: memory-consolidator
+        description: "Guardar hallazgos y decisiones de mantenimiento"
+        always: true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Workflows del layer `requirements-engineering`.
+  # Activos solo cuando el proyecto se inicializa con LAYERS=requirements-engineering.
+  # Ver: layers/requirements-engineering/docs/pipeline.md
+  # ─────────────────────────────────────────────────────────────────────────
+
+  requirements:
+    description: "Ingeniería de requisitos: contexto bruto → backlog en GitHub Issues (fases 1-5)"
+    layer: requirements-engineering
+    steps:
+      - agent: business-analyst
+        description: "Fase 1: Descubrimiento y desglose (lee 0_descripcion_proyecto.md → 1_epics_and_features.md)"
+        outputs:
+          - "docs/src/1_epics_and_features.md"
+        approval_gate:
+          message: "Epics y Features generados. ¿Apruebas avanzar a Fase 2 (Arquitectura+STRIDE)?"
+      - agent: architect
+        skill: requirements-stride
+        description: "Fase 2: NFRs + STRIDE + decisiones tecnológicas"
+        outputs:
+          - "docs/src/2_architecture_risks.md"
+        approval_gate:
+          message: "Arquitectura y riesgos generados. ¿Apruebas avanzar a Fase 3 (Backlog)?"
+      - agent: business-analyst
+        description: "Fase 3: Backlog priorizado MoSCoW (1 archivo .md por Feature)"
+        outputs:
+          - "docs/src/backlog/"
+        approval_gate:
+          message: "Backlog generado. ¿Apruebas avanzar a Fase 4 (Diagramas C4)?"
+      - agent: architect
+        skill: requirements-stride
+        description: "Fase 4: Diagramas C4 + flujos en Mermaid"
+        outputs:
+          - "docs/src/3_c4_diagrams.md"
+        approval_gate:
+          message: "Diagramas listos. ¿Apruebas avanzar a Fase 5 (Publicación VitePress)?"
+      - agent: business-analyst
+        parallel_with_agent: architect
+        description: "Fase 5: Publicación VitePress (sidebar agrupado por categoría universal)"
+        outputs:
+          - "docs/.vitepress/config.mts"
+      - agent: memory-consolidator
+        description: "Registrar fase de requisitos completada"
+        always: true
+
+  change-review:
+    description: "Análisis de impacto sobre backlog existente (Fase 7, re-entrante)"
+    layer: requirements-engineering
+    re_entrant: true
+    steps:
+      - agent: change-manager
+        description: "Catalogar cambios + matriz de impacto + esperar confirmación + aplicar"
+        outputs:
+          - "docs/src/AUDIT_LOG.md"
+          - "docs/src/backlog/"
+        approval_gate:
+          message: "Matriz de impacto mostrada. ¿Apruebas aplicar los cambios?"
+          blocking: true
+      - agent: memory-consolidator
+        description: "Registrar CHANGE-XX en memoria"
+        always: true

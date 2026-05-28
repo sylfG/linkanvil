@@ -25,6 +25,15 @@
   border-radius: 3px;
 }
 
+html {
+  /* Smooth scroll para anclas de la landing (#problema, #como-funciona,
+     #casos, #faq). Respeta prefers-reduced-motion automáticamente. */
+  scroll-behavior: smooth;
+  /* Compensa la altura del nav fijo (h-16 = 64px) cuando se navega
+     vía hash links — el target se posiciona DEBAJO del nav. */
+  scroll-padding-top: 80px;
+}
+
 html,
 body {
   background-color: #0D0E17;

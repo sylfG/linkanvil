@@ -3,7 +3,7 @@ import asyncio
 from src.data.db import DatabaseManager
 
 
-@pytest.mark.skip(reason="Pendiente refactor a usuario_recursos tras migración 0002")
+@pytest.mark.xfail(reason="F-04.3 dashboard legacy · ver docs/review/2026-05-19/v2/backlog/ — recuperar cuando se implemente", strict=False)
 @pytest.mark.asyncio
 async def test_f043_dashboard_metrics():
     db = DatabaseManager()

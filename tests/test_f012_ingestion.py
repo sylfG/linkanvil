@@ -1,20 +1,19 @@
 import pytest
 import asyncio
 from fastapi.testclient import TestClient
-from src.ingestion.main import app, deduplicator, redis_client
+from src.ingestion.main import app
 from unittest.mock import AsyncMock, patch
+
 
 @pytest.fixture
 def client():
-    # Asumimos que los eventos de startup de FastAPI configuran las dependencias reales.
-    # En un entorno de CI local sin redis, pytest requeriria un mock de redis completo o skip if no connect.
-    # Por ahora confiaremos arrancar con `TestClient` triggerendo `startup`.
     with TestClient(app) as test_client:
         yield test_client
 
+
 @pytest.fixture(autouse=True)
 def patch_rabbit():
-    # Mockear RabbitMQPublisher clase para evitar conexiones reales
+    """Mockear RabbitMQPublisher para evitar conexiones reales."""
     with patch("src.ingestion.main.RabbitMQPublisher") as mock_rabbit_class:
         mock_instance = AsyncMock()
         mock_instance.connect = AsyncMock()
@@ -23,70 +22,96 @@ def patch_rabbit():
         mock_rabbit_class.return_value = mock_instance
         yield mock_rabbit_class
 
+
 @pytest.fixture(autouse=True)
 def clean_redis():
-    """Limpia Redis rate limiter antes de cada test si está disponible"""
+    """Limpia Redis (bloom filters + rate_limit) antes/después de cada test.
+
+    El cliente es async (`redis.asyncio`), así que las llamadas hay que awaitarlas
+    en un event loop. La versión anterior usaba `flushdb()` sincrónico contra un
+    cliente async, lo que ensuciaba el estado del bloom entre tests y generaba
+    falsos positivos de duplicado.
+    """
     from src.ingestion.main import redis_client
+
+    async def _flush():
+        if redis_client is None:
+            return
+        try:
+            await redis_client.flushdb()
+        except Exception:
+            pass
+
     if redis_client:
         try:
-            redis_client.flushdb()
-        except:
-            pass
+            asyncio.get_event_loop().run_until_complete(_flush())
+        except RuntimeError:
+            asyncio.run(_flush())
     yield
     if redis_client:
         try:
-            redis_client.flushdb()
-        except:
-            pass
+            asyncio.get_event_loop().run_until_complete(_flush())
+        except RuntimeError:
+            asyncio.run(_flush())
+
+
+# El endpoint /ingest devuelve siempre status 202 (Accepted) — fija en main.py
+# vía `@app.post("/ingest", ..., status_code=202)`. Las respuestas concretas
+# distinguen el resultado funcional vía `status` e `is_duplicate`:
+#   - URL nueva  → status="Accepted & Published", is_duplicate=False
+#   - URL repetida → status="Accepted (relink)",   is_duplicate=True
+# (cambio de contrato 2026-05: siempre se publica, el dedup solo es hint
+# para evitar re-scrape cuando el worker ya tiene el recurso).
+
 
 def test_f012_ingest_endpoint_success(client):
-    """Prueba el Happy Path: Ingestar una nueva URL para un Tenant."""
-    target_url = "https://example.com/test1"
+    """Happy Path: ingestar una nueva URL para un tenant."""
+    target_url = "https://example.com/test1_success"
     response = client.post("/ingest", json={
         "url": target_url,
-        "tenant_id": "test_tenant",
-        "source": "api_test"
+        "tenant_id": "test_tenant_success",
+        "source": "api_test",
     })
-    
-    assert response.status_code == 200
+
+    assert response.status_code == 202
     data = response.json()
     assert data["status"] == "Accepted & Published"
-    assert data["is_duplicate"] == False
+    assert data["is_duplicate"] is False
+
 
 def test_f012_ingest_duplicate_rejected(client):
-    """Prueba F-01.1: Deduplicación usando el mismo enlace."""
-    target_url = "https://example.com/duplicate"
+    """F-01.1: una segunda ingesta de la misma URL marca is_duplicate=True
+    pero sigue siendo aceptada (relink) — el worker resuelve idempotencia."""
+    target_url = "https://example.com/duplicate_unique"
     body = {
         "url": target_url,
-        "tenant_id": "test_tenant",
-        "source": "api_test"
+        "tenant_id": "test_tenant_dup",
+        "source": "api_test",
     }
-    
-    # Ingesta inicial
+
     res1 = client.post("/ingest", json=body)
-    assert res1.status_code == 200
-    assert res1.json()["is_duplicate"] == False
-    
-    # Ingesta repetida
+    assert res1.status_code == 202
+    assert res1.json()["is_duplicate"] is False
+    assert res1.json()["status"] == "Accepted & Published"
+
     res2 = client.post("/ingest", json=body)
-    assert res2.status_code == 200
-    assert res2.json()["is_duplicate"] == True
-    assert res2.json()["status"] == "Ignored"
+    assert res2.status_code == 202
+    assert res2.json()["is_duplicate"] is True
+    assert res2.json()["status"] == "Accepted (relink)"
+
 
 def test_f012_ingest_rate_limiting(client):
-    """Prueba el comportamiento de Noisy Neighbor (Throttling)"""
+    """F-06.4 Noisy Neighbor: 10 reqs aceptadas, la 11ª devuelve 429."""
     body = {
-        "tenant_id": "noisy_tenant",
-        "source": "api_test"
+        "tenant_id": "noisy_tenant_unique",
+        "source": "api_test",
     }
 
-    # Mandar 10 peticiones (límite por minuto actual en main.py es 10)
     for i in range(10):
         body["url"] = f"https://example.com/noise_{i}"
         res = client.post("/ingest", json=body)
-        assert res.status_code == 200
+        assert res.status_code == 202, f"req {i} debería ser 202 (Accepted), fue {res.status_code}"
 
-    # La petición 11 debe de rebotar con 429 Too Many Requests
     body["url"] = "https://example.com/noise_11"
     res_rejected = client.post("/ingest", json=body)
     assert res_rejected.status_code == 429

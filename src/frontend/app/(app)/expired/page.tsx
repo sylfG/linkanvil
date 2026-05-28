@@ -10,6 +10,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 import { Pagination, PAGE_SIZE } from "@/components/Pagination";
@@ -56,7 +57,7 @@ export default function ExpiredPage() {
       );
       setItems(data.items);
     } catch (e: any) {
-      setError(e.message ?? "Error cargando recursos expirados");
+      setError(e.message ?? "Error cargando recursos archivados");
     } finally {
       setLoading(false);
     }
@@ -121,11 +122,16 @@ export default function ExpiredPage() {
       <div className="mb-5 flex items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
-            <CalendarX className="w-5 h-5 text-red-400" />
-            Recursos expirados
+            <CalendarX className="w-5 h-5 text-amber-400" />
+            Archivo histórico
+            <DemoHint
+              hint="Antes del audit del minuto 5 verás aquí 2 ejemplos seed (AEMET 2020, WWDC 2023). Después del minuto 5 sumará 1 de tus efímeros archivado con motivo 'auto_archive'."
+            />
           </h1>
           <p className="text-sm text-muted mt-1">
-            {items.length} recurso(s) cuya vida útil ya terminó. Solo puedes eliminarlos.
+            {items.length} recurso(s) fuera del KB activo. Consultables en chat
+            con el toggle <span className="text-amber-300 font-medium">Archivo ON</span>.
+            Puedes rescatarlos al KB activo o eliminarlos definitivamente.
           </p>
         </div>
         <button
@@ -156,9 +162,10 @@ export default function ExpiredPage() {
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center opacity-50">
           <CalendarX className="w-10 h-10 mb-3" />
-          <p className="font-medium">Sin recursos expirados</p>
+          <p className="font-medium">Archivo histórico vacío</p>
           <p className="text-sm text-muted mt-1">
-            Tu base de conocimiento está al día.
+            Aún no hay recursos archivados. Los contenidos pasados con valor
+            archivístico alto llegarán aquí automáticamente.
           </p>
         </div>
       ) : (
@@ -183,9 +190,9 @@ export default function ExpiredPage() {
                   <h3 className="text-sm font-medium text-slate-100 leading-snug line-clamp-2 flex-1">
                     {it.titulo || it.url}
                   </h3>
-                  <span className="text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 flex-shrink-0 bg-red-900/30 text-red-300 border-red-700/30">
+                  <span className="text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 flex-shrink-0 bg-amber-900/30 text-amber-300 border-amber-700/30">
                     <CalendarX className="w-3 h-3" />
-                    Expirado
+                    Archivado
                   </span>
                 </div>
 

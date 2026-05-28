@@ -5,10 +5,10 @@ Each worker writes a short-lived key in Redis every N seconds. A docker
 healthcheck reads the key and fails when it's missing — detecting a
 worker that has hung but not crashed.
 """
+
 import asyncio
 import logging
 import os
-from typing import Optional
 
 import redis.asyncio as aioredis
 
@@ -37,7 +37,5 @@ async def heartbeat_loop(
         return
 
 
-def start_heartbeat(
-    redis_client: aioredis.Redis, worker_name: str
-) -> asyncio.Task:
+def start_heartbeat(redis_client: aioredis.Redis, worker_name: str) -> asyncio.Task:
     return asyncio.create_task(heartbeat_loop(redis_client, worker_name))

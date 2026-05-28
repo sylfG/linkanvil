@@ -16,6 +16,10 @@ services:
       context: .
       dockerfile: infra/ingestion.Dockerfile
     container_name: cerebro-ingestion
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -55,6 +59,14 @@ services:
       context: .
       dockerfile: infra/scraper.Dockerfile
     container_name: cerebro-scraper
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777,size=512m
+      - /run:size=64m
     restart: unless-stopped
     shm_size: '1gb'
     deploy:
@@ -93,6 +105,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.data.outbox_publisher"]
     container_name: cerebro-outbox
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -125,6 +141,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.notifier.worker"]
     container_name: cerebro-notifier
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -157,6 +177,10 @@ services:
       dockerfile: infra/scraper.Dockerfile
     command: ["python", "-m", "src.data.embedder_worker"]
     container_name: cerebro-embedder
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -219,6 +243,10 @@ services:
       context: .
       dockerfile: infra/api.Dockerfile
     container_name: cerebro-api
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -226,13 +254,17 @@ services:
           memory: 768M
           cpus: "1.0"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
       REDIS_URL: redis://:${REDIS_PASSWORD:-cerebro_redis_pass}@redis:6379
       JWT_SECRET: ${JWT_SECRET:-cerebro_jwt_dev_secret_CHANGE_ME}
       LITELLM_URL: "http://litellm:4000"
       LITELLM_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+      DEMO_KEY_LITE: ${DEMO_KEY_LITE:-${LITELLM_MASTER_KEY:-sk-cerebro-master-key}}
+      DEMO_KEY_EMBEDDINGS: ${DEMO_KEY_EMBEDDINGS:-${LITELLM_MASTER_KEY:-sk-cerebro-master-key}}
+      DEMO_KEY_PRO: ${DEMO_KEY_PRO:-${LITELLM_MASTER_KEY:-sk-cerebro-master-key}}
       QDRANT_URL: "http://qdrant:6333"
       INGESTION_URL: "http://ingestion-api:8000"
       PUBLIC_INGESTION_URL: ${PUBLIC_INGESTION_URL:-}
@@ -261,7 +293,13 @@ services:
     build:
       context: .
       dockerfile: infra/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
     container_name: cerebro-web
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     restart: unless-stopped
     deploy:
       resources:
@@ -269,10 +307,15 @@ services:
           memory: 384M
           cpus: "0.5"
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     environment:
       # Server-side proxy target (never exposed to browser)
       CEREBRO_API_URL: "http://cerebro-api:8001"
+      # URL publica del sitio — usada por Next.js metadataBase para
+      # absolutizar og:image, twitter:image, etc. Sin esto, Next.js
+      # defaultea a http://localhost:3000 y los browsers marcan la
+      # pagina como inseguro por mixed content.
+      NEXT_PUBLIC_SITE_URL: "${NEXT_PUBLIC_SITE_URL:-}"
     networks:
       - cerebro-net
     depends_on:
@@ -313,8 +356,8 @@ services:
       - "--tracing.otlp.http.endpoint=http://otel-collector:4318/v1/traces"
       - "--log.level=INFO"
     ports:
-      - "80:80"
-      - "8080:8080"   # Traefik Dashboard
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:8080:8080"   # Traefik Dashboard
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks:
@@ -351,11 +394,13 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cerebro}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cerebro_pass}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-cerebro}
-      RABBITMQ_ERLANG_COOKIE: cerebro_erlang_cookie_secret
+      # Cookie de autenticacion entre nodos (single-node, no cluster).
+      # Obligatoria via .env para que no quede un literal en el repo.
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE must be set in .env}
       RABBITMQ_MANAGEMENT_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
     ports:
-      - "5672:5672"    # AMQP
-      - "15672:15672"  # Management UI
+      - "127.0.0.1:5672:5672"    # AMQP
+      - "127.0.0.1:15672:15672"  # Management UI
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
       - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
@@ -393,7 +438,7 @@ services:
     environment:
       REDIS_ARGS: "--requirepass ${REDIS_PASSWORD:-cerebro_redis_pass} --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000 --appendonly yes"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     networks:
@@ -438,7 +483,7 @@ services:
       - "-c"
       - "maintenance_work_mem=128MB"
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
@@ -470,8 +515,8 @@ services:
       QDRANT__SERVICE__GRPC_PORT: 6334
       QDRANT__LOG_LEVEL: INFO
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "127.0.0.1:6333:6333"   # REST API
+      - "127.0.0.1:6334:6334"   # gRPC
     volumes:
       - qdrant-data:/qdrant/storage
       - ./infra/qdrant/config.yaml:/qdrant/config/production.yaml:ro
@@ -492,6 +537,27 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # 🗂️  QDRANT INIT one-shot: crea colecciones base
+  #    cerebro_recursos (doc-level vectors) + cerebro_chunks (RAG) +
+  #    payload indexes (tenant_id, recurso_id). Idempotente: Qdrant PUT
+  #    devuelve 200 si la colección ya existe.
+  # ---------------------------------------------------------------------------
+  qdrant-init:
+    image: curlimages/curl:8.10.1
+    container_name: cerebro-qdrant-init
+    restart: "no"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      EMBEDDINGS_DIM: ${EMBEDDINGS_DIM:-1024}
+    volumes:
+      - ./infra/qdrant/init_qdrant.sh:/init_qdrant.sh:ro
+    entrypoint: ["sh", "/init_qdrant.sh", "http://qdrant:6333"]
+    networks:
+      - cerebro-net
+
+  # ---------------------------------------------------------------------------
   # 🤖 LLM GATEWAY — LiteLLM
   #    Fallback automático OpenAI → Anthropic → Local
   #    Circuit Breakers · Multi-provider routing
@@ -507,7 +573,11 @@ services:
           cpus: "1.0"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      # NOTA: ?schema=public es obligatorio. El user `cerebro` tiene
+      # search_path `"$$user", public` y sin override Prisma crearía
+      # las tablas LiteLLM_* en el schema `cerebro` mientras las consulta
+      # con prefijo `public.` → TableNotFoundError en runtime.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}?schema=public
       STORE_MODEL_IN_DB: "True"
 
       GEMINI_API_KEY: ${GEMINI_API_KEY:-sk-gemini-placeholder}
@@ -515,7 +585,7 @@ services:
       XAI_API_KEY: ${XAI_API_KEY:-sk-xai-placeholder}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-sk-nv-placeholder}
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - ./infra/litellm/config.yaml:/app/config.yaml:ro
     depends_on:
@@ -534,6 +604,63 @@ services:
       retries: 10
       start_period: 40s
     command: ["--config", "/app/config.yaml", "--port", "4000", "--detailed_debug"]
+
+  # ---------------------------------------------------------------------------
+  # 🌱 SEED DEMO one-shot: usuario demo + recursos sembrados
+  #    Crea el usuario demo (demo@linkanvil.io, password linkanvil-demo) y
+  #    siembra los recursos del catálogo en SEED_RESOURCES. Idempotente.
+  #    Gated por SEED_DEMO=true — si la env-var no está, sale exit 0 sin tocar BD.
+  # ---------------------------------------------------------------------------
+  cerebro-seed-demo:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    container_name: cerebro-seed-demo
+    restart: "no"
+    environment:
+      SEED_DEMO: ${SEED_DEMO:-false}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+    networks:
+      - cerebro-net
+    depends_on:
+      cerebro-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./ops:/app/ops:ro
+    command: ["python", "/app/ops/seed_demo_user.py"]
+
+  # ---------------------------------------------------------------------------
+  # 🔑 BOOTSTRAP one-shot: virtual-key del demo
+  #    Genera una virtual-key contra LiteLLM con permiso sobre los 3 model
+  #    groups, la cifra Fernet y la guarda en usuarios.llm_key_* del demo.
+  #    Idempotente: si el demo ya tiene una virtual-key válida, no toca nada.
+  # ---------------------------------------------------------------------------
+  bootstrap-demo-keys:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    container_name: cerebro-bootstrap-demo-keys
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cerebro}:${POSTGRES_PASSWORD:-cerebro_db_pass}@postgres:5432/${POSTGRES_DB:-cerebro_brain}
+      LITELLM_URL: "http://litellm:4000"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-cerebro-master-key}
+      LLM_KEYS_ENCRYPTION_KEY: ${LLM_KEYS_ENCRYPTION_KEY:?LLM_KEYS_ENCRYPTION_KEY must be set in .env}
+    networks:
+      - cerebro-net
+    depends_on:
+      litellm:
+        condition: service_healthy
+      cerebro-migrate:
+        condition: service_completed_successfully
+      cerebro-seed-demo:
+        condition: service_completed_successfully
+      qdrant-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./ops:/app/ops:ro
+    command: ["python", "/app/ops/bootstrap_demo_keys.py"]
 
   # ---------------------------------------------------------------------------
   # 🔄 ORQUESTADOR DE WORKFLOWS — n8n
@@ -580,7 +707,7 @@ services:
       # al hacer POST a cerebro-api /admin/audit-cron.
       AUDIT_CRON_TOKEN: ${AUDIT_CRON_TOKEN:-}
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     volumes:
       - n8n-data:/home/node/.n8n
     depends_on:
@@ -645,9 +772,9 @@ services:
       SPAN_STORAGE_TYPE: memory        # Ephemeral: evita problemas de permisos en vol
       MEMORY_MAX_TRACES: 10000
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "14317:4317"    # OTLP gRPC (host diferente para no colisionar con otel)
-      - "14318:4318"    # OTLP HTTP
+      - "127.0.0.1:16686:16686"   # Jaeger UI
+      - "127.0.0.1:14317:4317"    # OTLP gRPC (host diferente para no colisionar con otel)
+      - "127.0.0.1:14318:4318"    # OTLP HTTP
     networks:
       - cerebro-net
     labels:
@@ -678,10 +805,10 @@ services:
     volumes:
       - ./infra/otel/config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"    # OTLP gRPC (recibe de servicios internos)
-      - "4318:4318"    # OTLP HTTP
-      - "8888:8888"    # Prometheus metrics del collector
-      - "8889:8889"    # Prometheus exporter
+      - "127.0.0.1:4317:4317"    # OTLP gRPC (recibe de servicios internos)
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
+      - "127.0.0.1:8888:8888"    # Prometheus metrics del collector
+      - "127.0.0.1:8889:8889"    # Prometheus exporter
     depends_on:
       - jaeger
     networks:
@@ -711,7 +838,7 @@ services:
       - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infra/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
@@ -748,7 +875,7 @@ services:
       GF_SERVER_ROOT_URL: http://grafana.localhost
       GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -851,6 +978,36 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
+  # 🔌 TAILSCALE FUNNEL — frontend público (cerebro-web)
+  #    Profile "public" → solo se levanta con: up.sh --public  o
+  #    `docker compose --profile public up -d`. NO se activa por defecto.
+  # ---------------------------------------------------------------------------
+  tailscale-web:
+    image: tailscale/tailscale:stable
+    container_name: cerebro-tailscale-web
+    profiles: ["public"]
+    restart: unless-stopped
+    hostname: ${TS_PUBLIC_HOSTNAME:-linkanvil}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY_WEB:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve-web.json
+      TS_HOSTNAME: ${TS_PUBLIC_HOSTNAME:-linkanvil}
+    volumes:
+      - tailscale-web-state:/var/lib/tailscale
+      - ./infra/tailscale/serve-web.json:/config/serve-web.json:ro
+    networks:
+      - cerebro-net
+    depends_on:
+      cerebro-web:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "tailscale status >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # 🔌 TAILSCALE FUNNEL — URL pública persistente para webhooks de Telegram
   #    Profile "telegram" para no levantarlo en entornos que no lo necesitan.
   # ---------------------------------------------------------------------------
@@ -895,6 +1052,8 @@ volumes:
   playwright-profile:
   tailscale-state:
     name: cerebro-tailscale-state
+  tailscale-web-state:
+    name: cerebro-tailscale-web-state
 
 # =============================================================================
 # NETWORK — todos los servicios comparten la misma red interna

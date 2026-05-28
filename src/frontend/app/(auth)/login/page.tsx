@@ -3,9 +3,15 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Brain, LogIn } from "lucide-react";
+import { LogIn } from "lucide-react";
 import { apiCall } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth";
+import Logo from "@/components/Logo";
+
+// Slice 6: /login es exclusivo de usuarios registrados. La cuenta demo
+// se entra desde la landing ("Probar demo" → POST /auth/demo-start), no
+// desde este formulario. Si alguien intenta poner demo@linkanvil.io aquí,
+// el backend responde 403 con redirect="/demo" y mostramos el mensaje.
 
 export default function LoginPage() {
   const router = useRouter();
@@ -20,15 +26,28 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await apiCall<{ access_token: string }>(
-        "/auth/login",
-        { method: "POST", body: JSON.stringify({ email, password }) }
-      );
+      const res = await apiCall<{ access_token: string }>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
       const me = await apiCall<any>("/auth/me", {}, res.access_token);
       setAuth(res.access_token, me);
-      router.push("/");
+      router.push("/chat");
     } catch (err: any) {
-      setError(err.message);
+      // El backend devuelve 403 con cuerpo estructurado cuando alguien
+      // intenta loguear con la cuenta demo. apiCall ya extrae el message
+      // del detail si viene como object; lo reforzamos por si llega
+      // como string crudo con JSON.
+      let msg = err?.message ?? "Error al iniciar sesión";
+      try {
+        const parsed = typeof msg === "string" ? JSON.parse(msg) : msg;
+        if (parsed?.error === "demo_use_dedicated_endpoint") {
+          msg = parsed.message ?? msg;
+        }
+      } catch {
+        /* msg ya es texto plano */
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -42,9 +61,12 @@ export default function LoginPage() {
       className="w-full max-w-md"
     >
       <div className="flex flex-col items-center mb-8 gap-2">
-        <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
-          <Brain className="w-7 h-7 text-accent-light" />
-        </div>
+        <Link
+          href="/"
+          className="rounded-xl overflow-hidden hover:opacity-90 transition-opacity"
+        >
+          <Logo size={56} priority className="rounded-xl" />
+        </Link>
         <h1 className="text-2xl font-bold text-slate-100">LinkAnvil</h1>
         <p className="text-muted text-sm">Tu segundo cerebro autónomo</p>
       </div>
@@ -75,7 +97,9 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-muted mb-1.5">Contraseña</label>
+            <label className="block text-sm text-muted mb-1.5">
+              Contraseña
+            </label>
             <input
               type="password"
               required
@@ -101,11 +125,34 @@ export default function LoginPage() {
 
         <p className="text-center text-sm text-muted mt-6">
           ¿No tienes cuenta?{" "}
-          <Link href="/register" className="text-accent-light hover:underline">
+          <Link
+            href="/register"
+            className="text-accent-light hover:underline"
+          >
             Regístrate
           </Link>
         </p>
+
+        {/* Slice 6: enlace de vuelta a la landing donde vive el botón
+            "Probar demo". No linkeamos directamente a /demo porque esa
+            ruta requiere sesión demo previa (POST /auth/demo-start), y
+            sería un redirect loop. */}
+        <p className="text-center text-xs text-muted mt-3">
+          ¿Solo quieres ver cómo funciona?{" "}
+          <Link
+            href="/?demo=1"
+            className="text-accent-light/80 hover:underline"
+          >
+            Prueba el demo público
+          </Link>
+        </p>
       </div>
+
+      <p className="text-center text-xs text-muted mt-6">
+        <Link href="/" className="hover:text-slate-300 transition-colors">
+          ← Volver a la página principal
+        </Link>
+      </p>
     </motion.div>
   );
 }

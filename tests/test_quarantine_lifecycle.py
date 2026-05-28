@@ -12,21 +12,28 @@ async def _insert_recurso_cuarentena(conn, url: str, hash_: str, tenant_id: str,
                                       grace_offset_days: int = 7) -> str:
     rid = await conn.fetchval(
         """
-        INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado,
-                              quarantined_at, quarantine_reason,
-                              quarantine_grace_until)
-        VALUES ($1, $2, 'lifecycle', 'media', 'cuarentena',
-                NOW(), 'caducidad',
-                (NOW() + ($3::int * INTERVAL '1 day'))::DATE)
+        INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+        VALUES ($1, $2, 'lifecycle', 'media')
         ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
         RETURNING id
         """,
-        url, hash_, grace_offset_days,
+        url, hash_,
     )
+    # Migración 0012: estado per-tenant en usuario_recursos.
     await conn.execute(
-        """INSERT INTO usuario_recursos (tenant_id, recurso_id)
-           VALUES ($1, $2) ON CONFLICT DO NOTHING""",
-        tenant_id, rid,
+        """INSERT INTO usuario_recursos (
+                tenant_id, recurso_id, estado,
+                quarantined_at, quarantine_reason, quarantine_grace_until
+            ) VALUES (
+                $1, $2, 'cuarentena',
+                NOW(), 'caducidad',
+                (NOW() + ($3::int * INTERVAL '1 day'))::DATE
+            ) ON CONFLICT (tenant_id, recurso_id) DO UPDATE
+                SET estado = EXCLUDED.estado,
+                    quarantined_at = EXCLUDED.quarantined_at,
+                    quarantine_reason = EXCLUDED.quarantine_reason,
+                    quarantine_grace_until = EXCLUDED.quarantine_grace_until""",
+        tenant_id, rid, grace_offset_days,
     )
     return str(rid)
 
@@ -53,7 +60,9 @@ async def test_rescue_returns_resource_to_active():
             row = await conn.fetchrow(
                 """SELECT estado, quarantined_at, quarantine_reason,
                           quarantine_grace_until, fecha_caducidad
-                   FROM recursos WHERE id = $1::uuid""", rid,
+                   FROM usuario_recursos
+                  WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_id, rid,
             )
             assert row["estado"] == "activo"
             assert row["quarantined_at"] is None
@@ -99,7 +108,9 @@ async def test_expire_fast_track_marks_expirado():
 
         async with db.pool.acquire() as conn:
             estado = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1::uuid", rid,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_id, rid,
             )
             assert estado == "expirado"
 
@@ -138,9 +149,17 @@ async def test_delete_unlinks_and_removes_globally_when_last():
             rid_shared = await _insert_recurso_cuarentena(
                 conn, "http://shared.example.com", "hash_shared", tenant_a,
             )
+            # Migración 0012: estado per-tenant — tenant_b también
+            # arranca en cuarentena para mantener la semántica del test.
             await conn.execute(
-                """INSERT INTO usuario_recursos (tenant_id, recurso_id)
-                   VALUES ($1, $2::uuid) ON CONFLICT DO NOTHING""",
+                """INSERT INTO usuario_recursos (
+                        tenant_id, recurso_id, estado,
+                        quarantined_at, quarantine_reason, quarantine_grace_until
+                    ) VALUES (
+                        $1, $2::uuid, 'cuarentena',
+                        NOW(), 'caducidad',
+                        (NOW() + INTERVAL '7 days')::DATE
+                    ) ON CONFLICT DO NOTHING""",
                 tenant_b, rid_shared,
             )
 
@@ -160,7 +179,9 @@ async def test_delete_unlinks_and_removes_globally_when_last():
 
         async with db.pool.acquire() as conn:
             shared_state = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1::uuid", rid_shared,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_b, rid_shared,
             )
             assert shared_state == "cuarentena"  # sigue ahí para tenant_b
 
@@ -205,7 +226,9 @@ async def test_cross_tenant_rescue_returns_none():
 
         async with db.pool.acquire() as conn:
             estado = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1::uuid", rid,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                owner, rid,
             )
             assert estado == "cuarentena"  # intacto
     finally:

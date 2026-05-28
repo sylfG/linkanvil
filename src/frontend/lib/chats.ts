@@ -89,7 +89,14 @@ export const useChatStore = create<ChatsState>()((set, get) => ({
   async createSession(token) {
     const data = await apiCall<any>("/chats", { method: "POST", body: "{}" }, token);
     const session = toSession(data);
-    set((s) => ({ sessions: [session, ...s.sessions], activeId: session.id }));
+    set((s) => ({
+      sessions: [session, ...s.sessions],
+      activeId: session.id,
+      // Marca la sesión como ya inicializada localmente para que el
+      // efecto que dispara loadMessages al cambiar activeId no la
+      // sobreescriba con [] mientras el primer envío está streamando.
+      messagesMap: { ...s.messagesMap, [session.id]: [] },
+    }));
     return session.id;
   },
 

@@ -50,67 +50,126 @@ def write_env_key(path: str, key: str, value: str) -> None:
 
 
 def wait_for_n8n():
-    for _ in range(30):
-        try:
-            req = urllib.request.Request(f"{N8N_URL}/healthz")
-            with urllib.request.urlopen(req, timeout=2) as r:
-                if r.status == 200:
+    """
+    Espera a que n8n esté COMPLETAMENTE listo: no basta con /healthz.
+    El router REST se carga después del healthcheck, así que probamos también
+    POST /rest/login: si responde 200/400 (válido o validation error) significa
+    que el router está montado; si devuelve 404 ("Cannot POST"), aún no lo está.
+    """
+    deadline = time.time() + 120  # 2 minutos
+    healthz_ok = False
+    while time.time() < deadline:
+        # 1) /healthz
+        if not healthz_ok:
+            try:
+                req = urllib.request.Request(f"{N8N_URL}/healthz")
+                with urllib.request.urlopen(req, timeout=2) as r:
+                    if r.status == 200:
+                        healthz_ok = True
+            except Exception:
+                pass
+        # 2) Router REST cargado (probamos /rest/login con body vacío → debe dar 400, no 404)
+        if healthz_ok:
+            try:
+                req = urllib.request.Request(
+                    f"{N8N_URL}/rest/login",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=2)
+                return  # 2xx ya está listo
+            except urllib.error.HTTPError as e:
+                # 400 (validation) o 401 (auth) → router cargado
+                if e.code in (400, 401):
                     return
-        except Exception:
-            pass
+                # 404 → router aún no montado, seguimos esperando
+            except Exception:
+                pass
         time.sleep(2)
-    print("ERROR: n8n no está respondiendo en /healthz", file=sys.stderr)
+    print("ERROR: n8n no está respondiendo en /healthz o el router REST no cargó", file=sys.stderr)
     sys.exit(1)
 
 
+def _try_owner_setup(email: str) -> tuple[str, bool]:
+    """Devuelve (cookie, ya_configurado). Lanza excepción solo si error no recuperable."""
+    payload = {"email": email, "password": N8N_PASS, "firstName": "Admin", "lastName": "User"}
+    req = urllib.request.Request(
+        f"{N8N_URL}/rest/owner/setup",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            token = r.getheader("Set-Cookie")
+            if token:
+                return token.split(";")[0], False
+            return "", False
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if hasattr(e, "read") else ""
+        # 400 con "already" = ya configurado → debemos hacer login
+        if e.code == 400 or "already" in body.lower():
+            return "", True
+        # 404 = router aún no cargado → reintentar fuera
+        raise
+
+
+def _try_login(email: str) -> str:
+    """Devuelve cookie o '' si falla. Lanza HTTPError 404 para reintentar fuera."""
+    req = urllib.request.Request(
+        f"{N8N_URL}/rest/login",
+        data=json.dumps({"emailOrLdapLoginId": email, "password": N8N_PASS}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        token = r.getheader("Set-Cookie")
+        return token.split(";")[0] if token else ""
+
+
 def get_n8n_cookie() -> str:
-    """Intenta crear el owner o bien hacer login para obtener el n8n-auth."""
+    """Intenta crear owner / login con reintentos para mitigar race con el router REST."""
     email = f"{N8N_USER}@example.com"
-    
-    # 1. Intentar owner/setup (caso base de datos limpia)
-    try:
-        payload = {
-            "email": email,
-            "password": N8N_PASS,
-            "firstName": "Admin",
-            "lastName": "User"
-        }
-        req = urllib.request.Request(
-            f"{N8N_URL}/rest/owner/setup",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            token = r.getheader("Set-Cookie")
-            if token:
-                print("✓ Owner n8n creado headlessly.")
-                return token.split(";")[0]
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        if "already setup" in body.lower() or e.code == 400:
-            pass # Ya está configurado
-        else:
-            print(f"⚠ owner/setup error raro: {body}")
-    
-    # 2. Login normal
-    try:
-        req = urllib.request.Request(
-            f"{N8N_URL}/rest/login",
-            data=json.dumps({"emailOrLdapLoginId": email, "password": N8N_PASS}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            token = r.getheader("Set-Cookie")
-            if token:
-                print("✓ Login n8n exitoso.")
-                return token.split(";")[0]
-    except urllib.error.HTTPError as e:
-        print(f"ERROR: Falló el login n8n: {e.read().decode()}", file=sys.stderr)
-    except Exception as e:
-        print(f"ERROR: Falló petición de login n8n: {e}", file=sys.stderr)
-    
+    last_err = None
+    for attempt in range(1, 6):  # 5 intentos, backoff 2..10s
+        try:
+            # 1) owner/setup
+            try:
+                cookie, already = _try_owner_setup(email)
+                if cookie:
+                    print("✓ Owner n8n creado headlessly.")
+                    return cookie
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    print(f"⚠ owner/setup error inesperado (HTTP {e.code}): {getattr(e, 'reason', '')}")
+                last_err = e
+                already = False
+
+            # 2) login
+            try:
+                cookie = _try_login(email)
+                if cookie:
+                    print("✓ Login n8n exitoso.")
+                    return cookie
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    last_err = e
+                else:
+                    body = e.read().decode() if hasattr(e, "read") else ""
+                    print(f"ERROR: Falló el login n8n (HTTP {e.code}): {body}", file=sys.stderr)
+                    return ""
+        except Exception as e:
+            last_err = e
+            print(f"⚠ intento {attempt}/5: {type(e).__name__}: {e}", file=sys.stderr)
+
+        # Backoff antes del siguiente intento
+        if attempt < 5:
+            wait_s = 2 * attempt
+            print(f"  Reintentando en {wait_s}s (router REST puede no estar listo aún)...", file=sys.stderr)
+            time.sleep(wait_s)
+
+    print(f"ERROR: Imposible obtener cookie tras 5 intentos. Último error: {last_err}", file=sys.stderr)
     return ""
 
 

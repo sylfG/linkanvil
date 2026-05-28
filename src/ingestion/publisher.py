@@ -1,15 +1,16 @@
 import aio_pika
 import json
 import logging
-import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
 
 class RabbitMQPublisher:
     """
     Gestiona la conexión y publicación asíncrona hacia RabbitMQ.
     """
+
     def __init__(self, rabbit_url: str):
         self.rabbit_url = rabbit_url
         self.connection: Optional[aio_pika.RobustConnection] = None
@@ -22,7 +23,9 @@ class RabbitMQPublisher:
         # Publish to the specific exchange where "q.url.ingesta" is bound via "url.nueva"
         self.exchange = await self.channel.get_exchange("cerebro.ingesta")
 
-    async def publish_ingestion_message(self, queue_name: str, payload: dict, trace_id: str):
+    async def publish_ingestion_message(
+        self, queue_name: str, payload: dict, trace_id: str
+    ):
         if not self.channel or not self.exchange:
             await self.connect()
 
@@ -30,9 +33,9 @@ class RabbitMQPublisher:
         message = aio_pika.Message(
             body=json.dumps(payload).encode("utf-8"),
             content_type="application/json",
-            headers={"trace_id": trace_id}
+            headers={"trace_id": trace_id},
         )
-        
+
         logger.info(f"[{trace_id}] Publicando mensaje a la cola '{queue_name}'")
         await self.exchange.publish(message, routing_key=queue_name)
 

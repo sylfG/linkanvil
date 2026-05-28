@@ -51,9 +51,13 @@ class RedisDeduplicator:
             result = await self.redis.execute_command("BF.ADD", key, item_hash)
             is_new = bool(int(result))
             if is_new:
-                logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Nuevo elemento ingerido: {item_hash}")
+                logger.info(
+                    f"[{trace_id}] [TENANT:{tenant_id}] Nuevo elemento ingerido: {item_hash}"
+                )
             else:
-                logger.info(f"[{trace_id}] [TENANT:{tenant_id}] Elemento DUPLICADO ignorado: {item_hash}")
+                logger.info(
+                    f"[{trace_id}] [TENANT:{tenant_id}] Elemento DUPLICADO ignorado: {item_hash}"
+                )
             return is_new
         except (RedisError, Exception) as e:
             logger.error(
@@ -62,5 +66,7 @@ class RedisDeduplicator:
             if self.dlq_callback:
                 await self.dlq_callback(item_hash, tenant_id, trace_id, e)
                 return False
-            logger.warning(f"[{trace_id}] [TENANT:{tenant_id}] Fallback aplicado (fail-open).")
+            logger.warning(
+                f"[{trace_id}] [TENANT:{tenant_id}] Fallback aplicado (fail-open)."
+            )
             return True

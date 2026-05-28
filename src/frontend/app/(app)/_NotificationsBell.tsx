@@ -25,13 +25,16 @@ const REASON_LABEL: Record<string, string> = {
   colision_semantica: "fue reemplazado",
   manual: "marcado manualmente",
   gracia_agotada: "expiró tras la gracia",
+  // Migraciones 0006 + 0007: nuevos motivos del flujo policy-driven.
+  evento_pasado: "fecha pasada",
+  auto_archive: "archivado automáticamente",
 };
 
 function eventMeta(ev: string) {
   if (ev === "recurso.cuarentena")
     return { Icon: AlertTriangle, cls: "text-amber-300", label: "Cuarentena", href: "/quarantine" };
   if (ev === "recurso.expirado")
-    return { Icon: CalendarX, cls: "text-red-300", label: "Expirado", href: "/expired" };
+    return { Icon: CalendarX, cls: "text-red-300", label: "Archivado", href: "/expired" };
   if (ev === "recurso.rescatado")
     return { Icon: RotateCcw, cls: "text-green-300", label: "Rescatado", href: "/kb" };
   return { Icon: Bell, cls: "text-slate-300", label: ev, href: "/kb" };
@@ -91,8 +94,8 @@ export function NotificationsBell({ token }: { token: string | null }) {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVis);
-    // Polling como red de seguridad (5 min) ahora que SSE está activo.
-    const interval = setInterval(refresh, 5 * 60_000);
+    // Red de seguridad (1 min) — solo dispara si el SSE se cae.
+    const interval = setInterval(refresh, 60_000);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       clearInterval(interval);

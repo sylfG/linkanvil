@@ -13,21 +13,22 @@ async def _insert_recurso(conn, url: str, hash_: str, tenant_id: str,
                            estado: str, fecha_caducidad: date | None) -> str:
     rid = await conn.fetchval(
         """
-        INSERT INTO recursos (url, url_hash, titulo, volatilidad,
-                              fecha_caducidad, estado)
-        VALUES ($1, $2, 'expired test', 'media', $3, $4)
-        ON CONFLICT (url_hash) DO UPDATE SET
-            estado = EXCLUDED.estado,
-            fecha_caducidad = EXCLUDED.fecha_caducidad,
-            updated_at = NOW()
+        INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+        VALUES ($1, $2, 'expired test', 'media')
+        ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
         RETURNING id
         """,
-        url, hash_, fecha_caducidad, estado,
+        url, hash_,
     )
+    # Migración 0012: estado y fecha_caducidad per-tenant en usuario_recursos.
     await conn.execute(
-        """INSERT INTO usuario_recursos (tenant_id, recurso_id)
-           VALUES ($1, $2) ON CONFLICT DO NOTHING""",
-        tenant_id, rid,
+        """INSERT INTO usuario_recursos (
+                tenant_id, recurso_id, estado, fecha_caducidad
+            ) VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tenant_id, recurso_id) DO UPDATE
+                SET estado = EXCLUDED.estado,
+                    fecha_caducidad = EXCLUDED.fecha_caducidad""",
+        tenant_id, rid, estado, fecha_caducidad,
     )
     return str(rid)
 

@@ -5,6 +5,12 @@ COPY src/frontend/package*.json ./
 RUN npm ci
 
 COPY src/frontend .
+
+# NEXT_PUBLIC_* se interpola en build time para el HTML pre-renderizado.
+# Pasar via build-arg desde docker-compose.yml.
+ARG NEXT_PUBLIC_SITE_URL=
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+
 RUN npm run build
 
 # ─────────────────────────────────────────

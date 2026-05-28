@@ -1,98 +1,127 @@
+"""Tests del RedisDeduplicator (RedisBloom + async).
+
+Refactor previo (#643361b) cambió la implementación a `redis.asyncio` y
+los tests del archivo original quedaron rotos: usaban MagicMock síncrono
+sobre un cliente async y no hacían await. Aquí reescribimos los tests
+con AsyncMock y @pytest.mark.asyncio.
+"""
 import pytest
-import redis
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
+
+import redis.exceptions
+
 from src.ingestion.deduplicator import RedisDeduplicator
 
-@pytest.fixture
-def mock_redis():
-    """Mock the Redis client and its Bloom Filter operations."""
-    class MockBfCommand:
-        def __init__(self):
-            # A simple set to mimic Bloom Filter storage conceptually
-            self.store = set()
-            self.reserved = set()
 
-        def reserve(self, key, error_rate, capacity):
-            if key in self.reserved:
-                raise redis.exceptions.ResponseError("ERR item exists")
-            self.reserved.add(key)
+def _async_redis_mock(*, exists_return=0, bf_add_return=1):
+    """Construye un AsyncMock que parece `redis.asyncio.Redis` para el
+    contrato que usa RedisDeduplicator (`exists`, `execute_command`)."""
+    m = AsyncMock()
+    m.exists = AsyncMock(return_value=exists_return)
+    # execute_command se llama con (\"BF.RESERVE\", ...) y (\"BF.ADD\", ...).
+    # Devolvemos bf_add_return para el caso típico; para BF.RESERVE no
+    # importa lo que devuelva (no se usa).
+    m.execute_command = AsyncMock(return_value=bf_add_return)
+    return m
+
+
+@pytest.mark.asyncio
+async def test_bloom_filter_happy_path():
+    """Primer elemento es nuevo; duplicado es rechazado; otro distinto es nuevo."""
+    # Simulamos un bloom "real": guardamos en un set lo que hemos visto y
+    # devolvemos 1/0 según corresponda en BF.ADD.
+    seen: set = set()
+
+    async def fake_execute(*args, **kwargs):
+        if args[0] == "BF.RESERVE":
             return True
-
-        def add(self, key, item):
-            full_key = f"{key}:{item}"
-            if full_key in self.store:
+        if args[0] == "BF.ADD":
+            key = (args[1], args[2])
+            if key in seen:
                 return 0
-            self.store.add(full_key)
+            seen.add(key)
             return 1
-            
-    client = MagicMock(spec=redis.Redis)
-    client.bf = MagicMock(return_value=MockBfCommand())
-    
-    client.exists.side_effect = lambda key: key in client.bf().reserved
-    return client
+        return None
 
-def test_bloom_filter_happy_path(mock_redis):
-    # Setup
-    dedup = RedisDeduplicator(redis_client=mock_redis)
+    m = AsyncMock()
+    m.exists = AsyncMock(return_value=1)  # bloom ya existe → no reserve
+    m.execute_command = AsyncMock(side_effect=fake_execute)
+
+    dedup = RedisDeduplicator(redis_client=m)
     tenant_id = "tenant_xyz"
     trace_id = "trace-1234"
     item1 = "https://example.com/article/1"
     item2 = "https://example.com/article/2"
 
-    # Given an valid input
-    # When injected it indicates it's new
-    assert dedup.is_new_item(item1, tenant_id, trace_id) is True
-    
-    # And duplicate is rejected
-    assert dedup.is_new_item(item1, tenant_id, trace_id) is False
-    
-    # And a different input is accepted
-    assert dedup.is_new_item(item2, tenant_id, trace_id) is True
+    assert await dedup.is_new_item(item1, tenant_id, trace_id) is True
+    assert await dedup.is_new_item(item1, tenant_id, trace_id) is False
+    assert await dedup.is_new_item(item2, tenant_id, trace_id) is True
 
-def test_bloom_filter_tenant_isolation(mock_redis):
-    dedup = RedisDeduplicator(redis_client=mock_redis)
+
+@pytest.mark.asyncio
+async def test_bloom_filter_tenant_isolation():
+    """El mismo item para tenants distintos genera filtros distintos."""
+    seen: set = set()
+
+    async def fake_execute(*args, **kwargs):
+        if args[0] == "BF.RESERVE":
+            return True
+        if args[0] == "BF.ADD":
+            key = (args[1], args[2])
+            if key in seen:
+                return 0
+            seen.add(key)
+            return 1
+        return None
+
+    m = AsyncMock()
+    m.exists = AsyncMock(return_value=1)
+    m.execute_command = AsyncMock(side_effect=fake_execute)
+
+    dedup = RedisDeduplicator(redis_client=m)
     item = "https://example.com/article/1"
-    
-    # Different tenants, same item
-    assert dedup.is_new_item(item, "Tenant_A", "t-001") is True
-    assert dedup.is_new_item(item, "Tenant_B", "t-002") is True
-    
-    # Tenant A again should fail
-    assert dedup.is_new_item(item, "Tenant_A", "t-003") is False
 
-def test_bloom_filter_redis_down_triggers_dlq():
-    # Setup failing redis client
-    mock_failing_redis = MagicMock(spec=redis.Redis)
-    error = redis.exceptions.ConnectionError("Connection refused")
-    mock_failing_redis.bf.side_effect = error
-    
-    # mock DLQ callback
-    dlq_triggered = False
-    
-    def my_dlq_callback(item, tenant_id, trace_id, _exc):
-        nonlocal dlq_triggered
-        dlq_triggered = True
-        
+    assert await dedup.is_new_item(item, "Tenant_A", "t-001") is True
+    assert await dedup.is_new_item(item, "Tenant_B", "t-002") is True
+    assert await dedup.is_new_item(item, "Tenant_A", "t-003") is False
+
+
+@pytest.mark.asyncio
+async def test_bloom_filter_redis_down_triggers_dlq():
+    """Si Redis cae y hay dlq_callback configurado, se invoca y devuelve False."""
+    m = AsyncMock()
+    err = redis.exceptions.ConnectionError("Connection refused")
+    m.exists = AsyncMock(side_effect=err)
+    m.execute_command = AsyncMock(side_effect=err)
+
+    triggered = {"value": False}
+
+    async def my_dlq_callback(item, tenant_id, trace_id, _exc):
+        triggered["value"] = True
+
     dedup = RedisDeduplicator(
-        redis_client=mock_failing_redis, 
-        dlq_callback=my_dlq_callback
+        redis_client=m,
+        dlq_callback=my_dlq_callback,
     )
-    
-    # Execution
-    is_new = dedup.is_new_item("https://example.com/broken", "Tenant_C", "t-004")
-    
-    # Validation
-    assert dlq_triggered is True
+
+    is_new = await dedup.is_new_item(
+        "https://example.com/broken", "Tenant_C", "t-004",
+    )
+    assert triggered["value"] is True
     assert is_new is False
 
-def test_bloom_filter_redis_down_fallback():
-    # Setup failing redis client WITH NO DLQ (fail-open)
-    mock_failing_redis = MagicMock(spec=redis.Redis)
-    error = redis.exceptions.ConnectionError("Connection refused")
-    mock_failing_redis.bf.side_effect = error
-    
-    dedup = RedisDeduplicator(redis_client=mock_failing_redis, dlq_callback=None)
-    
-    # Let it pass so pipeline doesn't choke completely
-    is_new = dedup.is_new_item("https://example.com/broken", "Tenant_C", "t-005")
+
+@pytest.mark.asyncio
+async def test_bloom_filter_redis_down_fallback():
+    """Sin dlq_callback, política fail-open: trata como nuevo y deja pasar."""
+    m = AsyncMock()
+    err = redis.exceptions.ConnectionError("Connection refused")
+    m.exists = AsyncMock(side_effect=err)
+    m.execute_command = AsyncMock(side_effect=err)
+
+    dedup = RedisDeduplicator(redis_client=m, dlq_callback=None)
+
+    is_new = await dedup.is_new_item(
+        "https://example.com/broken", "Tenant_C", "t-005",
+    )
     assert is_new is True

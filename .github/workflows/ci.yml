@@ -1,0 +1,47 @@
+name: CI — Static Analysis
+
+# Análisis estático determinista — sin IA, sin ANTHROPIC_API_KEY.
+# El análisis semántico de seguridad ocurre en el hook pre-push (via LiteLLM local).
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install analysis tools
+        run: |
+          pip install \
+            "ruff>=0.8,<1.0" \
+            "mypy>=1.10,<2.0" \
+            "bandit>=1.7,<2.0" \
+            "pip-audit>=2.7,<3.0"
+
+      - name: ruff — lint
+        run: ruff check src/
+
+      - name: ruff — format check
+        run: ruff format --check src/
+
+      # mypy: marcado como non-blocking por ahora — 75 errores preexistentes
+      # de tipos en singletons (httpx.AsyncClient | None) y regex matches
+      # que necesitan un refactor cuidadoso (tarea #15). Se reportan en
+      # los logs del job para no perderlos, pero no bloquean el merge.
+      - name: mypy — type checking
+        run: mypy src/ --ignore-missing-imports
+        continue-on-error: true
+
+      - name: bandit — security static analysis
+        run: bandit -r src/ -ll   # solo severidad MEDIUM y HIGH
+
+      - name: pip-audit — dependency vulnerabilities
+        run: pip-audit

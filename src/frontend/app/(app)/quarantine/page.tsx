@@ -11,8 +11,10 @@ import {
   Hourglass,
   Sparkles,
   Hand,
+  CalendarX,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 import { Pagination, PAGE_SIZE } from "@/components/Pagination";
@@ -26,7 +28,7 @@ interface QuarantineItem {
   volatilidad?: string;
   fecha_caducidad?: string;
   quarantined_at: string;
-  quarantine_reason: "caducidad" | "colision_semantica" | "manual";
+  quarantine_reason: "caducidad" | "colision_semantica" | "manual" | "evento_pasado";
   quarantine_grace_until: string;
   dias_restantes: number;
 }
@@ -49,6 +51,11 @@ const REASON_META: Record<
     label: "Manual",
     icon: Hand,
     cls: "bg-slate-800/30 text-slate-300 border-slate-700/30",
+  },
+  evento_pasado: {
+    label: "Evento pasado",
+    icon: CalendarX,
+    cls: "bg-blue-800/30 text-blue-300 border-blue-700/30",
   },
 };
 
@@ -170,9 +177,12 @@ export default function QuarantinePage() {
           <h1 className="text-xl font-bold flex items-center gap-2">
             <AlertTriangle className="w-5 h-5 text-amber-400" />
             Bandeja de cuarentena
+            <DemoHint
+              hint="Antes del audit del minuto 5 verás aquí solo el ejemplo seed (ExpoJove 2024). Después del minuto 5 aparecerán 2 de tus recursos efímeros transicionados con motivo 'caducidad'."
+            />
           </h1>
           <p className="text-sm text-muted mt-1">
-            {items.length} recurso(s) pendiente(s) de revisión antes de la expiración definitiva.
+            {items.length} recurso(s) pendiente(s) de revisión antes del archivado definitivo.
           </p>
         </div>
         <button
@@ -280,7 +290,7 @@ export default function QuarantinePage() {
                     className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-900/20 text-amber-300 border border-amber-700/30 hover:bg-amber-900/40 transition-colors disabled:opacity-40"
                   >
                     <Hourglass className="w-3 h-3" />
-                    Expirar
+                    Archivar
                   </button>
                   <button
                     disabled={busy}
@@ -333,12 +343,12 @@ export default function QuarantinePage() {
                     <h3 className="font-semibold text-sm">
                       {confirm.action === "delete"
                         ? "¿Eliminar definitivamente?"
-                        : "¿Confirmar expiración?"}
+                        : "¿Confirmar archivado?"}
                     </h3>
                     <p className="text-xs text-muted mt-1">
                       {confirm.action === "delete"
                         ? "Borra el recurso de tu base de conocimiento. Si nadie más lo tiene, se elimina globalmente y de Qdrant. No se puede deshacer."
-                        : "Lo marca como 'expirado' inmediatamente, sin esperar al fin del período de gracia."}
+                        : "Lo archiva inmediatamente, sin esperar al fin del período de gracia."}
                     </p>
                   </div>
                   <button

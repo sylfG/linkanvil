@@ -15,18 +15,21 @@ from src.data.db import DatabaseManager
 async def _insert_recurso(conn, url: str, hash_: str, tenant_id: str,
                            estado: str, fecha_caducidad: date | None = None) -> str:
     rid = await conn.fetchval(
-        """INSERT INTO recursos (url, url_hash, titulo, volatilidad, estado,
-                                  fecha_caducidad)
-           VALUES ($1, $2, 'state-tx', 'media', $3, $4)
-           ON CONFLICT (url_hash) DO UPDATE SET estado = EXCLUDED.estado,
-                                                  updated_at = NOW()
+        """INSERT INTO recursos (url, url_hash, titulo, volatilidad)
+           VALUES ($1, $2, 'state-tx', 'media')
+           ON CONFLICT (url_hash) DO UPDATE SET updated_at = NOW()
            RETURNING id""",
-        url, hash_, estado, fecha_caducidad,
+        url, hash_,
     )
+    # Migración 0012: estado per-tenant en usuario_recursos.
     await conn.execute(
-        """INSERT INTO usuario_recursos (tenant_id, recurso_id)
-           VALUES ($1, $2) ON CONFLICT DO NOTHING""",
-        tenant_id, rid,
+        """INSERT INTO usuario_recursos (
+                tenant_id, recurso_id, estado, fecha_caducidad
+            ) VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tenant_id, recurso_id) DO UPDATE
+                SET estado = EXCLUDED.estado,
+                    fecha_caducidad = EXCLUDED.fecha_caducidad""",
+        tenant_id, rid, estado, fecha_caducidad,
     )
     return str(rid)
 
@@ -50,7 +53,9 @@ async def test_rescue_from_expired_returns_to_active():
 
         async with db.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT estado FROM recursos WHERE id = $1::uuid", rid,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_id, rid,
             )
             assert row["estado"] == "activo"
 
@@ -94,7 +99,9 @@ async def test_quarantine_recurso_from_active():
         async with db.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT estado, quarantine_reason, quarantine_grace_until
-                   FROM recursos WHERE id = $1::uuid""", rid,
+                   FROM usuario_recursos
+                   WHERE tenant_id = $1 AND recurso_id = $2::uuid""",
+                tenant_id, rid,
             )
             assert row["estado"] == "cuarentena"
             assert row["quarantine_reason"] == "manual"

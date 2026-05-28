@@ -11,8 +11,13 @@ import {
   AlertTriangle,
   CalendarX,
   Trash2,
+  ShieldCheck,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { apiCall } from "@/lib/api";
+import { DemoHint } from "@/components/DemoHint";
 import { useAuthStore } from "@/lib/auth";
 import { useResourceStream, useResourceStreamDispatch } from "@/lib/resource_stream";
 import { Pagination, PAGE_SIZE } from "@/components/Pagination";
@@ -83,6 +88,40 @@ export default function KBPage() {
   // SSE: cualquier transición de recurso refresca la lista en vivo.
   useResourceStream(token, () => { load(); });
 
+  // Manual audit trigger — same logic as the daily cron, scoped to the
+  // caller's identity for auth/rate-limit but globally idempotent.
+  const [auditing, setAuditing] = useState(false);
+  const [auditResult, setAuditResult] = useState<
+    | { ok: true; cuarentenados: number; expirados: number }
+    | { ok: false; msg: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    if (!auditResult) return;
+    const t = setTimeout(() => setAuditResult(null), 5000);
+    return () => clearTimeout(t);
+  }, [auditResult]);
+
+  async function runManualAudit() {
+    if (auditing) return;
+    setAuditing(true);
+    setAuditResult(null);
+    try {
+      const res = await apiCall<{ cuarentenados: number; expirados: number }>(
+        "/resources/audit-now",
+        { method: "POST" },
+        token,
+      );
+      setAuditResult({ ok: true, cuarentenados: res.cuarentenados, expirados: res.expirados });
+      await load();
+    } catch (e: any) {
+      setAuditResult({ ok: false, msg: e?.message ?? "Auditoría fallida" });
+    } finally {
+      setAuditing(false);
+    }
+  }
+
   async function runAction(action: "quarantine" | "expire" | "delete") {
     if (!selected) return;
     setBusy(true);
@@ -140,6 +179,9 @@ export default function KBPage() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-accent-light" />
           Base de Conocimiento
+          <DemoHint
+            hint="Ves 18 recursos seed compartidos por todos los visitantes + 3 efímeros que se stagearon al iniciar tu sesión. Al minuto 5, el audit moverá 2 de tus efímeros a Cuarentena y archivará 1."
+          />
         </h1>
         <p className="text-sm text-muted mt-1">{filtered.length} recurso(s)</p>
       </div>
@@ -163,7 +205,52 @@ export default function KBPage() {
         >
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
         </button>
+
+        <button
+          onClick={runManualAudit}
+          disabled={auditing}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-card border border-border text-slate-200 hover:border-accent/40 hover:text-accent-light disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm"
+          title="Mueve los recursos vencidos a cuarentena y expira los que ya agotaron su período de gracia."
+        >
+          {auditing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+          <span className="hidden sm:inline">Revisar caducidades</span>
+        </button>
       </div>
+
+      {/* Toast del audit manual */}
+      <AnimatePresence>
+        {auditResult && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className={`mb-4 p-3 rounded-lg flex items-center gap-2 text-sm border ${
+              auditResult.ok
+                ? "bg-green-900/15 border-green-700/30 text-green-200"
+                : "bg-red-900/15 border-red-700/30 text-red-200"
+            }`}
+          >
+            {auditResult.ok ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  Auditoría completada:{" "}
+                  <b>{auditResult.cuarentenados}</b> recurso(s) movido(s) a cuarentena,{" "}
+                  <b>{auditResult.expirados}</b> archivado(s).
+                  {auditResult.cuarentenados === 0 && auditResult.expirados === 0 && (
+                    <span className="text-muted"> — Todo al día.</span>
+                  )}
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{auditResult.msg}</span>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Grid */}
       {loading ? (
@@ -357,7 +444,7 @@ export default function KBPage() {
                     className="w-full flex items-center justify-center gap-2 text-xs font-medium px-3 py-2 rounded-lg bg-red-900/20 text-red-300 border border-red-700/30 hover:bg-red-900/40 transition-colors disabled:opacity-40"
                   >
                     <CalendarX className="w-3.5 h-3.5" />
-                    Marcar como expirado
+                    Archivar manualmente
                   </button>
                 )}
                 {(selected.estado === "cuarentena" || selected.estado === "expirado") && (
@@ -426,14 +513,14 @@ export default function KBPage() {
                   {confirm === "delete"
                     ? "¿Eliminar definitivamente?"
                     : confirm === "expire"
-                      ? "¿Marcar como expirado?"
+                      ? "¿Marcar como archivado?"
                       : "¿Mandar a cuarentena?"}
                 </h3>
                 <p className="text-xs text-muted mb-4">
                   {confirm === "delete"
                     ? "Borra el recurso de tu base de conocimiento. Si nadie más lo tiene, se elimina globalmente y se purga de Qdrant. No se puede deshacer."
                     : confirm === "expire"
-                      ? "Lo retira inmediatamente del RAG. Aún podrás rescatarlo desde la vista de Expirados."
+                      ? "Lo retira inmediatamente del RAG. Aún podrás rescatarlo desde la vista de Archivados."
                       : "Período de gracia configurable; durante ese tiempo seguirá visible en la vista de Cuarentena y podrás rescatarlo o expirarlo."}
                 </p>
                 <div className="flex gap-2 justify-end">

@@ -110,26 +110,7 @@ ok "Build completado"
 
 # ── 8. Actualizar hash de contraseña RabbitMQ en definitions.json ────────────
 log "Actualizando hash de contraseña RabbitMQ..."
-RABBIT_PASS=$(grep ^RABBITMQ_PASS .env | cut -d= -f2)
-NEW_HASH=$(python3 - "$RABBIT_PASS" << 'PYEOF'
-import sys, hashlib, os, base64
-p = sys.argv[1].encode()
-s = os.urandom(4)
-print(base64.b64encode(s + hashlib.sha256(s + p).digest()).decode())
-PYEOF
-)
-# Reemplazar el hash en definitions.json
-python3 -c "
-import json, sys
-with open('infra/rabbitmq/definitions.json') as f:
-    d = json.load(f)
-for u in d.get('users', []):
-    if u['name'] == 'cerebro':
-        u['password_hash'] = sys.argv[1]
-with open('infra/rabbitmq/definitions.json', 'w') as f:
-    json.dump(d, f, indent=2)
-" "$NEW_HASH"
-ok "Hash RabbitMQ actualizado"
+bash scripts/regen-rabbitmq-hash.sh
 
 # ── 9. Levantar todos los servicios ──────────────────────────────────────────
 log "Levantando todos los servicios..."
@@ -140,50 +121,10 @@ ok "Servicios iniciados"
 log "Esperando health checks (máx 3 minutos)..."
 echo ""
 
-SERVICES_WITH_HC=(
-    "cerebro-traefik"
-    "cerebro-rabbitmq"
-    "cerebro-redis"
-    "cerebro-postgres"
-    "cerebro-litellm"
-    "cerebro-api"
-    "cerebro-ingestion"
-    "cerebro-scraper"
-    "cerebro-outbox"
-    "cerebro-embedder"
-    "cerebro-prometheus"
-    "cerebro-grafana"
-    "cerebro-jaeger"
-    "cerebro-n8n"
-)
-
-TIMEOUT=180
-INTERVAL=5
-ELAPSED=0
 ALL_HEALTHY=false
-
-while [[ $ELAPSED -lt $TIMEOUT ]]; do
+if bash scripts/wait-healthy.sh --timeout=180; then
     ALL_HEALTHY=true
-    NOT_READY=()
-
-    for svc in "${SERVICES_WITH_HC[@]}"; do
-        STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo "missing")
-        if [[ "$STATUS" != "healthy" ]]; then
-            ALL_HEALTHY=false
-            NOT_READY+=("$svc($STATUS)")
-        fi
-    done
-
-    if [[ "$ALL_HEALTHY" == true ]]; then
-        break
-    fi
-
-    printf "\r  Esperando: %s   [%ds/%ds]    " "${NOT_READY[*]}" "$ELAPSED" "$TIMEOUT"
-    sleep $INTERVAL
-    ELAPSED=$((ELAPSED + INTERVAL))
-done
-
-echo ""
+fi
 
 # ── 11. Reporte final ─────────────────────────────────────────────────────────
 echo ""

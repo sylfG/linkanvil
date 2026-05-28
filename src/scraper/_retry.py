@@ -12,7 +12,11 @@ async def with_retries(
     attempts: int = 3,
     base_delay: float = 0.5,
     max_delay: float = 4.0,
-    retry_on: tuple = (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException),
+    retry_on: tuple = (
+        httpx.HTTPStatusError,
+        httpx.TransportError,
+        httpx.TimeoutException,
+    ),
 ):
     last_exc = None
     for i in range(attempts):
@@ -20,7 +24,11 @@ async def with_retries(
             return await fn()
         except retry_on as e:
             last_exc = e
-            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500 and e.response.status_code != 429:
+            if (
+                isinstance(e, httpx.HTTPStatusError)
+                and e.response.status_code < 500
+                and e.response.status_code != 429
+            ):
                 raise
             if i == attempts - 1:
                 raise

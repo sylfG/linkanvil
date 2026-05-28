@@ -16,13 +16,44 @@ Uso:
 =============================================================================
 """
 
+import os
 import sys
 import time
 import json
 import socket
 import urllib.request
 import urllib.error
+from pathlib import Path
 from typing import NamedTuple
+
+# ─── Carga de .env (credenciales reales, no hardcoded) ───────────────────────
+def _load_env_file() -> dict:
+    """Lee .env del repo. Busca primero variables de entorno, luego ./.env"""
+    env = {}
+    # Buscar .env subiendo desde este archivo (este script vive en infra/)
+    here = Path(__file__).resolve().parent
+    for candidate in (here.parent / ".env", here / ".env", Path.cwd() / ".env"):
+        if candidate.is_file():
+            for line in candidate.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env.setdefault(k.strip(), v.strip())
+            break
+    # Variables de entorno tienen prioridad sobre .env
+    for k in (
+        "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
+        "REDIS_PASSWORD",
+        "RABBITMQ_USER", "RABBITMQ_PASS", "RABBITMQ_VHOST",
+        "N8N_USER", "N8N_PASSWORD",
+        "GRAFANA_USER", "GRAFANA_PASSWORD",
+        "LITELLM_MASTER_KEY",
+    ):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    return env
+
+ENV = _load_env_file()
 
 # ─── Colores ANSI ─────────────────────────────────────────────────────────────
 GREEN  = "\033[92m"
@@ -101,9 +132,12 @@ def check_traefik() -> list[Result]:
 
 def check_rabbitmq() -> list[Result]:
     results = []
-    # Management API
+    # Management API — credenciales del .env, no hardcoded
     import base64
-    creds = base64.b64encode(b"cerebro:cerebro_pass").decode()
+    rmq_user = ENV.get("RABBITMQ_USER", "cerebro")
+    rmq_pass = ENV.get("RABBITMQ_PASS", "")
+    rmq_vhost = ENV.get("RABBITMQ_VHOST", "cerebro")
+    creds = base64.b64encode(f"{rmq_user}:{rmq_pass}".encode()).decode()
     code, body = http_get(
         "http://localhost:15672/api/overview",
         headers={"Authorization": f"Basic {creds}"}
@@ -124,10 +158,11 @@ def check_rabbitmq() -> list[Result]:
     amqp_ok = tcp_check("localhost", 5672)
     results.append(Result("RabbitMQ AMQP  (port 5672)", amqp_ok, "Puerto abierto" if amqp_ok else "Puerto cerrado"))
 
-    # Verificar colas definidas (DLQ, etc.)
+    # Verificar colas definidas (DLQ, etc.) — vhost del .env
     if ok:
+        from urllib.parse import quote
         c2, b2 = http_get(
-            "http://localhost:15672/api/queues/%2Fcerebro",
+            f"http://localhost:15672/api/queues/{quote('/'+rmq_vhost, safe='')}",
             headers={"Authorization": f"Basic {creds}"}
         )
         if c2 == 200:
@@ -150,16 +185,18 @@ def check_redis() -> list[Result]:
     tcp_ok = tcp_check("localhost", 6379)
     results = [Result("Redis TCP (port 6379)", tcp_ok, "Puerto abierto" if tcp_ok else "Puerto cerrado")]
 
-    # PING via redis-cli en Docker
+    # PING via redis-cli en Docker — password del .env
     if tcp_ok:
         try:
             import subprocess
-            r = subprocess.run(
-                ["docker", "exec", "cerebro-redis", "redis-cli", "-a", "cerebro_redis_pass", "ping"],
-                capture_output=True, text=True, timeout=5
-            )
+            redis_pass = ENV.get("REDIS_PASSWORD", "")
+            cmd = ["docker", "exec", "cerebro-redis", "redis-cli"]
+            if redis_pass:
+                cmd += ["-a", redis_pass, "--no-auth-warning"]
+            cmd += ["ping"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             pong = "PONG" in r.stdout
-            results.append(Result("Redis PING", pong, "PONG ✓" if pong else f"Error: {r.stderr.strip()}"))
+            results.append(Result("Redis PING", pong, "PONG ✓" if pong else f"Error: {r.stderr.strip() or r.stdout.strip()}"))
         except Exception as e:
             results.append(Result("Redis PING", False, f"Error: {e}"))
 
@@ -173,10 +210,11 @@ def check_postgres() -> list[Result]:
     if tcp_ok:
         try:
             import subprocess
+            pg_user = ENV.get("POSTGRES_USER", "cerebro")
+            pg_db = ENV.get("POSTGRES_DB", "cerebro_brain")
+            base_cmd = ["docker", "exec", "cerebro-postgres", "psql", "-U", pg_user, "-d", pg_db, "-c"]
             r = subprocess.run(
-                ["docker", "exec", "cerebro-postgres",
-                 "psql", "-U", "cerebro", "-d", "cerebro_brain",
-                 "-c", "SELECT COUNT(*) FROM recursos;"],
+                base_cmd + ["SELECT COUNT(*) FROM recursos;"],
                 capture_output=True, text=True, timeout=10
             )
             ok = r.returncode == 0
@@ -185,9 +223,7 @@ def check_postgres() -> list[Result]:
 
             # Verificar outbox
             r2 = subprocess.run(
-                ["docker", "exec", "cerebro-postgres",
-                 "psql", "-U", "cerebro", "-d", "cerebro_brain",
-                 "-c", "SELECT COUNT(*) FROM outbox_eventos;"],
+                base_cmd + ["SELECT COUNT(*) FROM outbox_eventos;"],
                 capture_output=True, text=True, timeout=10
             )
             ok2 = r2.returncode == 0
@@ -222,9 +258,9 @@ def check_litellm() -> list[Result]:
     ok = code == 200
     results = [Result("LiteLLM Gateway /health", ok, f"HTTP {code}" if code else "Sin conexión (normal sin API keys)", "http://localhost:4000")]
 
-    # Verificar modelos disponibles
-    import base64
-    headers = {"Authorization": "Bearer sk-cerebro-master-key"}
+    # Verificar modelos disponibles — master key del .env
+    master_key = ENV.get("LITELLM_MASTER_KEY", "")
+    headers = {"Authorization": f"Bearer {master_key}"} if master_key else {}
     c2, b2 = http_get("http://localhost:4000/models", headers=headers)
     if c2 == 200:
         try:
@@ -260,10 +296,30 @@ def check_jaeger() -> list[Result]:
 
 
 def check_otel() -> list[Result]:
-    # Health check extension
-    code, _ = http_get("http://localhost:13133/healthz")
-    ok = code == 200
-    results = [Result("OTel Collector /healthz", ok, f"HTTP {code}" if code else "Sin conexión")]
+    # OTel Collector NO expone /healthz por defecto; usamos status del propio docker healthcheck.
+    results = []
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Health.Status}}", "cerebro-otel"],
+            capture_output=True, text=True, timeout=5
+        )
+        status = (r.stdout or "").strip()
+        if status in ("", "<no value>"):
+            # Sin healthcheck configurado → comprobar que está running
+            r2 = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Status}}", "cerebro-otel"],
+                capture_output=True, text=True, timeout=5
+            )
+            s2 = (r2.stdout or "").strip()
+            ok = s2 == "running"
+            detail = "container running (sin healthcheck definido)" if ok else f"estado: {s2 or 'desconocido'}"
+        else:
+            ok = status == "healthy"
+            detail = f"healthcheck: {status}"
+        results.append(Result("OTel Collector", ok, detail))
+    except Exception as e:
+        results.append(Result("OTel Collector", False, f"Error: {e}"))
 
     # gRPC port
     grpc_ok = tcp_check("localhost", 4317)
@@ -313,44 +369,63 @@ def check_grafana() -> list[Result]:
 
 
 def check_inter_service_connectivity() -> list[Result]:
-    """Verifica conectividad INTRA-red usando docker exec"""
+    """Verifica conectividad INTRA-red.
+    Estrategia: usamos un contenedor ligero efímero (alpine + busybox nc)
+    DENTRO de cerebro-net en lugar de `docker exec` sobre imágenes que
+    pueden no tener sh/nc (litellm, otel-collector).
+    """
     results = []
     import subprocess
 
     tests = [
-        # (desde_container, hacia_servicio, puerto, descripción)
-        ("cerebro-n8n",        "postgres",         "5432", "n8n → PostgreSQL"),
-        ("cerebro-n8n",        "redis",             "6379", "n8n → Redis"),
-        ("cerebro-n8n",        "rabbitmq",          "5672", "n8n → RabbitMQ"),
-        ("cerebro-litellm",    "postgres",          "5432", "LiteLLM → PostgreSQL"),
-        ("cerebro-litellm",    "redis",             "6379", "LiteLLM → Redis (caché)"),
-        ("cerebro-traefik",    "n8n",               "5678", "Traefik → n8n"),
-        ("cerebro-traefik",    "litellm",           "4000", "Traefik → LiteLLM"),
-        ("cerebro-otel",       "jaeger",            "4317", "OTel → Jaeger gRPC"),
-        ("cerebro-prometheus", "redis-exporter",    "9121", "Prometheus → Redis Exporter"),
-        ("cerebro-prometheus", "rabbitmq-exporter", "9419", "Prometheus → RabbitMQ Exporter"),
-        ("cerebro-prometheus", "postgres-exporter", "9187", "Prometheus → PG Exporter"),
-        ("cerebro-grafana",    "prometheus",        "9090", "Grafana → Prometheus"),
-        ("cerebro-grafana",    "jaeger",            "16686","Grafana → Jaeger"),
+        # Solo necesitamos verificar destinos únicos — uno por host:puerto
+        ("postgres",          "5432", "PostgreSQL"),
+        ("redis",             "6379", "Redis"),
+        ("rabbitmq",          "5672", "RabbitMQ AMQP"),
+        ("rabbitmq",          "15672","RabbitMQ Mgmt"),
+        ("qdrant",            "6333", "Qdrant HTTP"),
+        ("litellm",           "4000", "LiteLLM"),
+        ("n8n",               "5678", "n8n"),
+        ("traefik",           "8080", "Traefik Dashboard"),
+        ("jaeger",            "4317", "Jaeger OTLP gRPC"),
+        ("jaeger",            "16686","Jaeger UI"),
+        ("prometheus",        "9090", "Prometheus"),
+        ("grafana",           "3000", "Grafana"),
+        ("redis-exporter",    "9121", "Redis Exporter"),
+        ("rabbitmq-exporter", "9419", "RabbitMQ Exporter"),
+        ("postgres-exporter", "9187", "PG Exporter"),
     ]
 
-    for container, target_host, target_port, desc in tests:
+    # Detectar nombre real de red (linkanvil_cerebro-net o cerebro-net)
+    net_name = "cerebro-net"
+    try:
+        rn = subprocess.run(
+            ["docker", "network", "ls", "--filter", "name=cerebro-net", "--format", "{{.Name}}"],
+            capture_output=True, text=True, timeout=5
+        )
+        candidates = [n for n in rn.stdout.split() if n]
+        if candidates:
+            net_name = candidates[0]
+    except Exception:
+        pass
+
+    for target_host, target_port, desc in tests:
         try:
             r = subprocess.run(
-                ["docker", "exec", container,
-                 "sh", "-c", f"nc -zw3 {target_host} {target_port} && echo OK || echo FAIL"],
-                capture_output=True, text=True, timeout=10
+                ["docker", "run", "--rm", "--network", net_name,
+                 "busybox:1.36", "nc", "-zw3", target_host, target_port],
+                capture_output=True, text=True, timeout=15
             )
-            ok = "OK" in r.stdout
+            ok = r.returncode == 0
             results.append(Result(
-                f"Red: {desc}",
+                f"Red → {desc} ({target_host}:{target_port})",
                 ok,
-                "✓ Conectado" if ok else f"✗ Sin ruta ({r.stderr.strip() or r.stdout.strip()})"
+                "✓ Conectado" if ok else f"✗ Sin ruta ({(r.stderr or r.stdout).strip()[:80]})"
             ))
         except subprocess.TimeoutExpired:
-            results.append(Result(f"Red: {desc}", False, "Timeout"))
+            results.append(Result(f"Red → {desc}", False, "Timeout"))
         except Exception as e:
-            results.append(Result(f"Red: {desc}", False, f"Error: {e}"))
+            results.append(Result(f"Red → {desc}", False, f"Error: {e}"))
 
     return results
 
@@ -426,14 +501,16 @@ def main():
         print(f"  {GREEN}{BOLD}🎉 Infraestructura 100% operativa!{RESET}\n")
     
     print("  🔗 URLs de acceso:")
-    print("     Traefik Dashboard : http://localhost:8080")
-    print("     RabbitMQ UI       : http://localhost:15672  (cerebro / cerebro_pass)")
-    print("     n8n Workflows     : http://localhost:5678   (admin / cerebro_n8n_pass)")
-    print("     Grafana           : http://localhost:3000   (admin / cerebro_grafana_pass)")
-    print("     Prometheus        : http://localhost:9090")
-    print("     Jaeger Tracing    : http://localhost:16686")
-    print("     LiteLLM Gateway   : http://localhost:4000")
-    print("     Qdrant Vector DB  : http://localhost:6333/dashboard")
+    print( "     Traefik Dashboard : http://localhost:8080")
+    print(f"     RabbitMQ UI       : http://localhost:15672  ({ENV.get('RABBITMQ_USER','cerebro')} / <ver .env: RABBITMQ_PASS>)")
+    print(f"     n8n Workflows     : http://localhost:5678   ({ENV.get('N8N_USER','admin')} / <ver .env: N8N_PASSWORD>)")
+    print(f"     Grafana           : http://localhost:3000   ({ENV.get('GRAFANA_USER','admin')} / <ver .env: GRAFANA_PASSWORD>)")
+    print( "     Prometheus        : http://localhost:9090")
+    print( "     Jaeger Tracing    : http://localhost:16686")
+    print( "     LiteLLM Gateway   : http://localhost:4000")
+    print( "     Qdrant Vector DB  : http://localhost:6333/dashboard")
+    print()
+    print(f"  {CYAN}Tip: usa 'grep -E \"^(RABBITMQ_PASS|N8N_PASSWORD|GRAFANA_PASSWORD)=\" .env' para leer las passwords.{RESET}")
     print()
 
     sys.exit(0 if pct >= 70 else 1)

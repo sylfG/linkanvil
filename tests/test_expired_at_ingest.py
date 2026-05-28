@@ -44,12 +44,16 @@ async def test_save_with_past_expiration_date_quarantines():
             row = await conn.fetchrow(
                 """SELECT estado, fecha_caducidad, quarantine_reason,
                           quarantine_grace_until, quarantined_at
-                   FROM recursos WHERE id = $1""",
-                recurso_id,
+                   FROM usuario_recursos
+                   WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, recurso_id,
             )
             assert row["estado"] == "cuarentena"
-            assert row["quarantine_reason"] == "caducidad"
-            assert row["fecha_caducidad"] == past
+            # Migración 0012 + compute_audit_decision: el motivo per evento
+            # pasado pasa a 'evento_pasado' (no 'caducidad').
+            assert row["quarantine_reason"] == "evento_pasado"
+            # Migración 0012: las decisiones sobre pasado limpian fecha_caducidad.
+            assert row["fecha_caducidad"] is None
             assert row["quarantined_at"] is not None
             # gracia ≈ today + GRACE_PERIOD_DAYS, tolerando ±1 día
             expected_grace = date.today() + timedelta(days=GRACE_PERIOD_DAYS)
@@ -64,7 +68,7 @@ async def test_save_with_past_expiration_date_quarantines():
             assert evt is not None
             assert evt["evento_tipo"] == "recurso.cuarentena"
             payload = json.loads(evt["payload"])
-            assert payload["motivo"] == "caducidad"
+            assert payload["motivo"] == "evento_pasado"
             assert payload["url"] == url
     finally:
         async with db.pool.acquire() as conn:
@@ -104,8 +108,9 @@ async def test_save_with_future_expiration_date_uses_it():
             row = await conn.fetchrow(
                 """SELECT estado, fecha_caducidad, quarantine_reason,
                           quarantine_grace_until
-                   FROM recursos WHERE id = $1""",
-                recurso_id,
+                   FROM usuario_recursos
+                   WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, recurso_id,
             )
             assert row["estado"] == "procesando"
             # La fecha extraída debe sobrescribir el cálculo basado en useful_life
@@ -155,8 +160,9 @@ async def test_save_without_expiration_date_falls_back_to_useful_life():
 
         async with db.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT estado, fecha_caducidad FROM recursos WHERE id = $1",
-                recurso_id,
+                """SELECT estado, fecha_caducidad FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, recurso_id,
             )
             assert row["estado"] == "procesando"
             expected = date.today() + timedelta(days=60)
@@ -207,7 +213,9 @@ async def test_save_with_today_expiration_date_quarantines():
 
         async with db.pool.acquire() as conn:
             estado = await conn.fetchval(
-                "SELECT estado FROM recursos WHERE id = $1", recurso_id,
+                """SELECT estado FROM usuario_recursos
+                    WHERE tenant_id = $1 AND recurso_id = $2""",
+                tenant_id, recurso_id,
             )
             assert estado == "cuarentena"
     finally:

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   // tags og:image salen con HTTP -> Brave/Chrome marcan la pagina como
   // "No es seguro" por mixed-content cuando se sirve por HTTPS.
   metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3001"
+    process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001"
   ),
   title: "LinkAnvil — Segundo Cerebro",
   description: "Tu base de conocimiento personal impulsada por IA",

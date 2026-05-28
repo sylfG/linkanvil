@@ -132,6 +132,7 @@ export default withMermaid(
             { text: "8 · Ejemplo completo de flujo", link: "/8-ejemplo_flujo" },
             { text: "9 · Demo público", link: "/9-demo" },
             { text: "10 · Glosario", link: "/10-Glosario" },
+            { text: "11 · Seguridad", link: "/11-Seguridad" },
           ],
         },
         {

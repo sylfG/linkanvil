@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Nav from "./_components/Nav";
 import Hero from "./_components/Hero";
-import VideoIntro from "./_components/VideoIntro";
 import Problem from "./_components/Problem";
 import Solution from "./_components/Solution";
 import HowItWorks from "./_components/HowItWorks";
@@ -25,8 +24,11 @@ export const metadata: Metadata = {
 };
 
 // La landing es la cara pública de LinkAnvil. Orden de secciones:
-//   Hero → VideoIntro → Problem → Solution (6 pilares) → HowItWorks
-//   → RealExamples → NightlyAudit → CTABanner → FAQ
+//   Hero → Problem → Solution (6 pilares) → HowItWorks → RealExamples
+//   → NightlyAudit → CTABanner → FAQ
+//
+// El hero ya incluye el vídeo de presentación inline (HeroIntroVideo),
+// que sustituyó al antiguo ChatPreviewFrame en la columna derecha.
 //
 // Decisiones de composición:
 //   - Solution absorbe lo que antes era "Features" (eliminamos la
@@ -45,7 +47,6 @@ export default function MarketingPage() {
       <Nav />
       <main>
         <Hero />
-        <VideoIntro />
         <Problem />
         <Solution />
         <HowItWorks />

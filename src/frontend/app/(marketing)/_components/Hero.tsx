@@ -7,13 +7,20 @@ import { ArrowRight, Sparkles, Play, X, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/lib/auth";
 import { startDemoSession } from "@/lib/demo";
 import HeroPattern from "@/components/illustrations/HeroPattern";
-import ChatPreviewFrame from "@/components/illustrations/ChatPreviewFrame";
 
-// El vídeo de demostración del producto. Cuando exista el asset
-// definitivo, sustituir esta URL por /demo.mp4 (o un embed). El
-// vídeo de presentación general vive en su propia sección inline
-// del landing (VideoIntro), no en este modal.
+// Vídeo de demostración del producto, abierto en modal vía el botón
+// "Ver cómo funciona". Cuando exista el asset definitivo, sustituir
+// /demo.mp4 por la URL final (puede ser un embed también).
 const DEMO_VIDEO_SRC = "/demo.mp4";
+
+// Vídeo de presentación general (embebido inline en el hero como
+// reemplazo del antiguo ChatPreviewFrame). Usa youtube-nocookie
+// y el patrón facade: el iframe sólo se monta tras el primer click,
+// para no impactar LCP ni fijar cookies de terceros antes de hora.
+const INTRO_VIDEO_ID = "MVeKcTZOXS8";
+const INTRO_VIDEO_EMBED = `https://www.youtube-nocookie.com/embed/${INTRO_VIDEO_ID}?autoplay=1&rel=0&modestbranding=1`;
+const INTRO_VIDEO_WATCH = `https://youtu.be/${INTRO_VIDEO_ID}`;
+const INTRO_VIDEO_POSTER = `https://img.youtube.com/vi/${INTRO_VIDEO_ID}/maxresdefault.jpg`;
 
 export default function Hero() {
   const router = useRouter();
@@ -128,7 +135,9 @@ export default function Hero() {
           </p>
         </motion.div>
 
-        {/* Preview del chat con parallax */}
+        {/* Vídeo de presentación con parallax suave (mismo wrapper
+            que tenía ChatPreviewFrame, conserva la sensación visual
+            del hero al hacer scroll). */}
         <motion.div
           style={{ y: previewY, opacity: previewOpacity }}
           initial={{ opacity: 0, scale: 0.95 }}
@@ -136,7 +145,7 @@ export default function Hero() {
           transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
           className="relative"
         >
-          <ChatPreviewFrame />
+          <HeroIntroVideo />
         </motion.div>
       </div>
 
@@ -147,6 +156,61 @@ export default function Hero() {
         {videoOpen && <VideoModal onClose={() => setVideoOpen(false)} />}
       </AnimatePresence>
     </section>
+  );
+}
+
+// Facade del vídeo de presentación. Estado interno (loaded) controla
+// si rendereamos sólo el poster + botón play, o ya el iframe de
+// YouTube. Mientras no se haga click, NO hay request a YouTube, lo
+// que mantiene el LCP del hero sano y RGPD limpio.
+function HeroIntroVideo() {
+  const [loaded, setLoaded] = useState(false);
+
+  return (
+    <div className="relative aspect-video w-full rounded-2xl overflow-hidden border border-border bg-black shadow-2xl shadow-accent/10">
+      {loaded ? (
+        <iframe
+          src={INTRO_VIDEO_EMBED}
+          title="LinkAnvil — vídeo de presentación"
+          className="absolute inset-0 w-full h-full"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          referrerPolicy="strict-origin-when-cross-origin"
+          allowFullScreen
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setLoaded(true)}
+          aria-label="Reproducir vídeo de presentación"
+          className="group absolute inset-0 w-full h-full cursor-pointer"
+        >
+          <img
+            src={INTRO_VIDEO_POSTER}
+            alt="Vista previa del vídeo de presentación de LinkAnvil"
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+            decoding="async"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-black/30 transition-colors group-hover:from-black/70" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="flex items-center justify-center w-16 h-16 md:w-20 md:h-20 rounded-full bg-accent text-white shadow-2xl shadow-accent/40 transition-transform group-hover:scale-110">
+              <Play className="w-7 h-7 md:w-9 md:h-9 fill-current ml-0.5" />
+            </div>
+          </div>
+        </button>
+      )}
+      <noscript>
+        <div className="absolute inset-0 flex items-center justify-center px-6 text-center bg-black/80">
+          <p className="text-sm text-muted">
+            Necesitas JavaScript para ver el vídeo.{" "}
+            <a href={INTRO_VIDEO_WATCH} className="text-accent-light hover:underline">
+              Ábrelo en YouTube
+            </a>
+            .
+          </p>
+        </div>
+      </noscript>
+    </div>
   );
 }
 

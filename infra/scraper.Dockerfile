@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir \
     httpx aio-pika redis pydantic pydantic-settings asyncpg \
-    beautifulsoup4 patchright trafilatura
+    beautifulsoup4 patchright trafilatura htmldate extruct
 
 # Non-root user (created BEFORE patchright install so the browser cache
 # lives in /home/cerebro and is owned correctly)

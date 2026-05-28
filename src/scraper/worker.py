@@ -11,6 +11,20 @@ from typing import Optional
 
 import redis.asyncio as aioredis
 
+# Extracción determinista de metadatos estructurados.
+# htmldate: fecha de publicación a partir de meta-tags, OG, JSON-LD, URL.
+# extruct: JSON-LD, OpenGraph, Schema.org microdata, Dublin Core.
+try:
+    import htmldate  # type: ignore
+except Exception:
+    htmldate = None  # type: ignore
+try:
+    import extruct  # type: ignore
+    from w3lib.html import get_base_url  # type: ignore
+except Exception:
+    extruct = None  # type: ignore
+    get_base_url = None  # type: ignore
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.scraper.strategy import ScraperContext, BlockedContentError
 from src.scraper._retry import with_retries
@@ -246,14 +260,221 @@ def _prepend_supersession_paragraphs(
     return (header + body)[:max_chars]
 
 
+
+def _extract_structured_data(html: str, url: str) -> dict:
+    """Extrae datos estructurados deterministicamente del HTML antes del LLM.
+
+    Reduce tokens y mejora precisión en event_date (que el LLM a veces omite).
+
+    Fuentes:
+    - htmldate: fecha de publicación (meta-tags, OG, JSON-LD, paths URL).
+    - extruct → JSON-LD: @type, datePublished, author, keywords.
+    - extruct → OpenGraph: og:type, og:description, article:published_time.
+    - extruct → Dublin Core: DC.date, DC.creator, DC.subject.
+    - extruct → Microdata: Schema.org (Article, Person, etc).
+
+    Devuelve dict con campos cuyo valor None / [] indica "no encontrado".
+    """
+    out: dict = {
+        "event_date": None,
+        "og_type": None,
+        "og_description": None,
+        "schema_type": None,
+        "authors": [],
+        "keywords": [],
+    }
+
+    if htmldate is not None:
+        try:
+            d = htmldate.find_date(html, original_date=True, url=url)
+            if d:
+                out["event_date"] = d
+        except Exception as e:
+            logger.debug(f"htmldate failed: {e}")
+
+    # Validación de coherencia: si la URL ya delata el año del documento
+    # (BOE-A-YYYY-, /YYYY/MM/DD/, /YYYY/MM/, paths-año), descartar la fecha
+    # determinista cuyo año difiera en > 10 años — evita que htmldate
+    # confunda metadatos del CMS con la fecha del propio documento.
+    url_year = None
+    for m in re.finditer(r"(?:^|[/_-])(\d{4})(?:[/_-]|$)", url):
+        y = int(m.group(1))
+        if 1990 <= y <= 2100:
+            url_year = y
+            break
+    if url_year and out["event_date"]:
+        m = re.match(r"(\d{4})", out["event_date"])
+        if m and int(m.group(1)) != url_year:
+            logger.info(
+                f"htmldate={out['event_date']} discordant with URL year "
+                f"{url_year} for {url} — overriding to {url_year}-01-01"
+            )
+            out["event_date"] = f"{url_year}-01-01"
+
+    if extruct is None or get_base_url is None:
+        return out
+
+    DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+    try:
+        base_url = get_base_url(html, url)
+        data = extruct.extract(
+            html,
+            base_url=base_url,
+            syntaxes=["json-ld", "opengraph", "microdata", "dublincore"],
+            uniform=True,
+        )
+
+        for og in (data.get("opengraph") or []):
+            if not isinstance(og, dict):
+                continue
+            props = og.get("properties")
+            if not props:
+                if not out["og_type"] and og.get("og:type"):
+                    out["og_type"] = og["og:type"]
+                if not out["og_description"] and og.get("og:description"):
+                    out["og_description"] = str(og["og:description"])[:500]
+                pub = og.get("article:published_time") or og.get("og:updated_time")
+                if pub and not out["event_date"]:
+                    m = DATE_RE.match(str(pub))
+                    if m:
+                        out["event_date"] = m.group(1)
+                continue
+            for k, v in props:
+                if k == "og:type" and not out["og_type"]:
+                    out["og_type"] = v
+                elif k == "og:description" and not out["og_description"]:
+                    out["og_description"] = str(v or "")[:500]
+                elif k == "article:published_time" and not out["event_date"]:
+                    m = DATE_RE.match(str(v or ""))
+                    if m:
+                        out["event_date"] = m.group(1)
+
+        for ld in (data.get("json-ld") or []):
+            if not isinstance(ld, dict):
+                continue
+            t = ld.get("@type")
+            if t and not out["schema_type"]:
+                out["schema_type"] = t if isinstance(t, str) else (
+                    t[0] if isinstance(t, list) and t else None
+                )
+            dp = ld.get("datePublished") or ld.get("dateCreated")
+            if dp and not out["event_date"]:
+                m = DATE_RE.match(str(dp))
+                if m:
+                    out["event_date"] = m.group(1)
+            author = ld.get("author")
+            if author:
+                if isinstance(author, list):
+                    for a in author:
+                        name = a.get("name") if isinstance(a, dict) else str(a)
+                        if name and name not in out["authors"]:
+                            out["authors"].append(str(name))
+                elif isinstance(author, dict):
+                    name = author.get("name")
+                    if name and name not in out["authors"]:
+                        out["authors"].append(str(name))
+                elif isinstance(author, str) and author not in out["authors"]:
+                    out["authors"].append(author)
+            kws = ld.get("keywords")
+            if kws:
+                if isinstance(kws, str):
+                    out["keywords"].extend(
+                        [k.strip() for k in kws.split(",") if k.strip()]
+                    )
+                elif isinstance(kws, list):
+                    out["keywords"].extend([str(k).strip() for k in kws if k])
+
+        for dc in (data.get("dublincore") or []):
+            if not isinstance(dc, dict):
+                continue
+            elements = dc.get("elements") or []
+            for el in elements:
+                if not isinstance(el, dict):
+                    continue
+                name = (el.get("name") or "").lower()
+                content = el.get("content")
+                if not content:
+                    continue
+                if name == "dc.date" and not out["event_date"]:
+                    m = DATE_RE.match(str(content))
+                    if m:
+                        out["event_date"] = m.group(1)
+                elif name == "dc.creator":
+                    c = str(content)
+                    if c not in out["authors"]:
+                        out["authors"].append(c)
+                elif name == "dc.subject":
+                    out["keywords"].append(str(content))
+
+        for md in (data.get("microdata") or []):
+            if not isinstance(md, dict):
+                continue
+            t = md.get("type") or md.get("@type")
+            if t and not out["schema_type"]:
+                if isinstance(t, list):
+                    out["schema_type"] = t[0] if t else None
+                else:
+                    out["schema_type"] = str(t)
+            props = md.get("properties") or {}
+            if isinstance(props, dict):
+                dp = props.get("datePublished") or props.get("dateCreated")
+                if dp and not out["event_date"]:
+                    m = DATE_RE.match(str(dp))
+                    if m:
+                        out["event_date"] = m.group(1)
+
+        out["authors"] = out["authors"][:3]
+        out["keywords"] = list(dict.fromkeys(out["keywords"]))[:10]
+    except Exception as e:
+        logger.debug(f"extruct failed: {e}")
+
+    return out
+
+
+def _format_pre_extracted_block(pre: dict | None) -> str:
+    """Bloque legible para el LLM con los campos pre-extraídos."""
+    if not pre:
+        return ""
+    lines: list[str] = []
+    if pre.get("event_date"):
+        lines.append(f"- event_date (htmldate/OG/JSON-LD): {pre['event_date']}")
+    if pre.get("og_type"):
+        lines.append(f"- og:type: {pre['og_type']}")
+    if pre.get("schema_type"):
+        lines.append(f"- schema.org @type: {pre['schema_type']}")
+    if pre.get("og_description"):
+        lines.append(f"- og:description: {str(pre['og_description'])[:300]}")
+    if pre.get("authors"):
+        lines.append(f"- authors: {', '.join(pre['authors'])}")
+    if pre.get("keywords"):
+        lines.append(f"- keywords (autor): {', '.join(pre['keywords'][:8])}")
+    if not lines:
+        return ""
+    return (
+        "[PISTAS ESTRUCTURADAS DEL HTML — fuentes deterministas;"
+        " úsalas como punto de partida pero contrástalas con el texto y la URL,"
+        " no las prefieras ciegamente si entran en conflicto]\n"
+        + "\n".join(lines)
+        + "\n[FIN DATOS ESTRUCTURADOS]\n\n"
+    )
+
+
 async def _extract_metadata_with_llm(
-    http: httpx.AsyncClient, clean_text: str, title: str, url: str
+    http: httpx.AsyncClient, clean_text: str, title: str, url: str,
+    pre_extracted: dict | None = None,
 ) -> dict:
     """Call LiteLLM to extract structured metadata from page text.
 
     Si `clean_text` empieza con "[OBSOLESCENCIA DETECTADA", el LLM lo ve
-    naturalmente en el cuerpo del Texto — no necesita parametro aparte."""
+    naturalmente en el cuerpo del Texto — no necesita parametro aparte.
+
+    `pre_extracted` (dict de _extract_structured_data) se inyecta como
+    bloque [DATOS ESTRUCTURADOS YA EXTRAÍDOS] y se usa como fallback
+    determinista para campos que el LLM devuelva null."""
+    pre_block = _format_pre_extracted_block(pre_extracted)
     prompt = (
+        pre_block +
         "Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE "
         "con un JSON válido (sin markdown) con estos campos:\n"
         "- \"title\": título del contenido\n"
@@ -321,11 +542,18 @@ async def _extract_metadata_with_llm(
                 content = re.sub(r"```(?:json)?", "", content).strip()
             return json.loads(content)
 
-        return await with_retries(_call)
+        data = await with_retries(_call)
+        # Merge defensivo: si el LLM devolvió null, usar el dato determinista.
+        if pre_extracted:
+            if not data.get("event_date") and pre_extracted.get("event_date"):
+                data["event_date"] = pre_extracted["event_date"]
+            if (not data.get("keywords")) and pre_extracted.get("keywords"):
+                data["keywords"] = pre_extracted["keywords"][:5]
+        return data
     except Exception as e:
         logger.warning(f"LLM metadata extraction failed: {e}")
 
-    return {
+    fallback = {
         "title": title or url,
         "summary": clean_text[:400],
         "category": "other",
@@ -337,6 +565,12 @@ async def _extract_metadata_with_llm(
         "temporal_class": "evento",
         "valor_archivistico": "medio",
     }
+    if pre_extracted:
+        if pre_extracted.get("event_date"):
+            fallback["event_date"] = pre_extracted["event_date"]
+        if pre_extracted.get("keywords"):
+            fallback["keywords"] = pre_extracted["keywords"][:5]
+    return fallback
 
 
 class ScraperWorker:
@@ -447,7 +681,9 @@ class ScraperWorker:
                     await message.ack()
                     return
 
-                # 2. Clean HTML → plain text
+                # 2a. Datos estructurados deterministas (htmldate + extruct)
+                pre_extracted = _extract_structured_data(raw_html, url)
+                # 2b. Clean HTML → plain text
                 html_title, clean_text = _html_to_clean_text(raw_html)
                 obsolescencia = clean_text.startswith("[OBSOLESCENCIA DETECTADA")
                 logger.info(
@@ -470,8 +706,11 @@ class ScraperWorker:
                     await message.ack()
                     return
 
-                # 3. LLM metadata extraction
-                extracted_data = await _extract_metadata_with_llm(self.http, clean_text, html_title, url)
+                # 3. LLM metadata extraction (con datos pre-extraídos como hints)
+                extracted_data = await _extract_metadata_with_llm(
+                    self.http, clean_text, html_title, url,
+                    pre_extracted=pre_extracted,
+                )
                 logger.info(
                     f"[{trace_id}] Metadata extraída: title='{extracted_data.get('title','')[:60]}' "
                     f"category={extracted_data.get('category','?')}"

@@ -234,46 +234,46 @@ function VideoModal({ onClose }: { onClose: () => void }) {
         className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm"
         onClick={onClose}
       />
-      {/* Modal sizing — el ancho se calcula para que el 16:9 quepa
-          exactamente en la altura disponible, sin letterbox lateral.
-          · max-h-[92vh]: deja 8vh de aire arriba/abajo
-          · width = min(96vw, 1280px, calc((92vh - 100px) * 16 / 9))
-            → el tercer term es "el ancho que hace que un 16:9 +
-            header (52px) + footer (44px) ocupe exactamente 92vh".
-            En laptops 1366x768 ese cap suele ganar, dando un modal
-            ajustado al video. En monitores muy altos, 1280 cap.
-      */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        transition={{ duration: 0.2 }}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-h-[92vh] z-[61] bg-card border border-border rounded-2xl overflow-hidden flex flex-col"
-        style={{ width: "min(96vw, 1280px, calc((92vh - 100px) * 16 / 9))" }}
+      {/* Wrapper de centrado: fixed inset-0 + flex centering. Es necesario
+          porque framer-motion gestiona el transform de la motion.div hija
+          (translate/scale/y para la animacion de entrada), lo que invalidaba
+          el -translate-x/y-1/2 de Tailwind que tenia antes y dejaba el modal
+          descentrado. Aqui el centrado vive en el padre estatico. */}
+      <div
+        className="fixed inset-0 z-[61] flex items-center justify-center p-4 pointer-events-none"
+        // pointer-events-none deja pasar clicks al backdrop (que cierra);
+        // el modal lleva pointer-events-auto para volver a captarlos.
       >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-2 text-sm text-slate-200">
-            <Play className="w-4 h-4 text-accent-light" />
-            Demostración de LinkAnvil
+        {/* Modal: width calculado para que el 16:9 + header + footer ocupen
+            exactamente 92vh. width = min(96vw, 1280px, calc((92vh-100px)*16/9)).
+            El tercer term es la formula clave: ancho tal que video.height
+            + 100px (header 52 + footer 44 + margenes) cabe en 92vh.
+            El video va aspect-video w-full DIRECTO (sin flex-1 intermedio):
+            su altura sale del aspect-ratio sobre el ancho del modal,
+            asi nunca colapsa a 0. */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          transition={{ duration: 0.2 }}
+          className="pointer-events-auto bg-card border border-border rounded-2xl overflow-hidden flex flex-col max-h-[92vh]"
+          style={{ width: "min(96vw, 1280px, calc((92vh - 100px) * 16 / 9))" }}
+        >
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border flex-shrink-0">
+            <div className="flex items-center gap-2 text-sm text-slate-200">
+              <Play className="w-4 h-4 text-accent-light" />
+              Demostración de LinkAnvil
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Cerrar vídeo"
+              className="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-slate-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Cerrar vídeo"
-            className="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-slate-200 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
 
-        {/* Zona del video: flex-1 ocupa la altura libre del modal.
-            Wrapper interno con h-full (altura = padre) + max-w-full
-            (clamp horizontal) + aspect-ratio 16/9 (deriva el width).
-            Asi nunca peleamos contra el flex stretch: la altura es la
-            dimension fija, el ancho se calcula y se reduce si excede
-            el modal. Resultado: caja 16:9 perfecta, centrada con
-            letterboxing horizontal en monitores anchos. */}
-        <div className="flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
-          <div className="relative aspect-video h-full max-w-full">
+          <div className="relative bg-black aspect-video w-full">
             <iframe
               src={DEMO_VIDEO_EMBED}
               title="LinkAnvil — demostración"
@@ -294,18 +294,18 @@ function VideoModal({ onClose }: { onClose: () => void }) {
               </div>
             </noscript>
           </div>
-        </div>
 
-        <div className="px-5 py-3 border-t border-border bg-bg/40 text-xs text-muted flex items-center justify-between gap-4 flex-shrink-0">
-          <span>¿Sin sonido? Activa los altavoces.</span>
-          <Link
-            href="/login"
-            className="text-accent-light hover:underline whitespace-nowrap"
-          >
-            Iniciar sesión →
-          </Link>
-        </div>
-      </motion.div>
+          <div className="px-5 py-3 border-t border-border bg-bg/40 text-xs text-muted flex items-center justify-between gap-4 flex-shrink-0">
+            <span>¿Sin sonido? Activa los altavoces.</span>
+            <Link
+              href="/login"
+              className="text-accent-light hover:underline whitespace-nowrap"
+            >
+              Iniciar sesión →
+            </Link>
+          </div>
+        </motion.div>
+      </div>
     </>
   );
 }

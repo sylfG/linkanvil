@@ -35,7 +35,22 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
     # max_chars ≈ 8000 tokens (asumiendo ~4 chars/token en español/inglés);
     # límite pensado para no inflar payloads RabbitMQ ni el almacenamiento, pero
     # suficiente para chunkear y preservar detalles concretos del documento.
-    """(title, clean_text). Try trafilatura → BeautifulSoup → regex."""
+    """(title, clean_text). Try trafilatura → BeautifulSoup → regex.
+
+    El extractor estructurado (trafilatura/bs4) descarta secciones que
+    considera sidebar/boilerplate, pero algunas como "Análisis" del BOE
+    contienen marcadores de obsolescencia (SE MODIFICA, SE DEROGA,
+    Referencias posteriores). Para no perderlos:
+
+    1. Limpiamos el HTML por regex (bruto) — capta TODO el texto.
+    2. Extraemos el body con trafilatura/bs4 (más limpio).
+    3. _prepend_supersession_paragraphs(body, max_chars, search_in=bruto)
+       busca marcadores en `bruto` y prepone los párrafos relevantes a
+       `body` antes de truncar."""
+    # Bruto compactado para escanear marcadores (uso unico)
+    _bruto_raw = re.sub(r'<[^>]+>', ' ', html)
+    bruto = re.sub(r'\s+', ' ', _bruto_raw).strip()
+
     try:
         import trafilatura
         extracted = trafilatura.extract(
@@ -48,7 +63,9 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
         meta = trafilatura.extract_metadata(html)
         title = (meta.title if meta else "") or ""
         if extracted and len(extracted) >= 200:
-            return title, extracted[:max_chars]
+            return title, _prepend_supersession_paragraphs(
+                extracted, max_chars, search_in=bruto,
+            )
     except Exception as e:
         logger.warning(f"trafilatura falló: {e}")
 
@@ -61,11 +78,13 @@ def _html_to_clean_text(html: str, max_chars: int = 32000) -> tuple[str, str]:
         text = soup.get_text(separator="\n", strip=True)
         text = re.sub(r'\n{3,}', '\n\n', text)
         text = re.sub(r' {2,}', ' ', text)
-        return title, text[:max_chars]
+        return title, _prepend_supersession_paragraphs(
+            text, max_chars, search_in=bruto,
+        )
     except Exception:
-        clean = re.sub(r'<[^>]+>', ' ', html)
-        return "", re.sub(r'\s+', ' ', clean).strip()[:max_chars]
-
+        return "", _prepend_supersession_paragraphs(
+            bruto, max_chars, search_in=bruto,
+        )
 
 _SUPERSESSION_PATTERNS = [
     # Espanol (BOE/normativa)
@@ -94,42 +113,72 @@ _SUPERSESSION_RE = _re_sup.compile(
 )
 
 
-def _extract_supersession_signals(full_text: str) -> str:
-    """Devuelve un bloque breve con las lineas que indican que el documento
-    ha sido modificado, derogado, retractado o reemplazado. Vacio si ninguna.
+def _prepend_supersession_paragraphs(
+    body: str, max_chars: int, search_in: str | None = None,
+) -> str:
+    """Si `search_in` (o `body` si no se pasa) contiene marcadores de
+    obsolescencia (SE MODIFICA, Obsoleted by, Retracted, deprecated...),
+    extrae los párrafos donde aparecen Y LOS PREPONE A `body` antes de
+    truncar a `max_chars`.
 
-    Se invoca antes de truncar el texto para el LLM: si encontramos
-    marcadores, los pegamos al inicio del prompt asi el LLM los ve aunque
-    esten al final del documento (caso tipico de BOE: la seccion
-    "Analisis" con las referencias posteriores aparece tras 15-20k chars).
-    """
-    if not full_text:
-        return ""
-    matches = []
-    seen = set()
-    for m in _SUPERSESSION_RE.finditer(full_text):
-        start = max(0, m.start() - 30)
-        end = min(len(full_text), m.end() + 160)
-        snippet = full_text[start:end].strip()
-        # Compactar espacios y saltos de linea
-        snippet = _re_sup.sub(r"\s+", " ", snippet)
-        key = snippet[:80].lower()
+    El parámetro `search_in` es clave para el caso BOE: trafilatura
+    descarta la sección "Análisis" considerándola sidebar, pero esa
+    sección es donde viven SE MODIFICA / SE DEROGA. Pasamos el HTML
+    bruto limpiado por regex como `search_in` y el body limpio de
+    trafilatura como `body` — así rescatamos marcadores que el
+    extractor estructurado descartó.
+
+    Sin marcadores devuelve `body[:max_chars]` (comportamiento inalterado)."""
+    haystack = search_in if search_in else body
+    if not haystack:
+        return body[:max_chars]
+    matches = list(_SUPERSESSION_RE.finditer(haystack))
+    if not matches:
+        return body[:max_chars]
+
+    paragraphs: list[str] = []
+    seen: set[str] = set()
+    for m in matches:
+        para_start = haystack.rfind("\n\n", 0, m.start())
+        if para_start == -1:
+            # Sin saltos de linea (caso bruto compactado): tomamos ventana
+            para_start = max(0, m.start() - 400)
+        else:
+            para_start += 2
+        para_end = haystack.find("\n\n", m.end())
+        if para_end == -1:
+            para_end = min(len(haystack), m.end() + 400)
+        para = haystack[para_start:para_end].strip()
+        # Compactar espacios largos (HTML stripped puede tener exceso)
+        para = _re_sup.sub(r"\s+", " ", para)
+        if len(para) > 1000:
+            para = para[:1000] + "…"
+        key = para[:120].lower()
         if key in seen:
             continue
         seen.add(key)
-        matches.append(snippet)
-        if len(matches) >= 6:
+        paragraphs.append(para)
+        if len(paragraphs) >= 5:
             break
-    if not matches:
-        return ""
-    return "MARCADORES DE OBSOLESCENCIA DETECTADOS EN EL DOCUMENTO:\n- " + "\n- ".join(matches) + "\n\n"
+
+    if not paragraphs:
+        return body[:max_chars]
+
+    header = (
+        "[OBSOLESCENCIA DETECTADA — extractos del documento]\n"
+        + "\n\n".join(f"• {p}" for p in paragraphs)
+        + "\n\n[FIN OBSOLESCENCIA]\n\n"
+    )
+    return (header + body)[:max_chars]
 
 
 async def _extract_metadata_with_llm(
     http: httpx.AsyncClient, clean_text: str, title: str, url: str
 ) -> dict:
-    """Call LiteLLM to extract structured metadata from page text."""
-    supersession_block = _extract_supersession_signals(clean_text)
+    """Call LiteLLM to extract structured metadata from page text.
+
+    Si `clean_text` empieza con "[OBSOLESCENCIA DETECTADA", el LLM lo ve
+    naturalmente en el cuerpo del Texto — no necesita parametro aparte."""
     prompt = (
         "Analiza el siguiente texto extraído de una página web y responde ÚNICAMENTE "
         "con un JSON válido (sin markdown) con estos campos:\n"
@@ -172,7 +221,6 @@ async def _extract_metadata_with_llm(
         "referencia.\n\n"
         f"URL: {url}\n"
         f"Título HTML: {title or '(sin título)'}\n\n"
-        f"{supersession_block}"
         f"Texto:\n{clean_text[:6000]}\n\n"
         "Responde SOLO con el JSON."
     )
@@ -323,7 +371,11 @@ class ScraperWorker:
 
                 # 2. Clean HTML → plain text
                 html_title, clean_text = _html_to_clean_text(raw_html)
-                logger.info(f"[{trace_id}] Texto limpio: {len(clean_text)} chars")
+                obsolescencia = clean_text.startswith("[OBSOLESCENCIA DETECTADA")
+                logger.info(
+                    f"[{trace_id}] Texto limpio: {len(clean_text)} chars; "
+                    f"obsolescencia detectada: {obsolescencia}"
+                )
 
                 # Guard de calidad: si el contenido extraído es trivialmente
                 # corto, el LLM solo podría inventar un resumen sin sustancia.
